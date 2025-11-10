@@ -1,0 +1,6 @@
+.venv
+scraped_sites
+protor/__pycache__
+protor.egg-info
+data
+analysis
