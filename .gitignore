@@ -7,3 +7,6 @@ analysis
 .coverage
 htmlcov
 .pytest_cache
+htmlcov
+.pytest_cache
+.coverage
