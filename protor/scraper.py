@@ -64,6 +64,27 @@ def extract_js_links(html: str, base_url: str) -> list[str]:
     
     return list(set(js_links))
 
+
+def extract_links(html: str, base_url: str) -> list[str]:
+    """Extract internal links from HTML"""
+    soup = BeautifulSoup(html, "html.parser")
+    links = []
+    base_domain = urlparse(base_url).netloc
+    
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        full_url = urljoin(base_url, href)
+        parsed = urlparse(full_url)
+        
+        # Only keep internal links (same domain) and http(s)
+        if parsed.netloc == base_domain and parsed.scheme in ("http", "https"):
+            # Remove fragments
+            clean_url = full_url.split("#")[0]
+            if clean_url != base_url:
+                links.append(clean_url)
+    
+    return list(set(links))
+
 def extract_text_content(html: str) -> str:
     """Extract clean text content from HTML"""
     soup = BeautifulSoup(html, "html.parser")
@@ -142,7 +163,7 @@ def scrape_website(url: str, output_dir: str = "data", download_js: bool = True,
         "success": True
     }
 
-    # Save manifest
+    # save manifest
     save_json(manifest, os.path.join(site_dir, "manifest.json"))
     print(f"Scraped {parsed.netloc}")
     

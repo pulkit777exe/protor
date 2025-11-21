@@ -16,3 +16,11 @@ def save_json(data, path: str):
 
 def timestamp() -> str:
     return datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def get_default_output_dir() -> str:
+    """Get the default output directory based on OS (Downloads folder)"""
+    if os.name == 'nt':  # Windows
+        return os.path.join(os.environ['USERPROFILE'], 'Downloads')
+    else:  # Linux/macOS
+        return os.path.join(os.path.expanduser('~'), 'Downloads')
