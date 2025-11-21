@@ -5,7 +5,12 @@ import subprocess
 import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin, urlparse
+from rich.console import Console
+from rich.panel import Panel
+from rich import box
 from .utils import safe_filename, save_json, timestamp
+
+console = Console()
 
 def fetch_with_curl(url: str, timeout: int = 30) -> tuple[str, bool]:
     """Fetch URL content using curl. Returns (content, success)"""
@@ -20,7 +25,7 @@ def fetch_with_curl(url: str, timeout: int = 30) -> tuple[str, bool]:
         success = result.returncode == 0 and len(result.stdout) > 0
         return result.stdout, success
     except Exception as e:
-        print(f"Curl error for {url}: {e}")
+        console.print(f"[grey50]⟡ Summoning failed for {url}: {e}[/grey50]")
         return "", False
 
 def extract_metadata(soup: BeautifulSoup) -> dict:
@@ -112,12 +117,12 @@ def download_file(url: str, dest_path: str, timeout: int = 15) -> bool:
                 f.write(r.content)
             return True
     except Exception as e:
-        print(f"Failed to download {url}: {e}")
+        console.print(f"[grey50]  ✗ Artifact lost: {url}[/grey50]")
     return False
 
 def scrape_website(url: str, output_dir: str = "data", download_js: bool = True, timeout: int = 30) -> dict:
     """Scrape a single website"""
-    print(f"Scraping: {url}")
+    console.print(f"[grey74]⟡ Summoning:[/grey74] [grey50]{url}[/grey50]")
     
     parsed = urlparse(url)
     site_dir = os.path.join(output_dir, safe_filename(parsed.netloc))
@@ -125,7 +130,7 @@ def scrape_website(url: str, output_dir: str = "data", download_js: bool = True,
 
     html, success = fetch_with_curl(url, timeout)
     if not success or not html:
-        print(f"Failed to fetch {url}")
+        console.print(f"[grey50]  ✗ Soul escaped: {url}[/grey50]")
         return None
 
     html_path = os.path.join(site_dir, "index.html")
@@ -140,7 +145,7 @@ def scrape_website(url: str, output_dir: str = "data", download_js: bool = True,
     if download_js:
         js_links = extract_js_links(html, url)
         if js_links:
-            print(f"  Found {len(js_links)} JS files")
+            console.print(f"[grey50]  ⟡ {len(js_links)} artifacts discovered[/grey50]")
             js_dir = os.path.join(site_dir, "js")
             os.makedirs(js_dir, exist_ok=True)
             
@@ -165,16 +170,27 @@ def scrape_website(url: str, output_dir: str = "data", download_js: bool = True,
 
     # save manifest
     save_json(manifest, os.path.join(site_dir, "manifest.json"))
-    print(f"Scraped {parsed.netloc}")
+    console.print(f"[grey74]  ✓ Soul captured:[/grey74] [grey50]{parsed.netloc}[/grey50]")
     
     return manifest
 
 def scrape_multiple(urls: list[str], output_dir: str = "data", download_js: bool = True, timeout: int = 30) -> str:
     """Scrape multiple websites and create an index"""
+    console.print()
+    console.print(Panel(
+        f"[bold grey93]⸸ Beginning the Harvest ⸸[/bold grey93]\n"
+        f"[grey74]Targets:[/grey74] [bright_white]{len(urls)}[/bright_white]\n"
+        f"[grey74]Crypt:[/grey74] [grey50]{output_dir}[/grey50]",
+        box=box.DOUBLE_EDGE,
+        border_style="grey35",
+        style="on grey7"
+    ))
+    console.print()
+    
     manifests = []
     
     for i, url in enumerate(urls, 1):
-        print(f"\n[{i}/{len(urls)}]")
+        console.print(f"[grey50]━━━[/grey50] [grey74][{i}/{len(urls)}][/grey74] [grey50]━━━[/grey50]")
         manifest = scrape_website(url, output_dir, download_js, timeout)
         if manifest:
             manifests.append(manifest)
@@ -183,6 +199,15 @@ def scrape_multiple(urls: list[str], output_dir: str = "data", download_js: bool
     index_file = os.path.join(output_dir, "sites_index.json")
     save_json(manifests, index_file)
     
-    print(f"\nSuccessfully scraped {len(manifests)}/{len(urls)} sites")
+    console.print()
+    console.print(Panel(
+        f"[bold grey93]⸸ Harvest Complete ⸸[/bold grey93]\n"
+        f"[grey74]Claimed:[/grey74] [bright_white]{len(manifests)}[/bright_white][grey50]/[/grey50][grey74]{len(urls)}[/grey74]\n"
+        f"[grey74]Tome:[/grey74] [grey50]{index_file}[/grey50]",
+        box=box.DOUBLE_EDGE,
+        border_style="grey35",
+        style="on grey7"
+    ))
+    console.print()
     
     return index_file

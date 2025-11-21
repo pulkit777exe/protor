@@ -2,7 +2,15 @@ import os
 import json
 import requests
 from typing import Dict, List
+from rich.console import Console
+from rich.panel import Panel
+from rich.progress import Progress, SpinnerColumn, TextColumn
+from rich.live import Live
+from rich.table import Table
+from rich import box
 from .utils import save_json, timestamp
+
+console = Console()
 
 ANALYSIS_PROMPTS = {
     "general": """
@@ -56,18 +64,55 @@ def list_ollama_models():
         if response.status_code == 200:
             models = response.json().get("models", [])
             if models:
-                print("Available Ollama models:")
+                table = Table(
+                    show_header=True,
+                    header_style="bold grey93 on grey11",
+                    box=box.DOUBLE_EDGE,
+                    border_style="grey35"
+                )
+                table.add_column("Oracle", style="grey74")
+                table.add_column("Size", style="grey50", justify="right")
+                
                 for model in models:
                     name = model.get("name", "unknown")
-                    size = model.get("size", 0) / (1024**3) 
-                    print(f"   • {name} ({size:.1f} GB)")
+                    size = model.get("size", 0) / (1024**3)
+                    table.add_row(name, f"{size:.1f} GB")
+                
+                console.print()
+                console.print(Panel(
+                    table,
+                    title="[bold grey93]⟪ Available Oracles ⟫[/bold grey93]",
+                    box=box.DOUBLE_EDGE,
+                    border_style="grey35",
+                    style="on grey7"
+                ))
+                console.print()
             else:
-                print("No models found. Install models with: ollama pull <model-name>")
+                console.print()
+                console.print(Panel(
+                    "[grey74]No oracles found in the realm.[/grey74]\n\n"
+                    "[grey50]Summon an oracle with:[/grey50]\n"
+                    "[grey74]ollama pull <model-name>[/grey74]",
+                    title="[bold grey93]⚠ Empty Sanctuary ⚠[/bold grey93]",
+                    box=box.DOUBLE_EDGE,
+                    border_style="grey35",
+                    style="on grey7"
+                ))
+                console.print()
         else:
-            print("Could not connect to Ollama")
+            console.print("[grey50]⟡ Cannot reach the spirit realm[/grey50]")
     except Exception as e:
-        print(f"Error connecting to Ollama: {e}")
-        print("Make sure Ollama is running: ollama serve")
+        console.print()
+        console.print(Panel(
+            f"[grey74]Connection failed:[/grey74] [grey50]{e}[/grey50]\n\n"
+            "[grey74]Ensure Ollama serves:[/grey74]\n"
+            "[grey50]ollama serve[/grey50]",
+            title="[bold grey93]⚠ Oracle Unreachable ⚠[/bold grey93]",
+            box=box.DOUBLE_EDGE,
+            border_style="grey35",
+            style="on grey7"
+        ))
+        console.print()
 
 def prepare_analysis_data(data: List[Dict], max_chars: int = 6000) -> str:
     """Prepare scraped data for analysis"""
@@ -113,7 +158,12 @@ def stream_ollama_response(model: str, prompt: str) -> str:
             return f"Error: Ollama returned status {response.status_code}"
         
         full_response = []
-        print("\n" + "="*60)
+        
+        console.print()
+        console.print("[grey50]" + "─" * 60 + "[/grey50]")
+        console.print("[grey74 italic]⟡ The oracle speaks...[/grey74 italic]")
+        console.print("[grey50]" + "─" * 60 + "[/grey50]")
+        console.print()
         
         for line in response.iter_lines():
             if line:
@@ -121,7 +171,7 @@ def stream_ollama_response(model: str, prompt: str) -> str:
                     chunk = json.loads(line)
                     if "response" in chunk:
                         text = chunk["response"]
-                        print(text, end="", flush=True)
+                        console.print(text, end="", style="grey74")
                         full_response.append(text)
                     
                     if chunk.get("done", False):
@@ -129,7 +179,11 @@ def stream_ollama_response(model: str, prompt: str) -> str:
                 except json.JSONDecodeError:
                     continue
         
-        print("\n" + "="*60 + "\n")
+        console.print()
+        console.print()
+        console.print("[grey50]" + "─" * 60 + "[/grey50]")
+        console.print()
+        
         return "".join(full_response)
         
     except requests.exceptions.Timeout:
@@ -141,11 +195,31 @@ def analyze_with_ollama(data: List[Dict], model: str = "llama3", focus: str = "g
     """Analyze scraped data using Ollama"""
     
     if not check_ollama_connection():
-        print("Cannot connect to Ollama!")
-        print("Make sure Ollama is running:")
-        print("   1. Start Ollama: ollama serve")
-        print("   2. Pull a model: ollama pull llama3")
+        console.print()
+        console.print(Panel(
+            "[bold grey93]⚠ Oracle Unavailable ⚠[/bold grey93]\n\n"
+            "[grey74]Cannot establish connection to Ollama[/grey74]\n\n"
+            "[grey50]Ensure the oracle serves:[/grey50]\n"
+            "[grey74]1. Start Ollama:[/grey74] [grey50]ollama serve[/grey50]\n"
+            "[grey74]2. Summon a model:[/grey74] [grey50]ollama pull llama3[/grey50]",
+            box=box.DOUBLE_EDGE,
+            border_style="grey35",
+            style="on grey7"
+        ))
+        console.print()
         return
+    
+    console.print()
+    console.print(Panel(
+        f"[bold grey93]⸸ Preparing the Divination ⸸[/bold grey93]\n"
+        f"[grey74]Oracle:[/grey74] [bright_white]{model}[/bright_white]\n"
+        f"[grey74]Focus:[/grey74] [grey74]{focus}[/grey74]\n"
+        f"[grey74]Souls to divine:[/grey74] [bright_white]{len(data)}[/bright_white]\n\n"
+        f"[grey50 italic]The ritual may take a moment...[/grey50 italic]",
+        box=box.DOUBLE_EDGE,
+        border_style="grey35",
+        style="on grey7"
+    ))
     
     data_summary = prepare_analysis_data(data)
     analysis_prompt = ANALYSIS_PROMPTS.get(focus, ANALYSIS_PROMPTS["general"])
@@ -158,14 +232,18 @@ def analyze_with_ollama(data: List[Dict], model: str = "llama3", focus: str = "g
 Provide your analysis in well-formatted Markdown:
 """
     
-    print(f"Analysis Focus: {focus}")
-    print(f"Analyzing {len(data)} website(s) with {model}...")
-    print("This may take a minute...\n")
-    
     result = stream_ollama_response(model, full_prompt)
     
     if result.startswith("Error:"):
-        print(f"{result}")
+        console.print()
+        console.print(Panel(
+            f"[grey74]{result}[/grey74]",
+            title="[bold grey93]⚠ Divination Failed ⚠[/bold grey93]",
+            box=box.DOUBLE_EDGE,
+            border_style="grey35",
+            style="on grey7"
+        ))
+        console.print()
         return
     
     os.makedirs(output_dir, exist_ok=True)
@@ -198,6 +276,13 @@ Provide your analysis in well-formatted Markdown:
     with open(os.path.join(output_dir, "README.md"), "w", encoding="utf-8") as f:
         f.write(md_content)
     
-    print(f"\n Analysis saved to:")
-    print(f"   • {output_dir}/README.md")
-    print(f"   • {output_dir}/analysis.json")
+    console.print()
+    console.print(Panel(
+        f"[bold grey93]⸸ Prophecy Inscribed ⸸[/bold grey93]\n"
+        f"[grey74]Tome:[/grey74] [grey50]{output_dir}/README.md[/grey50]\n"
+        f"[grey74]Scroll:[/grey74] [grey50]{output_dir}/analysis.json[/grey50]",
+        box=box.DOUBLE_EDGE,
+        border_style="grey35",
+        style="on grey7"
+    ))
+    console.print()

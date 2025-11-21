@@ -6,13 +6,13 @@ from rich.layout import Layout
 from rich.panel import Panel
 from rich.table import Table
 from rich.console import Console
+from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
 from rich import box
-
 from protor.scraper import scrape_website, extract_links, fetch_with_curl
 from protor.utils import get_default_output_dir
 
 class Crawler:
-    def __init__(self, start_url: str, max_pages: int = 10, output_dir: str = None):
+    def __init__(self, start_url: str, max_pages: int = 100, output_dir: str = None):
         self.start_url = start_url
         self.max_pages = max_pages
         self.output_dir = output_dir or get_default_output_dir()
@@ -26,6 +26,7 @@ class Crawler:
         layout = Layout()
         layout.split_column(
             Layout(name="header", size=3),
+            Layout(name="progress", size=5),
             Layout(name="body"),
             Layout(name="footer", size=3)
         )
@@ -36,70 +37,122 @@ class Crawler:
         return layout
 
     def get_queue_table(self) -> Panel:
-        table = Table(show_header=True, header_style="bold magenta", box=box.SIMPLE)
-        table.add_column("Queue (Next 10)", style="cyan")
+        table = Table(
+            show_header=True, 
+            header_style="bold bright_white on grey11",
+            box=box.DOUBLE_EDGE,
+            border_style="grey35"
+        )
+        table.add_column("⚰ The Queue ⚰", style="grey74", no_wrap=False)
         
         for url in list(self.queue)[:10]:
-            table.add_row(url)
-            
+            table.add_row(f"☩ {url}")
+        
         if len(self.queue) > 10:
-            table.add_row(f"... and {len(self.queue) - 10} more")
-            
-        return Panel(table, title=f"Queue ({len(self.queue)})", border_style="blue")
+            table.add_row(f"[dim]...{len(self.queue) - 10} souls await...[/dim]")
+        
+        return Panel(
+            table, 
+            title=f"[bold grey93]⟪ Pending Souls: {len(self.queue)} ⟫[/bold grey93]",
+            border_style="grey35",
+            box=box.DOUBLE_EDGE
+        )
+
+    def get_progress_bar(self) -> Panel:
+        """Generate a gothic progress bar panel"""
+        progress = Progress(
+            TextColumn("[bold grey93]{task.description}"),
+            BarColumn(
+                complete_style="grey74 on grey11", 
+                finished_style="bright_white on grey23",
+                bar_width=None
+            ),
+            TextColumn("[grey93]{task.percentage:>3.0f}%"),
+            TextColumn("[grey50]⚔[/grey50]"),
+            TextColumn("[grey74]{task.completed}/{task.total} souls harvested[/grey74]"),
+            expand=True
+        )
+        task = progress.add_task(
+            "⸸ Reaping Progress ⸸", 
+            total=self.max_pages, 
+            completed=self.scraped_count
+        )
+        
+        return Panel(
+            progress, 
+            border_style="grey35",
+            box=box.DOUBLE_EDGE,
+            style="on grey7"
+        )
 
     def get_status_panel(self) -> Panel:
         content = f"""
-[bold green]Scraping:[/bold green] {self.current_url}
-[bold]Progress:[/bold] {self.scraped_count}/{self.max_pages}
-[bold]Visited:[/bold] {len(self.visited)}
-[bold]Output:[/bold] {self.output_dir}
+[bold grey93]⟪ Current Target ⟫[/bold grey93]
+[grey74]☩ {self.current_url}[/grey74]
+
+[bold grey93]⸸ Statistics ⸸[/bold grey93]
+[grey74]├─ Progress:[/grey74] [bright_white]{self.scraped_count}[/bright_white][grey50]/[/grey50][grey74]{self.max_pages}[/grey74]
+[grey74]├─ Souls Claimed:[/grey74] [bright_white]{len(self.visited)}[/bright_white]
+[grey74]└─ Crypt Path:[/grey74] [grey50]{self.output_dir}[/grey50]
 """
-        return Panel(content, title="Current Job", border_style="green")
+        return Panel(
+            content, 
+            title="[bold grey93]⚰ The Reaper's Chronicle ⚰[/bold grey93]",
+            border_style="grey35",
+            box=box.DOUBLE_EDGE,
+            style="on grey7"
+        )
 
     def crawl(self):
         layout = self.generate_layout()
-        layout["header"].update(Panel("🕷️  Protor Crawler", style="bold white on blue"))
-        layout["footer"].update(Panel("Press Ctrl+C to stop", style="italic grey50"))
-
+        
+        layout["header"].update(
+            Panel(
+                "[bold bright_white]⸸ PROTOR CRAWLER ⸸[/bold bright_white]\n[grey50]Harvesting the Digital Abyss[/grey50]",
+                style="bright_white on grey11",
+                box=box.DOUBLE_EDGE,
+                border_style="grey50"
+            )
+        )
+        
+        layout["footer"].update(
+            Panel(
+                "[italic grey50]⚔ Press Ctrl+C to escape this realm ⚔[/italic grey50]",
+                style="grey50 on grey7",
+                box=box.DOUBLE_EDGE,
+                border_style="grey23"
+            )
+        )
+        
         with Live(layout, refresh_per_second=4, console=self.console) as live:
             while self.queue and self.scraped_count < self.max_pages:
                 self.current_url = self.queue.popleft()
                 
                 if self.current_url in self.visited:
                     continue
-                
-                # Update UI
+
+                # UI
+                layout["progress"].update(self.get_progress_bar())
                 layout["current"].update(self.get_status_panel())
                 layout["queue"].update(self.get_queue_table())
-                
+
                 self.visited.add(self.current_url)
                 
-                # Scrape
-                # We silence stdout from scrape_website to not mess up the TUI
-                # In a real scenario we might want to redirect stdout, but for now 
-                # we rely on scrape_website not printing too much or just accepting it might flicker slightly
-                # Actually, scrape_website prints. Let's just run it. 
-                # Ideally we would modify scrape_website to be silent, but for this MVP 
-                # we will just let it run. The TUI might be a bit messy if scrape_website prints.
-                # Let's try to fetch first to get links, then scrape.
-                
-                # Fetch content to get links
                 html, success = fetch_with_curl(self.current_url)
                 
                 if success:
-                    # Extract links
                     new_links = extract_links(html, self.current_url)
                     for link in new_links:
                         if link not in self.visited and link not in self.queue:
                             self.queue.append(link)
                     
-                    # Actually save the data
                     scrape_website(self.current_url, self.output_dir, download_js=False)
                     self.scraped_count += 1
                 
+                layout["progress"].update(self.get_progress_bar())
                 layout["current"].update(self.get_status_panel())
                 layout["queue"].update(self.get_queue_table())
                 
-                time.sleep(0.5) # Be nice
-
-        self.console.print(f"[bold green]Crawl complete![/bold green] Scraped {self.scraped_count} pages.")
+                time.sleep(0.5)
+        
+        self.console.print(f"\n[bold grey93]⸸ The harvest is complete ⸸[/bold grey93] [grey74]{self.scraped_count} souls claimed.[/grey74]\n")

@@ -1,17 +1,21 @@
 import argparse
 import os
+import sys
 import json
+from rich.console import Console
+from rich.panel import Panel
+from rich import box
 from protor.scraper import scrape_multiple
 from protor.analyzer import analyze_with_ollama
 from protor.utils import get_default_output_dir
 from protor.crawler import Crawler
 
-
+console = Console()
 
 def cli():
     parser = argparse.ArgumentParser(
         prog="protor",
-        description="AI-powered website scraping and analysis CLI using curl and Ollama"
+        description="⸸ AI-powered website scraping and analysis CLI using curl and Ollama ⸸"
     )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
@@ -41,67 +45,166 @@ def cli():
     crawl_parser.add_argument("--max-pages", type=int, default=10, help="Maximum pages to scrape")
     crawl_parser.add_argument("--output", "-o", default=None, help="Output folder (default: Downloads)")
 
-
     list_parser = subparsers.add_parser("models", help="List available Ollama models")
 
     args = parser.parse_args()
 
     if args.command == "scrape":
-        output_dir = args.output if args.output else get_default_output_dir()
-        print(f"Scraping {len(args.urls)} URL(s)...")
-        json_file = scrape_multiple(
-            args.urls, 
-            output_dir,
-            download_js=not args.no_js,
-            timeout=args.timeout
-        )
-        print(f"Scraping complete! Data saved to: {json_file}")
+        base_dir = args.output if args.output else get_default_output_dir()
+        
+        try:
+            json_file = scrape_multiple(
+                args.urls, 
+                base_dir,
+                download_js=not args.no_js,
+                timeout=args.timeout
+            )
+        except KeyboardInterrupt:
+            console.print("\n\n[bold grey93]⸸ The harvest was interrupted ⸸[/bold grey93]\n")
+            sys.exit(0)
 
     elif args.command == "analyze":
         if not os.path.exists(args.file):
-            print(f"Scraped data file not found: {args.file}")
-            print("Run 'protor scrape <urls>' first to gather data")
+            console.print()
+            console.print(Panel(
+                f"[bold grey93]⚠ The Tome is Missing ⚠[/bold grey93]\n\n"
+                f"[grey74]Path sought:[/grey74] [grey50]{args.file}[/grey50]\n\n"
+                f"[grey74]Summon data first with:[/grey74]\n"
+                f"[grey50]protor scrape <urls>[/grey50]",
+                box=box.DOUBLE_EDGE,
+                border_style="grey35",
+                style="on grey7"
+            ))
+            console.print()
             return
         
-        print(f"Analyzing with {args.model}...")
+        console.print()
+        console.print(Panel(
+            f"[bold grey93]⸸ Commencing Analysis ⸸[/bold grey93]\n"
+            f"[grey74]Oracle:[/grey74] [bright_white]{args.model}[/bright_white]\n"
+            f"[grey74]Focus:[/grey74] [grey74]{args.focus}[/grey74]\n"
+            f"[grey74]Tome:[/grey74] [grey50]{args.file}[/grey50]",
+            box=box.DOUBLE_EDGE,
+            border_style="grey35",
+            style="on grey7"
+        ))
+        console.print()
+        
         with open(args.file, "r", encoding="utf-8") as f:
             data = json.load(f)
         
-        analyze_with_ollama(data, args.model, args.focus, args.output)
-        print(f"Analysis complete! Report saved to: {args.output}/")
+        # Analysis goes into 'analysis' subdirectory
+        if args.output == "analysis":
+            # Default case - put it in base_dir/analysis
+            base_dir = get_default_output_dir()
+            analysis_output = os.path.join(base_dir, "analysis")
+        else:
+            analysis_output = args.output
+        
+        try:
+            analyze_with_ollama(data, args.model, args.focus, analysis_output)
+        except KeyboardInterrupt:
+            console.print("\n\n[bold grey93]⸸ The divination was interrupted ⸸[/bold grey93]\n")
+            sys.exit(0)
+        
+        console.print()
+        console.print(Panel(
+            f"[bold grey93]⸸ Analysis Complete ⸸[/bold grey93]\n"
+            f"[grey74]Prophecy inscribed in:[/grey74] [grey50]{analysis_output}/[/grey50]",
+            box=box.DOUBLE_EDGE,
+            border_style="grey35",
+            style="on grey7"
+        ))
+        console.print()
 
     elif args.command == "run":
-        output_dir = args.output if args.output else get_default_output_dir()
-        print(f"Starting scrape and analysis pipeline...")
-        print(f"Scraping {len(args.urls)} URL(s)...")
+        base_dir = args.output if args.output else get_default_output_dir()
         
-        json_file = scrape_multiple(
-            args.urls,
-            output_dir,
-            download_js=not args.no_js
-        )
+        console.print()
+        console.print(Panel(
+            f"[bold grey93]⸸ The Complete Ritual ⸸[/bold grey93]\n"
+            f"[grey74]Phase I:[/grey74] [grey50]Harvest[/grey50]\n"
+            f"[grey74]Phase II:[/grey74] [grey50]Divine[/grey50]\n"
+            f"[grey74]Targets:[/grey74] [bright_white]{len(args.urls)}[/bright_white]\n"
+            f"[grey74]Oracle:[/grey74] [bright_white]{args.model}[/bright_white]",
+            box=box.DOUBLE_EDGE,
+            border_style="grey35",
+            style="on grey7"
+        ))
+        console.print()
         
-        print(f"Scraping complete!")
-        print(f"Analyzing with {args.model}...")
+        try:
+            json_file = scrape_multiple(
+                args.urls,
+                base_dir,
+                download_js=not args.no_js
+            )
+        except KeyboardInterrupt:
+            console.print("\n\n[bold grey93]⸸ The harvest was interrupted ⸸[/bold grey93]\n")
+            sys.exit(0)
+        
+        console.print()
+        console.print(Panel(
+            f"[bold grey93]⸸ Phase II: Divination ⸸[/bold grey93]\n"
+            f"[grey74]Consulting the oracle...[/grey74]",
+            box=box.DOUBLE_EDGE,
+            border_style="grey35",
+            style="on grey7"
+        ))
+        console.print()
         
         with open(json_file, "r", encoding="utf-8") as f:
             data = json.load(f)
         
-        analysis_dir = os.path.join(output_dir, "analysis")
-        analyze_with_ollama(data, args.model, args.focus, analysis_dir)
-        print(f"All done! Check the {analysis_dir}/ folder for results")
+        analysis_dir = os.path.join(base_dir, "analysis")
+        
+        try:
+            analyze_with_ollama(data, args.model, args.focus, analysis_dir)
+        except KeyboardInterrupt:
+            console.print("\n\n[bold grey93]⸸ The divination was interrupted ⸸[/bold grey93]\n")
+            sys.exit(0)
+        
+        console.print()
+        console.print(Panel(
+            f"[bold grey93]⸸ The Ritual is Complete ⸸[/bold grey93]\n"
+            f"[grey74]All secrets revealed in:[/grey74]\n"
+            f"[grey50]{analysis_dir}/[/grey50]",
+            box=box.DOUBLE_EDGE,
+            border_style="grey35",
+            style="on grey7"
+        ))
+        console.print()
 
     elif args.command == "models":
+        console.print()
+        console.print(Panel(
+            f"[bold grey93]⸸ Available Oracles ⸸[/bold grey93]\n"
+            f"[grey74]Consulting the spirits...[/grey74]",
+            box=box.DOUBLE_EDGE,
+            border_style="grey35",
+            style="on grey7"
+        ))
+        console.print()
+        
         from protor.analyzer import list_ollama_models
         list_ollama_models()
 
     elif args.command == "crawl":
-        crawler = Crawler(args.url, args.max_pages, args.output)
-        crawler.crawl()
-
+        base_dir = args.output if args.output else get_default_output_dir()
+        crawler_dir = os.path.join(base_dir, "crawler")
+        crawler = Crawler(args.url, args.max_pages, crawler_dir)
+        try:
+            crawler.crawl()
+        except KeyboardInterrupt:
+            console.print("\n\n[bold grey93]⸸ The crawl was interrupted ⸸[/bold grey93]\n")
+            sys.exit(0)
 
     else:
         parser.print_help()
 
 if __name__ == "__main__":
-    cli()
+    try:
+        cli()
+    except KeyboardInterrupt:
+        console.print("\n[bold grey93]⸸ The ritual was aborted ⸸[/bold grey93]\n")
+        sys.exit(0)
