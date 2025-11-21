@@ -8,6 +8,10 @@ setup(
         "requests",
         "beautifulsoup4",
         "rich",
+        "langchain",
+        "langchain-community",
+        "langchain-ollama",
+        "chromadb",
     ],
     entry_points={
         "console_scripts": [

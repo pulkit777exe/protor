@@ -43,7 +43,12 @@ def cli():
     crawl_parser = subparsers.add_parser("crawl", help="Recursively crawl a website")
     crawl_parser.add_argument("url", help="Starting URL")
     crawl_parser.add_argument("--max-pages", type=int, default=10, help="Maximum pages to scrape")
-    crawl_parser.add_argument("--output", "-o", default=None, help="Output folder (default: Downloads)")
+    crawl_parser.add_argument("--output", "-o", default=None, help="Output folder (default: Downloads/protor)")
+    crawl_parser.add_argument("--analyze", action="store_true", help="Enable concurrent RAG analysis")
+    crawl_parser.add_argument("--model", "-m", default="llama3", help="Ollama model for analysis")
+    crawl_parser.add_argument("--focus", choices=["general", "technical", "content", "seo"],
+                            default="general", help="Analysis focus area")
+
 
     list_parser = subparsers.add_parser("models", help="List available Ollama models")
 
@@ -192,7 +197,14 @@ def cli():
     elif args.command == "crawl":
         base_dir = args.output if args.output else get_default_output_dir()
         crawler_dir = os.path.join(base_dir, "crawler")
-        crawler = Crawler(args.url, args.max_pages, crawler_dir)
+        crawler = Crawler(
+            args.url, 
+            args.max_pages, 
+            crawler_dir,
+            analyze=args.analyze,
+            model=args.model,
+            focus=args.focus
+        )
         try:
             crawler.crawl()
         except KeyboardInterrupt:
