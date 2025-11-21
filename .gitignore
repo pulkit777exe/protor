@@ -4,3 +4,6 @@ protor/__pycache__
 protor.egg-info
 data
 analysis
+htmlcov
+.pytest_cache
+.coverage
