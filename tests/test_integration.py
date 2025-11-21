@@ -2,6 +2,7 @@
 import pytest
 import os
 import tempfile
+import json
 import shutil
 from unittest.mock import patch, MagicMock
 from protor.cli import cli
@@ -40,7 +41,7 @@ class TestCLIIntegration:
             {"name": "llama3", "size": 4661224192}
         ]
         
-        with patch('sys.argv', ['protor', 'list-models']):
+        with patch('sys.argv', ['protor', 'models']):
             try:
                 cli()
             except SystemExit:
@@ -48,22 +49,28 @@ class TestCLIIntegration:
         
         mock_list.assert_called_once()
     
-    @patch('protor.analyzer.analyze_with_ollama')
-    @patch('protor.scraper.scrape_website')
-    def test_run_command(self, mock_scrape, mock_analyze):
+    @patch('protor.cli.analyze_with_ollama')
+    @patch('protor.cli.scrape_multiple')
+    def test_run_command(self, mock_scrape_multiple, mock_analyze):
         """Test run command (scrape + analyze)"""
-        mock_scrape.return_value = {"success": True}
+
+        site_dir = os.path.join(self.temp_dir, "example_com")
+        os.makedirs(site_dir, exist_ok=True)
+        json_path = os.path.join(site_dir, "sites_index.json")
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({"sites": [{"url": "https://example.com", "title": "Example"}]}, f)
+
+        mock_scrape_multiple.return_value = json_path
         mock_analyze.return_value = "analysis.md"
-        
-        with patch('sys.argv', ['protor', 'run', 'https://example.com', '--output', self.temp_dir]):
+
+        with patch('sys.argv', ['protor', 'run', 'https://example.com', '-m', 'llama3', '--output', self.temp_dir]):
             try:
                 cli()
             except SystemExit:
                 pass
-        
-        mock_scrape.assert_called_once()
-        mock_analyze.assert_called_once()
 
+        mock_scrape_multiple.assert_called_once()
+        mock_analyze.assert_called_once()
 
 @pytest.mark.integration
 class TestEndToEnd:

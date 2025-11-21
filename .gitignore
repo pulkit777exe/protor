@@ -7,3 +7,4 @@ analysis
 htmlcov
 .pytest_cache
 .coverage
+tests/__pycache__
