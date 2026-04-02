@@ -1,158 +1,177 @@
+"""
+protor.crawler
+~~~~~~~~~~~~~~
+Async recursive site crawler.
+
+Public API
+----------
+    Crawler(start_url, max_pages, output_dir).crawl()
+"""
+
+from __future__ import annotations
+
+import asyncio
 import time
 from collections import deque
+from dataclasses import dataclass, field
+from pathlib import Path
 from urllib.parse import urlparse
-from rich.live import Live
-from rich.layout import Layout
-from rich.panel import Panel
-from rich.table import Table
-from rich.console import Console
-from rich.progress import Progress, BarColumn, TextColumn, TimeRemainingColumn
+
+import aiohttp
 from rich import box
-from protor.scraper import scrape_website, extract_links, fetch_with_curl
-from protor.utils import get_default_output_dir
+from rich.console import Group
+from rich.live import Live
+from rich.rule import Rule
+from rich.table import Table
+from rich.text import Text
+
+from .scraper import _fetch, extract_links, scrape_site_async
+from .theme import OK, ERR, SPIN, console, header_rule, label, bright, muted
+from .utils import get_default_output_dir
+
+__all__ = ["Crawler"]
+
+_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+    ),
+}
+
+
+@dataclass
+class _CrawlLog:
+    status: str   # "ok" | "err" | "active"
+    domain: str
+
+
+@dataclass
+class _State:
+    scraped:  int = 0
+    errors:   int = 0
+    current:  str = ""
+    queue_n:  int = 0
+    max_pages: int = 10
+    log: list[_CrawlLog] = field(default_factory=list)
+
+
+def _render(state: _State, output_dir: str) -> Group:
+    # progress bar
+    filled = "█" * state.scraped
+    empty  = "░" * (state.max_pages - state.scraped)
+    pct    = int(state.scraped / state.max_pages * 100) if state.max_pages else 0
+
+    stat = Table(box=box.SIMPLE, show_header=False, show_edge=False, padding=(0, 1))
+    stat.add_column(width=10, style="grey74")
+    stat.add_column(style="white")
+    stat.add_row("progress", f"[grey50]{filled}[/grey50][grey23]{empty}[/grey23]  [white]{pct}%[/white]  [grey50]{state.scraped}/{state.max_pages}[/grey50]")
+    stat.add_row("current",  muted(state.current[:72]) if state.current else "[grey23]—[/grey23]")
+    stat.add_row("queue",    bright(str(state.queue_n)))
+    stat.add_row("errors",   str(state.errors) if state.errors else "[grey23]0[/grey23]")
+    stat.add_row("output",   muted(output_dir))
+
+    log_t = Table(box=box.SIMPLE, show_header=True, header_style="bold white",
+                  show_edge=False, padding=(0, 1))
+    log_t.add_column("#",      style="grey50", width=4, justify="right")
+    log_t.add_column("Domain", style="white",  min_width=28)
+    log_t.add_column("Status", width=10)
+
+    recent = state.log[-20:]
+    for i, entry in enumerate(recent, max(1, len(state.log) - 19)):
+        if entry.status == "ok":
+            s = Text(f"{OK} done",  style="green")
+        elif entry.status == "err":
+            s = Text(f"{ERR} error", style="red")
+        else:
+            s = Text(f"{SPIN} ...",  style="yellow")
+        log_t.add_row(str(i), entry.domain, s)
+
+    return Group(Rule(style="grey23"), stat, Rule(style="grey23"), log_t)
+
 
 class Crawler:
-    def __init__(self, start_url: str, max_pages: int = 100, output_dir: str = None):
-        self.start_url = start_url
-        self.max_pages = max_pages
-        self.output_dir = output_dir or get_default_output_dir()
-        self.visited = set()
-        self.queue = deque([start_url])
-        self.scraped_count = 0
-        self.current_url = ""
-        self.console = Console()
+    """
+    Async BFS crawler for a single domain.
 
-    def generate_layout(self) -> Layout:
-        layout = Layout()
-        layout.split_column(
-            Layout(name="header", size=3),
-            Layout(name="progress", size=5),
-            Layout(name="body"),
-            Layout(name="footer", size=3)
-        )
-        layout["body"].split_row(
-            Layout(name="current", ratio=2),
-            Layout(name="queue", ratio=1)
-        )
-        return layout
+    Parameters
+    ----------
+    start_url:
+        Seed URL; only pages on the same domain are followed.
+    max_pages:
+        Hard limit on pages scraped.
+    output_dir:
+        Root directory for scraped artefacts.
+    """
 
-    def get_queue_table(self) -> Panel:
-        table = Table(
-            show_header=True, 
-            header_style="bold bright_white on grey11",
-            box=box.DOUBLE_EDGE,
-            border_style="grey35"
-        )
-        table.add_column("⚰ The Queue ⚰", style="grey74", no_wrap=False)
-        
-        for url in list(self.queue)[:10]:
-            table.add_row(f"☩ {url}")
-        
-        if len(self.queue) > 10:
-            table.add_row(f"[dim]...{len(self.queue) - 10} souls await...[/dim]")
-        
-        return Panel(
-            table, 
-            title=f"[bold grey93]⟪ Pending Souls: {len(self.queue)} ⟫[/bold grey93]",
-            border_style="grey35",
-            box=box.DOUBLE_EDGE
-        )
+    def __init__(
+        self,
+        start_url: str,
+        max_pages: int = 10,
+        output_dir: str | Path | None = None,
+    ) -> None:
+        self.start_url  = start_url
+        self.max_pages  = max_pages
+        self.output_dir = Path(output_dir or get_default_output_dir())
 
-    def get_progress_bar(self) -> Panel:
-        """Generate a gothic progress bar panel"""
-        progress = Progress(
-            TextColumn("[bold grey93]{task.description}"),
-            BarColumn(
-                complete_style="grey74 on grey11", 
-                finished_style="bright_white on grey23",
-                bar_width=None
-            ),
-            TextColumn("[grey93]{task.percentage:>3.0f}%"),
-            TextColumn("[grey50]⚔[/grey50]"),
-            TextColumn("[grey74]{task.completed}/{task.total} souls harvested[/grey74]"),
-            expand=True
-        )
-        task = progress.add_task(
-            "⸸ Reaping Progress ⸸", 
-            total=self.max_pages, 
-            completed=self.scraped_count
-        )
-        
-        return Panel(
-            progress, 
-            border_style="grey35",
-            box=box.DOUBLE_EDGE,
-            style="on grey7"
-        )
+        self._visited: set[str]     = set()
+        self._queue:   deque[str]   = deque([start_url])
+        self._state    = _State(max_pages=max_pages)
 
-    def get_status_panel(self) -> Panel:
-        content = f"""
-[bold grey93]⟪ Current Target ⟫[/bold grey93]
-[grey74]☩ {self.current_url}[/grey74]
+    # ── public ────────────────────────────────────────────────────────────────
 
-[bold grey93]⸸ Statistics ⸸[/bold grey93]
-[grey74]├─ Progress:[/grey74] [bright_white]{self.scraped_count}[/bright_white][grey50]/[/grey50][grey74]{self.max_pages}[/grey74]
-[grey74]├─ Souls Claimed:[/grey74] [bright_white]{len(self.visited)}[/bright_white]
-[grey74]└─ Crypt Path:[/grey74] [grey50]{self.output_dir}[/grey50]
-"""
-        return Panel(
-            content, 
-            title="[bold grey93]⚰ The Reaper's Chronicle ⚰[/bold grey93]",
-            border_style="grey35",
-            box=box.DOUBLE_EDGE,
-            style="on grey7"
+    def crawl(self) -> None:
+        """Run the crawl (blocking)."""
+        console.print()
+        console.print(header_rule("Protor — Crawler"))
+        console.print(
+            f"  {label('start')} {bright(self.start_url)}\n"
+            f"  {label('limit')} {bright(str(self.max_pages))} pages"
         )
-
-    def crawl(self):
-        layout = self.generate_layout()
-        
-        layout["header"].update(
-            Panel(
-                "[bold bright_white]⸸ PROTOR CRAWLER ⸸[/bold bright_white]\n[grey50]Harvesting the Digital Abyss[/grey50]",
-                style="bright_white on grey11",
-                box=box.DOUBLE_EDGE,
-                border_style="grey50"
-            )
+        console.print()
+        asyncio.run(self._run())
+        console.print()
+        console.print(
+            f"  {OK} crawl complete — "
+            f"{bright(str(self._state.scraped))} pages scraped"
+            + (f", {self._state.errors} errors" if self._state.errors else "")
         )
-        
-        layout["footer"].update(
-            Panel(
-                "[italic grey50]⚔ Press Ctrl+C to escape this realm ⚔[/italic grey50]",
-                style="grey50 on grey7",
-                box=box.DOUBLE_EDGE,
-                border_style="grey23"
-            )
-        )
-        
-        with Live(layout, refresh_per_second=4, console=self.console) as live:
-            while self.queue and self.scraped_count < self.max_pages:
-                self.current_url = self.queue.popleft()
-                
-                if self.current_url in self.visited:
-                    continue
+        console.print(f"  {label('output')} {muted(str(self.output_dir))}")
+        console.print()
 
-                # UI
-                layout["progress"].update(self.get_progress_bar())
-                layout["current"].update(self.get_status_panel())
-                layout["queue"].update(self.get_queue_table())
+    # ── internal ──────────────────────────────────────────────────────────────
 
-                self.visited.add(self.current_url)
-                
-                html, success = fetch_with_curl(self.current_url)
-                
-                if success:
-                    new_links = extract_links(html, self.current_url)
-                    for link in new_links:
-                        if link not in self.visited and link not in self.queue:
-                            self.queue.append(link)
-                    
-                    scrape_website(self.current_url, self.output_dir, download_js=False)
-                    self.scraped_count += 1
-                
-                layout["progress"].update(self.get_progress_bar())
-                layout["current"].update(self.get_status_panel())
-                layout["queue"].update(self.get_queue_table())
-                
-                time.sleep(0.5)
-        
-        self.console.print(f"\n[bold grey93]⸸ The harvest is complete ⸸[/bold grey93] [grey74]{self.scraped_count} souls claimed.[/grey74]\n")
+    async def _run(self) -> None:
+        connector = aiohttp.TCPConnector(ssl=False, limit=4)
+        async with aiohttp.ClientSession(headers=_HEADERS, connector=connector) as session:
+            with Live(console=console, refresh_per_second=6) as live:
+                while self._queue and self._state.scraped < self.max_pages:
+                    url = self._queue.popleft()
+                    if url in self._visited:
+                        continue
+
+                    self._visited.add(url)
+                    domain = urlparse(url).netloc
+
+                    self._state.current = url
+                    self._state.queue_n = len(self._queue)
+                    self._state.log.append(_CrawlLog("active", domain))
+                    live.update(_render(self._state, str(self.output_dir)))
+
+                    try:
+                        html, _ = await _fetch(session, url)
+                        for link in extract_links(html, url):
+                            if link not in self._visited and link not in self._queue:
+                                self._queue.append(link)
+                        row: dict = {}
+                        await scrape_site_async(session, url, self.output_dir, False, row)
+                        self._state.scraped += 1
+                        self._state.log[-1].status = "ok"
+                    except Exception:  # noqa: BLE001
+                        self._state.errors += 1
+                        self._state.log[-1].status = "err"
+
+                    self._state.queue_n = len(self._queue)
+                    live.update(_render(self._state, str(self.output_dir)))
+                    await asyncio.sleep(0.25)
+
+                live.update(_render(self._state, str(self.output_dir)))

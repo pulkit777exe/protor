@@ -1,288 +1,284 @@
-import os
+"""
+protor.analyzer
+~~~~~~~~~~~~~~~
+Analyze scraped sites using a locally-running Ollama model.
+
+Public API
+----------
+    analyze_with_ollama(data, model, focus, output_dir)
+    list_ollama_models()
+    check_ollama() -> bool
+"""
+
+from __future__ import annotations
+
 import json
+import os
+from pathlib import Path
+from typing import TYPE_CHECKING
+
 import requests
-from typing import Dict, List
-from rich.console import Console
-from rich.panel import Panel
-from rich.progress import Progress, SpinnerColumn, TextColumn
-from rich.live import Live
-from rich.table import Table
 from rich import box
+from rich.table import Table
+
+from .exceptions import OllamaModelNotFoundError, OllamaUnavailableError
+from .models import AnalysisResult, SiteManifest
+from .theme import OK, console, header_rule, section_rule, label, bright, muted, err, info
 from .utils import save_json, timestamp
 
-console = Console()
+if TYPE_CHECKING:
+    pass
 
-ANALYSIS_PROMPTS = {
-    "general": """
-You are an AI analyst. Analyze the scraped website data and provide:
-1. **Overview**: What is this website about?
-2. **Key Content**: Main topics and themes
-3. **Technical Stack**: Technologies detected
-4. **Data Insights**: Interesting patterns or information
-5. **Recommendations**: Potential use cases or improvements
+__all__ = ["analyze_with_ollama", "list_ollama_models", "check_ollama"]
 
-Be concise and insightful.
-""",
-    "technical": """
-You are a technical analyst. Focus on:
-1. **Tech Stack**: Frontend/backend technologies detected
-2. **JavaScript Analysis**: Frameworks, libraries, APIs used
-3. **Performance**: Page structure and optimization opportunities
-4. **Security**: Potential concerns or best practices
-5. **Architecture**: Overall technical approach
-""",
-    "content": """
-You are a content analyst. Focus on:
-1. **Content Quality**: Writing style and clarity
-2. **SEO Elements**: Titles, descriptions, keywords
-3. **Structure**: Information hierarchy and organization
-4. **Engagement**: Call-to-actions and user journey
-5. **Audience**: Target demographic and tone
-""",
-    "seo": """
-You are an SEO specialist. Analyze:
-1. **Meta Tags**: Title, description, keywords quality
-2. **Content Structure**: Headers, semantic HTML
-3. **Technical SEO**: Page speed indicators, mobile-friendliness
-4. **Improvements**: Specific SEO recommendations
-5. **Competitive Edge**: Unique value propositions
-"""
+_OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+_MAX_DATA_CHARS = 8_000
+
+# ── prompts ───────────────────────────────────────────────────────────────────
+
+_PROMPTS: dict[str, str] = {
+    "general": """\
+You are a concise web analyst. Given scraped website data provide:
+1. **Overview** — what this site is and does
+2. **Key Content** — main topics and themes
+3. **Tech Stack** — detected technologies
+4. **Insights** — interesting patterns
+5. **Recommendations** — improvements or use cases
+Be direct. Use Markdown. No filler.""",
+
+    "technical": """\
+You are a technical analyst. Analyse:
+1. **Tech Stack** — frontend/backend technologies
+2. **JavaScript** — frameworks, libraries, detected APIs
+3. **Performance** — page structure and bottlenecks
+4. **Security** — potential concerns
+5. **Architecture** — overall design approach
+Be specific. Use Markdown.""",
+
+    "content": """\
+You are a content strategist. Analyse:
+1. **Content Quality** — writing style, clarity, depth
+2. **SEO Elements** — title, description, keyword usage
+3. **Structure** — information hierarchy
+4. **Engagement** — CTAs and user journey
+5. **Audience** — target demographic and tone
+Be actionable. Use Markdown.""",
+
+    "seo": """\
+You are an SEO specialist. Analyse:
+1. **Meta Tags** — title, description, keyword quality
+2. **Content Structure** — headings, semantic HTML
+3. **Technical SEO** — speed indicators, crawlability
+4. **Quick Wins** — highest-impact improvements
+5. **Value Props** — unique content strengths
+Be specific. Use Markdown.""",
 }
 
-def check_ollama_connection() -> bool:
-    """Check if Ollama is running"""
+FOCUS_CHOICES = list(_PROMPTS.keys())
+
+
+# ── Ollama helpers ────────────────────────────────────────────────────────────
+
+def check_ollama(base: str = _OLLAMA_BASE) -> bool:
+    """Return True if Ollama is reachable."""
     try:
-        response = requests.get("http://localhost:11434/api/tags", timeout=5)
-        return response.status_code == 200
+        return requests.get(f"{base}/api/tags", timeout=5).status_code == 200
     except Exception:
         return False
 
-def list_ollama_models():
-    """List available Ollama models"""
-    try:
-        response = requests.get("http://localhost:11434/api/tags", timeout=5)
-        if response.status_code == 200:
-            models = response.json().get("models", [])
-            if models:
-                table = Table(
-                    show_header=True,
-                    header_style="bold grey93 on grey11",
-                    box=box.DOUBLE_EDGE,
-                    border_style="grey35"
-                )
-                table.add_column("Oracle", style="grey74")
-                table.add_column("Size", style="grey50", justify="right")
-                
-                for model in models:
-                    name = model.get("name", "unknown")
-                    size = model.get("size", 0) / (1024**3)
-                    table.add_row(name, f"{size:.1f} GB")
-                
-                console.print()
-                console.print(Panel(
-                    table,
-                    title="[bold grey93]⟪ Available Oracles ⟫[/bold grey93]",
-                    box=box.DOUBLE_EDGE,
-                    border_style="grey35",
-                    style="on grey7"
-                ))
-                console.print()
-            else:
-                console.print()
-                console.print(Panel(
-                    "[grey74]No oracles found in the realm.[/grey74]\n\n"
-                    "[grey50]Summon an oracle with:[/grey50]\n"
-                    "[grey74]ollama pull <model-name>[/grey74]",
-                    title="[bold grey93]⚠ Empty Sanctuary ⚠[/bold grey93]",
-                    box=box.DOUBLE_EDGE,
-                    border_style="grey35",
-                    style="on grey7"
-                ))
-                console.print()
+
+def _list_models(base: str = _OLLAMA_BASE) -> list[dict]:
+    r = requests.get(f"{base}/api/tags", timeout=5)
+    r.raise_for_status()
+    return r.json().get("models", [])
+
+
+def _model_exists(model: str, base: str = _OLLAMA_BASE) -> bool:
+    return any(m.get("name") == model for m in _list_models(base))
+
+
+def list_ollama_models(base: str = _OLLAMA_BASE) -> None:
+    console.print()
+    console.print(header_rule("Available Models"))
+    console.print()
+
+    if not check_ollama(base):
+        console.print(f"  {err('Ollama not running.')}")
+        console.print(f"  {info('Start with: ollama serve')}")
+        console.print()
+        return
+
+    models = _list_models(base)
+    if not models:
+        console.print(f"  ! No models installed.")
+        console.print(f"  {info('Pull one with: ollama pull llama3')}")
+        console.print()
+        return
+
+    t = Table(box=box.SIMPLE, show_header=True, header_style="bold white",
+              show_edge=False, padding=(0, 1))
+    t.add_column("Model",    style="white",  min_width=30)
+    t.add_column("Size",     style="grey74", width=10,  justify="right")
+    t.add_column("Modified", style="grey50", width=12)
+
+    for m in models:
+        gb  = m.get("size", 0) / (1024 ** 3)
+        mod = m.get("modified_at", "")[:10]
+        t.add_row(m.get("name", "?"), f"{gb:.1f} GB", mod)
+
+    console.print(t)
+    console.print()
+
+
+# ── data preparation ──────────────────────────────────────────────────────────
+
+def _prepare_context(data: list[dict | SiteManifest]) -> str:
+    """Flatten site data into a concise LLM context string."""
+    parts: list[str] = []
+    for i, site in enumerate(data, 1):
+        if isinstance(site, SiteManifest):
+            d = site.to_dict()
         else:
-            console.print("[grey50]⟡ Cannot reach the spirit realm[/grey50]")
-    except Exception as e:
-        console.print()
-        console.print(Panel(
-            f"[grey74]Connection failed:[/grey74] [grey50]{e}[/grey50]\n\n"
-            "[grey74]Ensure Ollama serves:[/grey74]\n"
-            "[grey50]ollama serve[/grey50]",
-            title="[bold grey93]⚠ Oracle Unreachable ⚠[/bold grey93]",
-            box=box.DOUBLE_EDGE,
-            border_style="grey35",
-            style="on grey7"
-        ))
-        console.print()
-
-def prepare_analysis_data(data: List[Dict], max_chars: int = 6000) -> str:
-    """Prepare scraped data for analysis"""
-    summary = []
-    
-    for idx, site in enumerate(data, 1):
-        site_info = f"""
-## Site {idx}: {site.get('domain', 'Unknown')}
-- **URL**: {site.get('url', 'N/A')}
-- **Title**: {site.get('metadata', {}).get('title', 'N/A')}
-- **Description**: {site.get('metadata', {}).get('description', 'N/A')}
-- **JavaScript Files**: {site.get('js_count', 0)}
-
-### Content Preview:
-{site.get('text_content', '')[:1000]}
-"""
-        summary.append(site_info)
-    
-    full_text = "\n---\n".join(summary)
-    
-    if len(full_text) > max_chars:
-        full_text = full_text[:max_chars] + "\n\n[Content truncated...]"
-    
-    return full_text
-
-def stream_ollama_response(model: str, prompt: str) -> str:
-    """Stream response from Ollama API"""
-    endpoint = "http://localhost:11434/api/generate"
-    
-    try:
-        response = requests.post(
-            endpoint,
-            json={
-                "model": model,
-                "prompt": prompt,
-                "stream": True
-            },
-            stream=True,
-            timeout=300
+            d = site
+        m = d.get("metadata", {})
+        parts.append(
+            f"## [{i}] {d.get('domain', 'unknown')}\n"
+            f"URL: {d.get('url', '')}\n"
+            f"Title: {m.get('title', '')}\n"
+            f"Description: {m.get('description', '')}\n"
+            f"JS files: {d.get('js_count', 0)}\n\n"
+            f"### Content preview\n{d.get('text_content', '')[:1_500]}\n"
         )
-        
-        if response.status_code != 200:
-            return f"Error: Ollama returned status {response.status_code}"
-        
-        full_response = []
-        
-        console.print()
-        console.print("[grey50]" + "─" * 60 + "[/grey50]")
-        console.print("[grey74 italic]⟡ The oracle speaks...[/grey74 italic]")
-        console.print("[grey50]" + "─" * 60 + "[/grey50]")
-        console.print()
-        
-        for line in response.iter_lines():
-            if line:
-                try:
-                    chunk = json.loads(line)
-                    if "response" in chunk:
-                        text = chunk["response"]
-                        console.print(text, end="", style="grey74")
-                        full_response.append(text)
-                    
-                    if chunk.get("done", False):
-                        break
-                except json.JSONDecodeError:
-                    continue
-        
-        console.print()
-        console.print()
-        console.print("[grey50]" + "─" * 60 + "[/grey50]")
-        console.print()
-        
-        return "".join(full_response)
-        
-    except requests.exceptions.Timeout:
-        return "Error: Request timed out. Try a smaller model or reduce data size."
-    except Exception as e:
-        return f"Error communicating with Ollama: {str(e)}"
 
-def analyze_with_ollama(data: List[Dict], model: str = "llama3", focus: str = "general", output_dir: str = "analysis"):
-    """Analyze scraped data using Ollama"""
-    
-    if not check_ollama_connection():
-        console.print()
-        console.print(Panel(
-            "[bold grey93]⚠ Oracle Unavailable ⚠[/bold grey93]\n\n"
-            "[grey74]Cannot establish connection to Ollama[/grey74]\n\n"
-            "[grey50]Ensure the oracle serves:[/grey50]\n"
-            "[grey74]1. Start Ollama:[/grey74] [grey50]ollama serve[/grey50]\n"
-            "[grey74]2. Summon a model:[/grey74] [grey50]ollama pull llama3[/grey50]",
-            box=box.DOUBLE_EDGE,
-            border_style="grey35",
-            style="on grey7"
-        ))
-        console.print()
-        return
-    
+    full = "\n---\n".join(parts)
+    if len(full) > _MAX_DATA_CHARS:
+        full = full[:_MAX_DATA_CHARS] + "\n\n[truncated]"
+    return full
+
+
+# ── streaming ─────────────────────────────────────────────────────────────────
+
+def _stream(model: str, prompt: str, base: str = _OLLAMA_BASE) -> str:
+    """POST to Ollama and stream response tokens to the terminal."""
+    full: list[str] = []
+
     console.print()
-    console.print(Panel(
-        f"[bold grey93]⸸ Preparing the Divination ⸸[/bold grey93]\n"
-        f"[grey74]Oracle:[/grey74] [bright_white]{model}[/bright_white]\n"
-        f"[grey74]Focus:[/grey74] [grey74]{focus}[/grey74]\n"
-        f"[grey74]Souls to divine:[/grey74] [bright_white]{len(data)}[/bright_white]\n\n"
-        f"[grey50 italic]The ritual may take a moment...[/grey50 italic]",
-        box=box.DOUBLE_EDGE,
-        border_style="grey35",
-        style="on grey7"
-    ))
-    
-    data_summary = prepare_analysis_data(data)
-    analysis_prompt = ANALYSIS_PROMPTS.get(focus, ANALYSIS_PROMPTS["general"])
-    
-    full_prompt = f"""{analysis_prompt}
-
-## Scraped Website Data:
-{data_summary}
-
-Provide your analysis in well-formatted Markdown:
-"""
-    
-    result = stream_ollama_response(model, full_prompt)
-    
-    if result.startswith("Error:"):
-        console.print()
-        console.print(Panel(
-            f"[grey74]{result}[/grey74]",
-            title="[bold grey93]⚠ Divination Failed ⚠[/bold grey93]",
-            box=box.DOUBLE_EDGE,
-            border_style="grey35",
-            style="on grey7"
-        ))
-        console.print()
-        return
-    
-    os.makedirs(output_dir, exist_ok=True)
-    
-    analysis_data = {
-        "model": model,
-        "focus": focus,
-        "timestamp": timestamp(),
-        "sites_analyzed": len(data),
-        "analysis": result
-    }
-    save_json(analysis_data, os.path.join(output_dir, "analysis.json"))
-    
-    md_content = f"""# Website Analysis Report
-
-**Generated**: {timestamp()}  
-**Model**: {model}  
-**Focus**: {focus}  
-**Sites Analyzed**: {len(data)}
-
----
-
-{result}
-
----
-
-*Generated by Protor - AI-powered web scraping & analysis*
-"""
-    
-    with open(os.path.join(output_dir, "README.md"), "w", encoding="utf-8") as f:
-        f.write(md_content)
-    
+    console.print(section_rule(f"Response · {model}"))
     console.print()
-    console.print(Panel(
-        f"[bold grey93]⸸ Prophecy Inscribed ⸸[/bold grey93]\n"
-        f"[grey74]Tome:[/grey74] [grey50]{output_dir}/README.md[/grey50]\n"
-        f"[grey74]Scroll:[/grey74] [grey50]{output_dir}/analysis.json[/grey50]",
-        box=box.DOUBLE_EDGE,
-        border_style="grey35",
-        style="on grey7"
-    ))
+
+    resp = requests.post(
+        f"{base}/api/generate",
+        json={"model": model, "prompt": prompt, "stream": True},
+        stream=True,
+        timeout=300,
+    )
+
+    if resp.status_code == 404:
+        raise OllamaModelNotFoundError(model)
+    resp.raise_for_status()
+
+    for line in resp.iter_lines():
+        if not line:
+            continue
+        try:
+            chunk = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        text = chunk.get("response", "")
+        if text:
+            console.print(text, end="", style="grey85")
+            full.append(text)
+        if chunk.get("done"):
+            break
+
     console.print()
+    console.print()
+    console.print(section_rule("end"))
+    console.print()
+    return "".join(full)
+
+
+# ── public entry point ────────────────────────────────────────────────────────
+
+def analyze_with_ollama(
+    data: list[dict | SiteManifest],
+    model: str = "llama3",
+    focus: str = "general",
+    output_dir: str | Path = "analysis",
+    *,
+    base_url: str = _OLLAMA_BASE,
+) -> AnalysisResult:
+    """
+    Analyse scraped *data* with a locally-running Ollama *model*.
+
+    Parameters
+    ----------
+    data:
+        List of SiteManifest dicts (output of scrape_multiple).
+    model:
+        Ollama model name, e.g. ``"llama3"``, ``"mistral"``.
+    focus:
+        One of ``"general"``, ``"technical"``, ``"content"``, ``"seo"``.
+    output_dir:
+        Directory to write ``README.md`` and ``analysis.json``.
+    base_url:
+        Ollama base URL (override with ``OLLAMA_HOST`` env var).
+
+    Returns
+    -------
+    AnalysisResult
+
+    Raises
+    ------
+    OllamaUnavailableError
+        If Ollama is not running.
+    OllamaModelNotFoundError
+        If the requested model is not installed.
+    """
+    console.print()
+    console.print(header_rule("Protor — Analyzer"))
+    console.print()
+
+    if not check_ollama(base_url):
+        raise OllamaUnavailableError(base_url)
+
+    console.print(
+        f"  {label('model')} {bright(model)}   "
+        f"{label('focus')} {bright(focus)}   "
+        f"{label('sites')} {bright(str(len(data)))}"
+    )
+    console.print()
+
+    sys_prompt = _PROMPTS.get(focus, _PROMPTS["general"])
+    full_prompt = f"{sys_prompt}\n\n## Scraped Data\n\n{_prepare_context(data)}\n\nAnalysis:"
+
+    raw = _stream(model, full_prompt, base_url)
+
+    result = AnalysisResult(
+        model=model,
+        focus=focus,
+        timestamp=timestamp(),
+        sites_analyzed=len(data),
+        analysis=raw,
+    )
+
+    out = Path(output_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    save_json(result.to_dict(), out / "analysis.json")
+
+    md = (
+        f"# Website Analysis Report\n\n"
+        f"**Generated:** {result.timestamp}  \n"
+        f"**Model:** `{model}`  \n"
+        f"**Focus:** {focus}  \n"
+        f"**Sites:** {len(data)}\n\n---\n\n{raw}\n\n---\n*Generated by Protor*\n"
+    )
+    (out / "README.md").write_text(md, encoding="utf-8")
+
+    console.print(
+        f"  {OK} {label('saved')} "
+        f"{muted(str(out / 'README.md'))}  "
+        f"{muted(str(out / 'analysis.json'))}"
+    )
+    console.print()
+    return result

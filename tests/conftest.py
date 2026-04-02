@@ -1,80 +1,85 @@
-"""Test fixtures and utilities for protor tests"""
-import pytest
-import os
-import tempfile
-import shutil
+"""Shared pytest fixtures for protor tests."""
+
+from __future__ import annotations
+
+import json
 from pathlib import Path
 
+import pytest
+
+from protor.models import SiteManifest, SiteMetadata
+
+
+# ── HTML fixtures ─────────────────────────────────────────────────────────────
+
+SIMPLE_HTML = """\
+<!DOCTYPE html>
+<html>
+<head>
+  <title>Test Site</title>
+  <meta name="description" content="A test description.">
+  <meta name="keywords" content="test, python, scraper">
+  <meta name="author" content="Pulkit">
+  <meta property="og:title" content="Test OG Title">
+</head>
+<body>
+  <nav>Navigation</nav>
+  <h1>Hello World</h1>
+  <p>This is the main content of the page.</p>
+  <a href="/about">About</a>
+  <a href="/contact">Contact</a>
+  <a href="https://external.com/page">External</a>
+  <script src="/static/app.js"></script>
+  <script src="https://cdn.example.com/lib.js"></script>
+  <footer>Footer text</footer>
+</body>
+</html>
+"""
+
+EMPTY_HTML = "<html><body></body></html>"
+
+
+# ── manifest fixture ──────────────────────────────────────────────────────────
 
 @pytest.fixture
-def temp_dir():
-    """Create a temporary directory for tests"""
-    temp_path = tempfile.mkdtemp()
-    yield temp_path
-    shutil.rmtree(temp_path, ignore_errors=True)
-
-
-@pytest.fixture
-def sample_html():
-    """Sample HTML content for testing"""
-    return """
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <title>Test Page</title>
-        <meta name="description" content="A test page">
-        <meta name="keywords" content="test, sample, page">
-        <meta property="og:title" content="Test Page OG">
-        <script src="/js/app.js"></script>
-    </head>
-    <body>
-        <header>
-            <nav>
-                <a href="/about">About</a>
-                <a href="/contact">Contact</a>
-            </nav>
-        </header>
-        <main>
-            <h1>Welcome</h1>
-            <p>This is a test page with some content.</p>
-            <a href="https://example.com/page1">Internal Link 1</a>
-            <a href="https://example.com/page2">Internal Link 2</a>
-            <a href="https://external.com">External Link</a>
-        </main>
-        <footer>Footer content</footer>
-    </body>
-    </html>
-    """
-
-
-@pytest.fixture
-def sample_manifest():
-    """Sample manifest data for testing"""
-    return {
-        "url": "https://example.com",
-        "domain": "example.com",
-        "html_file": "/tmp/example_com/index.html",
-        "metadata": {
-            "title": "Test Page",
-            "description": "A test page",
-            "keywords": ["test", "sample"],
-            "author": "",
-            "og_tags": {"og:title": "Test Page OG"}
-        },
-        "text_content": "Welcome\nThis is a test page with some content.",
-        "js_files": ["https://example.com/js/app.js"],
-        "js_count": 1,
-        "timestamp": "2024-01-01 12:00:00",
-        "success": True
-    }
+def sample_manifest() -> SiteManifest:
+    return SiteManifest(
+        url="https://example.com",
+        domain="example.com",
+        html_file="/tmp/example/index.html",
+        metadata=SiteMetadata(
+            title="Example Domain",
+            description="Example description",
+            keywords=["example", "test"],
+            author="",
+            og_tags={},
+        ),
+        text_content="Example Domain\nThis domain is for use in examples.",
+        js_files=[],
+        js_count=0,
+        bytes_received=1024,
+        elapsed_ms=120,
+        timestamp="2024-01-01 00:00:00",
+        success=True,
+    )
 
 
 @pytest.fixture
-def mock_ollama_response():
-    """Mock Ollama API response"""
-    return {
-        "model": "llama3",
-        "created_at": "2024-01-01T12:00:00Z",
-        "response": "This is a test analysis response.",
-        "done": True
-    }
+def sample_manifests(sample_manifest: SiteManifest) -> list[dict]:
+    return [sample_manifest.to_dict()]
+
+
+# ── temp output dir ───────────────────────────────────────────────────────────
+
+@pytest.fixture
+def tmp_output(tmp_path: Path) -> Path:
+    out = tmp_path / "protor_output"
+    out.mkdir()
+    return out
+
+
+@pytest.fixture
+def sites_index_file(tmp_path: Path, sample_manifests: list[dict]) -> Path:
+    f = tmp_path / "sites_index.json"
+    f.write_text(json.dumps(sample_manifests), encoding="utf-8")
+    return f

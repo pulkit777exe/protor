@@ -1,142 +1,106 @@
-"""Unit tests for protor.utils module"""
-import pytest
-import os
+"""Tests for protor.utils."""
+
+from __future__ import annotations
+
 import json
-from protor.utils import safe_filename, save_json, timestamp, get_default_output_dir
+from pathlib import Path
+
+import pytest
+
+from protor.utils import (
+    get_default_output_dir,
+    human_bytes,
+    load_json,
+    safe_filename,
+    save_json,
+    timestamp,
+)
 
 
 class TestSafeFilename:
-    """Tests for safe_filename function"""
-    
-    def test_basic_alphanumeric(self):
-        """Test that alphanumeric characters are preserved"""
-        assert safe_filename("test123") == "test123"
-    
-    def test_special_characters_replaced(self):
-        """Test that special characters are replaced with underscores"""
-        assert safe_filename("test@#$%file") == "test____file"
-    
-    def test_spaces_replaced(self):
-        """Test that spaces are replaced"""
-        assert safe_filename("test file name") == "test_file_name"
-    
-    def test_url_domain(self):
-        """Test converting URL domain to safe filename"""
-        assert safe_filename("example.com") == "example_com"
-    
-    def test_empty_string(self):
-        """Test empty string input"""
-        assert safe_filename("") == ""
-    
-    def test_hyphens_preserved(self):
-        """Test that hyphens are preserved"""
-        assert safe_filename("test-file-name") == "test-file-name"
-    
-    def test_underscores_preserved(self):
-        """Test that underscores are preserved"""
-        assert safe_filename("test_file_name") == "test_file_name"
+    def test_simple_domain(self):
+        assert safe_filename("example.com") == "example.com"
+
+    def test_replaces_special_chars(self):
+        result = safe_filename("hello world/path?query=1")
+        assert " " not in result
+        assert "/" not in result
+        assert "?" not in result
+        assert "=" not in result
+
+    def test_preserves_alphanum_dots_dashes(self):
+        assert safe_filename("my-file_name.js") == "my-file_name.js"
+
+    def test_empty_string_returns_unnamed(self):
+        assert safe_filename("") == "unnamed"
+
+    def test_strips_leading_trailing_underscores(self):
+        result = safe_filename("!hello!")
+        assert not result.startswith("_")
+        assert not result.endswith("_")
+
+    def test_url_encoded_chars(self):
+        r = safe_filename("https://example.com/page")
+        assert "https" in r
+        assert "example" in r
 
 
-class TestSaveJson:
-    """Tests for save_json function"""
-    
-    def test_save_simple_dict(self, temp_dir):
-        """Test saving a simple dictionary"""
-        data = {"key": "value", "number": 42}
-        path = os.path.join(temp_dir, "test.json")
-        
+class TestSaveLoadJson:
+    def test_round_trip(self, tmp_path: Path):
+        data = {"key": "value", "number": 42, "list": [1, 2, 3]}
+        path = tmp_path / "sub" / "data.json"
         save_json(data, path)
-        
-        assert os.path.exists(path)
-        with open(path, 'r') as f:
-            loaded = json.load(f)
+        assert path.exists()
+        loaded = load_json(path)
         assert loaded == data
-    
-    def test_creates_directory(self, temp_dir):
-        """Test that save_json creates parent directories"""
-        data = {"test": "data"}
-        path = os.path.join(temp_dir, "subdir", "nested", "test.json")
-        
+
+    def test_creates_parent_dirs(self, tmp_path: Path):
+        path = tmp_path / "a" / "b" / "c" / "data.json"
+        save_json({"x": 1}, path)
+        assert path.exists()
+
+    def test_load_nonexistent_raises(self, tmp_path: Path):
+        with pytest.raises(FileNotFoundError):
+            load_json(tmp_path / "missing.json")
+
+    def test_save_unicode(self, tmp_path: Path):
+        data = {"emoji": "🚀", "japanese": "日本語"}
+        path = tmp_path / "unicode.json"
         save_json(data, path)
-        
-        assert os.path.exists(path)
-    
-    def test_unicode_content(self, temp_dir):
-        """Test saving unicode content"""
-        data = {"message": "Hello 世界 🌍"}
-        path = os.path.join(temp_dir, "unicode.json")
-        
-        save_json(data, path)
-        
-        with open(path, 'r', encoding='utf-8') as f:
-            loaded = json.load(f)
-        assert loaded == data
-    
-    def test_nested_structure(self, temp_dir):
-        """Test saving nested data structures"""
-        data = {
-            "level1": {
-                "level2": {
-                    "level3": ["a", "b", "c"]
-                }
-            }
-        }
-        path = os.path.join(temp_dir, "nested.json")
-        
-        save_json(data, path)
-        
-        with open(path, 'r') as f:
-            loaded = json.load(f)
-        assert loaded == data
+        loaded = load_json(path)
+        assert loaded["emoji"] == "🚀"
+        assert loaded["japanese"] == "日本語"
+
+    def test_pretty_printed(self, tmp_path: Path):
+        path = tmp_path / "pretty.json"
+        save_json({"a": 1}, path)
+        raw = path.read_text()
+        assert "\n" in raw  # indented
 
 
 class TestTimestamp:
-    """Tests for timestamp function"""
-    
-    def test_returns_string(self):
-        """Test that timestamp returns a string"""
-        result = timestamp()
-        assert isinstance(result, str)
-    
     def test_format(self):
-        """Test timestamp format"""
-        result = timestamp()
-        # Should be in format: YYYY-MM-DD HH:MM:SS
-        parts = result.split()
-        assert len(parts) == 2
-        date_parts = parts[0].split('-')
-        assert len(date_parts) == 3
-        time_parts = parts[1].split(':')
-        assert len(time_parts) == 3
-    
-    def test_different_calls(self):
-        """Test that consecutive calls produce valid timestamps"""
-        ts1 = timestamp()
-        ts2 = timestamp()
-        # Both should be valid strings
-        assert isinstance(ts1, str)
-        assert isinstance(ts2, str)
+        ts = timestamp()
+        import re
+        assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", ts)
 
 
-class TestGetDefaultOutputDir:
-    """Tests for get_default_output_dir function"""
-    
-    def test_returns_string(self):
-        """Test that function returns a string"""
-        result = get_default_output_dir()
-        assert isinstance(result, str)
-    
-    def test_contains_downloads(self):
-        """Test that path contains Downloads directory"""
-        result = get_default_output_dir()
-        assert "Downloads" in result
-    
-    def test_contains_protor(self):
-        """Test that path contains protor subdirectory"""
-        result = get_default_output_dir()
-        assert "protor" in result
-    
-    def test_is_absolute_path(self):
-        """Test that returned path is absolute"""
-        result = get_default_output_dir()
-        assert os.path.isabs(result)
+class TestHumanBytes:
+    @pytest.mark.parametrize("n,expected", [
+        (0,       "0 B"),
+        (512,     "512 B"),
+        (1024,    "1 KB"),
+        (1536,    "1 KB"),
+        (1_048_576, "1 MB"),
+        (1_073_741_824, "1 GB"),
+    ])
+    def test_units(self, n: int, expected: str):
+        assert human_bytes(n) == expected
+
+
+class TestDefaultOutputDir:
+    def test_returns_path(self):
+        p = get_default_output_dir()
+        assert isinstance(p, Path)
+        assert "protor" in p.parts
+        assert "Downloads" in p.parts

@@ -1,7 +1,6 @@
-subprocess
-json
-requests
+requests 
 bs4
-os
-time
-rich
+rich 
+aiohttp 
+beautifulsoup4 
+lxml
