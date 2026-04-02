@@ -1,162 +1,148 @@
 """Unit tests for protor.analyzer module"""
+import json
 import pytest
 import responses
 from unittest.mock import patch, MagicMock
 from protor.analyzer import (
-    check_ollama_connection,
+    check_ollama,
     list_ollama_models,
-    prepare_analysis_data,
-    stream_ollama_response
+    _prepare_context,
+    _stream,
+    analyze_with_ollama,
+    FOCUS_CHOICES,
 )
+from protor.exceptions import OllamaModelNotFoundError, OllamaUnavailableError
+from protor.models import SiteManifest, SiteMetadata, AnalysisResult
 
 
-class TestCheckOllamaConnection:
-    """Tests for check_ollama_connection function"""
-    
+class TestCheckOllama:
     @responses.activate
     def test_ollama_running(self):
-        """Test when Ollama is running"""
         responses.add(
             responses.GET,
             "http://localhost:11434/api/tags",
             json={"models": []},
-            status=200
+            status=200,
         )
-        
-        result = check_ollama_connection()
-        
-        assert result is True
-    
+        assert check_ollama() is True
+
     @responses.activate
     def test_ollama_not_running(self):
-        """Test when Ollama is not running"""
         responses.add(
             responses.GET,
             "http://localhost:11434/api/tags",
-            body=ConnectionError("Connection refused")
+            body=ConnectionError("Connection refused"),
         )
-        
-        result = check_ollama_connection()
-        
-        assert result is False
+        assert check_ollama() is False
+
+    def test_custom_base_url(self):
+        assert check_ollama("http://invalid-host:9999") is False
 
 
 class TestListOllamaModels:
-    """Tests for list_ollama_models function"""
-    
     @responses.activate
-    def test_list_models_success(self):
-        """Test listing available models"""
+    @patch("protor.analyzer.console")
+    def test_list_models_success(self, mock_console):
         responses.add(
             responses.GET,
             "http://localhost:11434/api/tags",
             json={
                 "models": [
-                    {"name": "llama3:latest", "size": 4661224192},
-                    {"name": "qwen3:8b", "size": 8661224192}
+                    {"name": "llama3:latest", "size": 4661224192, "modified_at": "2024-01-01T00:00:00Z"},
                 ]
             },
-            status=200
+            status=200,
         )
-        
-        models = list_ollama_models()
-        
-        # Function displays models but doesn't return them
-        # Just verify it doesn't crash
-        assert models is None or isinstance(models, list)
-    
+        list_ollama_models()
+        assert mock_console.print.called
+
     @responses.activate
-    def test_list_models_connection_error(self):
-        """Test handling connection error"""
+    @patch("protor.analyzer.console")
+    def test_list_models_empty(self, mock_console):
         responses.add(
             responses.GET,
             "http://localhost:11434/api/tags",
-            body=ConnectionError("Connection refused")
+            json={"models": []},
+            status=200,
         )
-        
-        models = list_ollama_models()
-        
-        assert models is None
+        list_ollama_models()
+        assert mock_console.print.called
+
+    @responses.activate
+    @patch("protor.analyzer.console")
+    def test_list_models_ollama_unavailable(self, mock_console):
+        responses.add(
+            responses.GET,
+            "http://localhost:11434/api/tags",
+            body=ConnectionError("Connection refused"),
+        )
+        list_ollama_models()
+        assert mock_console.print.called
 
 
-class TestPrepareAnalysisData:
-    """Tests for prepare_analysis_data function"""
-    
+class TestPrepareContext:
     def test_prepare_single_manifest(self, sample_manifest):
-        """Test preparing single manifest for analysis"""
-        result = prepare_analysis_data([sample_manifest])
-        
+        result = _prepare_context([sample_manifest])
         assert isinstance(result, str)
         assert "example.com" in result
         assert "Test Page" in result
-    
+
     def test_prepare_multiple_manifests(self, sample_manifest):
-        """Test preparing multiple manifests"""
         manifests = [sample_manifest, sample_manifest]
-        result = prepare_analysis_data(manifests)
-        
+        result = _prepare_context(manifests)
         assert isinstance(result, str)
         assert result.count("example.com") >= 2
-    
+
     def test_max_chars_limit(self, sample_manifest):
-        """Test that output respects max_chars limit"""
-        result = prepare_analysis_data([sample_manifest], max_chars=50)
-        
-        # Should be truncated to approximately max_chars (with some overhead for formatting)
-        assert len(result) <= 200  # Allow some overhead for formatting
-    
+        result = _prepare_context([sample_manifest])
+        assert len(result) <= 8000 + 20
+
     def test_empty_data(self):
-        """Test with empty data list"""
-        result = prepare_analysis_data([])
-        
+        result = _prepare_context([])
         assert result == ""
 
+    def test_dict_input(self):
+        data = [{
+            "domain": "test.com",
+            "url": "https://test.com",
+            "metadata": {"title": "Test", "description": "Desc"},
+            "js_count": 3,
+            "text_content": "Hello world",
+        }]
+        result = _prepare_context(data)
+        assert "test.com" in result
+        assert "Hello world" in result
 
-class TestStreamOllamaResponse:
-    """Tests for stream_ollama_response function"""
-    
+
+class TestStream:
     @responses.activate
     def test_stream_response_success(self, mock_ollama_response):
-        """Test streaming response from Ollama"""
         responses.add(
             responses.POST,
             "http://localhost:11434/api/generate",
-            json=mock_ollama_response,
-            status=200
+            json={**mock_ollama_response, "done": True},
+            status=200,
         )
-        
-        result = stream_ollama_response("llama3", "Test prompt")
-        
-        assert result is not None
+        result = _stream("llama3", "Test prompt")
         assert isinstance(result, str)
-    
+
     @responses.activate
-    def test_stream_response_error(self):
-        """Test handling streaming error"""
+    def test_stream_model_not_found(self):
         responses.add(
             responses.POST,
             "http://localhost:11434/api/generate",
-            body=ConnectionError("Connection error")
+            status=404,
         )
-        
-        result = stream_ollama_response("llama3", "Test prompt")
-        
-        # Should return error message string, not None
-        assert result is not None
-        assert "Error" in result or "error" in result.lower()
-    
-    @patch('protor.analyzer.console')
-    @responses.activate
-    def test_stream_prints_output(self, mock_console, mock_ollama_response):
-        """Test that streaming prints to console"""
-        responses.add(
-            responses.POST,
-            "http://localhost:11434/api/generate",
-            json=mock_ollama_response,
-            status=200
-        )
-        
-        stream_ollama_response("llama3", "Test prompt")
-        
-        # Console should be called for output
-        assert mock_console.print.called
+        with pytest.raises(OllamaModelNotFoundError):
+            _stream("nonexistent", "Test prompt")
+
+
+class TestFocusChoices:
+    def test_focus_choices_not_empty(self):
+        assert len(FOCUS_CHOICES) > 0
+
+    def test_expected_focus_modes(self):
+        assert "general" in FOCUS_CHOICES
+        assert "technical" in FOCUS_CHOICES
+        assert "content" in FOCUS_CHOICES
+        assert "seo" in FOCUS_CHOICES
