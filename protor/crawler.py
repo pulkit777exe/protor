@@ -43,6 +43,7 @@ _HEADERS = {
 class _CrawlLog:
     status: str   # "ok" | "err" | "active"
     domain: str
+    note: str = ""
 
 
 @dataclass
@@ -141,7 +142,7 @@ class Crawler:
     # ── internal ──────────────────────────────────────────────────────────────
 
     async def _run(self) -> None:
-        connector = aiohttp.TCPConnector(ssl=False, limit=4)
+        connector = aiohttp.TCPConnector(limit=4)
         async with aiohttp.ClientSession(headers=_HEADERS, connector=connector) as session:
             with Live(console=console, refresh_per_second=6) as live:
                 while self._queue and self._state.scraped < self.max_pages:
@@ -166,9 +167,10 @@ class Crawler:
                         await scrape_site_async(session, url, self.output_dir, False, row)
                         self._state.scraped += 1
                         self._state.log[-1].status = "ok"
-                    except Exception:  # noqa: BLE001
+                    except Exception as exc:  # noqa: BLE001
                         self._state.errors += 1
                         self._state.log[-1].status = "err"
+                        self._state.log[-1].note = str(exc)
 
                     self._state.queue_n = len(self._queue)
                     live.update(_render(self._state, str(self.output_dir)))

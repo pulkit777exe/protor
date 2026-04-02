@@ -35,9 +35,8 @@ def timestamp() -> str:
 
 
 def get_default_output_dir() -> Path:
-    """Return ~/Downloads/protor, cross-platform."""
-    base = Path(os.environ.get("USERPROFILE", "~")).expanduser()
-    return base / "Downloads" / "protor"
+    """Return a sensible default output directory, cross-platform."""
+    return Path.home() / "Downloads" / "protor"
 
 
 def human_bytes(n: int) -> str:

@@ -287,7 +287,7 @@ async def _run_all(
         async with sem:
             return await scrape_site_async(session, url, output_dir, download_js, row)
 
-    connector = aiohttp.TCPConnector(limit=concurrency, ssl=False)
+    connector = aiohttp.TCPConnector(limit=concurrency)
     async with aiohttp.ClientSession(headers=_HEADERS, connector=connector) as session:
         with Live(console=console, refresh_per_second=10) as live:
             task_group = asyncio.gather(
@@ -299,10 +299,8 @@ async def _run_all(
                 await asyncio.sleep(0.08)
             live.update(_build_table(rows))
 
-        raw = await task_group if task_group.done() else []  # already awaited above
+        results = await task_group
 
-    # gather() returns the result after .done(); re-await is a no-op
-    results = task_group.result()
     manifests = [m for m in results if isinstance(m, SiteManifest)]
     return manifests
 
