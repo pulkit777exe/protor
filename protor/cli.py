@@ -77,7 +77,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
         prompt = args.prompt
     elif args.prompt_file:
         prompt = Path(args.prompt_file).read_text(encoding="utf-8")
-    analyze_with_ollama(data, args.model, args.focus, out, prompt=prompt)
+    analyze_with_ollama(data, args.model, args.focus, out, prompt=prompt, fmt=args.format)
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
@@ -206,6 +206,8 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="custom analysis prompt (overrides default)")
     ap.add_argument("--prompt-file",   default=None, metavar="PATH",
                     help="read custom prompt from file")
+    ap.add_argument("--format",        choices=("markdown", "csv", "html", "text"),
+                    default="markdown", help="output format (default: markdown)")
     ap.set_defaults(func=_cmd_analyze)
 
     # ── run (scrape + analyze) ───────────────────────────────────────────────
