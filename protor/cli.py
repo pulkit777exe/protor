@@ -31,7 +31,7 @@ from .exceptions import (
 from .scraper import scrape_multiple
 from .theme import ERR, console, err, info
 from .updater import check_for_update, perform_update
-from .utils import get_default_output_dir, load_json
+from .utils import get_default_output_dir, load_json, validate_url
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -53,6 +53,8 @@ def _load_index(path: str) -> list[dict]:
 # ── command handlers ──────────────────────────────────────────────────────────
 
 def _cmd_scrape(args: argparse.Namespace) -> None:
+    for url in args.urls:
+        validate_url(url)
     base = Path(args.output) if args.output else get_default_output_dir()
     scrape_multiple(
         args.urls,
@@ -74,6 +76,8 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
+    for url in args.urls:
+        validate_url(url)
     base = Path(args.output) if args.output else get_default_output_dir()
     index = scrape_multiple(
         args.urls,
@@ -86,6 +90,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
 
 def _cmd_crawl(args: argparse.Namespace) -> None:
+    validate_url(args.url)
     base = Path(args.output) if args.output else get_default_output_dir()
     Crawler(args.url, args.max_pages, base / "crawler").crawl()
 
@@ -250,3 +255,5 @@ def cli() -> None:
         _abort(str(exc), hint="Run: protor scrape <urls>")
     except ProtorError as exc:
         _abort(str(exc))
+    except ValueError as exc:
+        _abort(str(exc), hint="URLs must include a scheme (http:// or https://)")

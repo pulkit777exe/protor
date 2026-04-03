@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import json
-import os
 import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlparse
 
 
 def safe_filename(name: str) -> str:
@@ -41,8 +41,31 @@ def get_default_output_dir() -> Path:
 
 def human_bytes(n: int) -> str:
     """Human-readable byte count."""
+    value = float(n)
     for unit in ("B", "KB", "MB", "GB"):
-        if n < 1024:
-            return f"{n:.0f} {unit}"
-        n //= 1024
-    return f"{n:.0f} TB"
+        if value < 1024:
+            if unit == "B":
+                return f"{int(value)} {unit}"
+            return f"{value:.1f} {unit}"
+        value /= 1024
+    return f"{value:.1f} TB"
+
+
+def validate_url(url: str) -> str:
+    """Validate and normalise *url*.
+
+    Raises ValueError if the URL is malformed or missing a scheme.
+    Returns the normalised URL string.
+    """
+    if not url or not isinstance(url, str):
+        raise ValueError(f"URL must be a non-empty string, got: {url!r}")
+
+    parsed = urlparse(url)
+    if not parsed.scheme:
+        raise ValueError(f"URL must include a scheme (http/https): {url!r}")
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"URL scheme must be http or https, got: {parsed.scheme!r}")
+    if not parsed.netloc:
+        raise ValueError(f"URL must include a hostname: {url!r}")
+
+    return url
