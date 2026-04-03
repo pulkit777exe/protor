@@ -11,12 +11,12 @@ Commands
     protor crawl    <url>
     protor models
     protor version
+    protor update
 """
 
 from __future__ import annotations
 
 import argparse
-import json
 import sys
 from pathlib import Path
 
@@ -30,8 +30,8 @@ from .exceptions import (
 )
 from .scraper import scrape_multiple
 from .theme import ERR, console, err, info
+from .updater import check_for_update, perform_update
 from .utils import get_default_output_dir, load_json
-
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -97,6 +97,54 @@ def _cmd_models(_args: argparse.Namespace) -> None:
 def _cmd_version(_args: argparse.Namespace) -> None:
     from protor import __version__
     console.print(f"protor {__version__}")
+
+
+def _cmd_update(args: argparse.Namespace) -> None:
+    from .updater import _is_editable_install
+
+    if _is_editable_install():
+        console.print(f"\n  {err('⚠ Editable install detected.')}")
+        console.print(f"  {info('Update via: git pull && pip install -e .')}\n")
+        return
+
+    result = check_for_update()
+
+    if result is None:
+        console.print(f"\n  {err('✗ Failed to check for updates.')}")
+        console.print(f"  {info('Check your internet connection and try again.')}\n")
+        return
+
+    current = result["current"]
+    latest = result["latest"]
+    update_available = result["update_available"]
+
+    if args.check or not update_available:
+        if update_available:
+            console.print(f"\n  Current: {err(current)}  |  Latest: {info(latest)}")
+            console.print(f"  {info('Update available! Run: protor update')}\n")
+        else:
+            console.print(f"\n  ✓ protor is already up to date (v{current})\n")
+        return
+
+    console.print(f"\n  Current: {err(current)}  |  Latest: {info(latest)}")
+
+    if not args.yes:
+        try:
+            confirm = input("\n  Update protor? [y/N]: ").strip().lower()
+            if confirm not in ("y", "yes"):
+                console.print(f"  {info('Update cancelled.')}\n")
+                return
+        except (EOFError, KeyboardInterrupt):
+            console.print(f"\n  {info('Update cancelled.')}\n")
+            return
+
+    console.print(f"\n  Updating protor to v{latest}...")
+
+    if perform_update():
+        console.print(f"  ✓ protor updated to v{latest}\n")
+    else:
+        console.print(f"\n  {err('✗ Update failed.')}")
+        console.print(f"  {info('Try: pip install --upgrade protor')}\n")
 
 
 # ── parser ────────────────────────────────────────────────────────────────────
@@ -171,6 +219,14 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── version ──────────────────────────────────────────────────────────────
     vp = sub.add_parser("version", help="print version and exit")
     vp.set_defaults(func=_cmd_version)
+
+    # ── update ───────────────────────────────────────────────────────────────
+    up = sub.add_parser("update", help="check for updates and upgrade protor")
+    up.add_argument("--check", action="store_true",
+                    help="only check for updates, don't install")
+    up.add_argument("--yes", "-y", action="store_true",
+                    help="skip confirmation prompt")
+    up.set_defaults(func=_cmd_update)
 
     return root
 

@@ -113,6 +113,19 @@ protor run https://site1.com https://site2.com https://site3.com \
 protor version
 ```
 
+### keep it up to date
+
+```bash
+# check for updates
+protor update --check
+
+# update with confirmation
+protor update
+
+# skip the prompt
+protor update -y
+```
+
 ## what the focus modes do
 
 - **general** - overall content, main themes, what the site's about
@@ -232,6 +245,7 @@ protor/
 ├── exceptions.py   # error hierarchy
 ├── config.py       # centralized constants
 ├── theme.py        # rich console theming
+├── updater.py      # pypi update checker
 └── utils.py        # helper stuff
 ```
 

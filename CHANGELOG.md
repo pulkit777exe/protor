@@ -1,5 +1,13 @@
 # Changelog
 
+## [v2.1.0] — 2026-04-03
+
+### New Features
+- Add `update` command to check for and install updates from PyPI
+- Support `--check` flag for version info only
+- Support `-y` flag to skip confirmation prompt
+- Detect editable installs and show appropriate update instructions
+
 ## [v2.0.0] — 2026-04-02
 
 ### Breaking Changes
