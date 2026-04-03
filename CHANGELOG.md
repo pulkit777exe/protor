@@ -1,5 +1,25 @@
 # Changelog
 
+## [v2.4.0] — 2026-04-03
+
+### New Features
+- Add output format options: CSV, HTML, and plain text alongside default markdown
+- Add `--format` flag to `protor analyze` command
+
+### API Changes
+- Clarify `extract_links` as public API with dedicated docstring and tests
+- Bump version to 2.4.0
+
+## [v2.4.0] — 2026-04-03
+
+### New Features
+- Add output format options: CSV, HTML, and plain text alongside default markdown
+- Add `--format` flag to `protor analyze` command
+
+### API Changes
+- Clarify `extract_links` as public API with dedicated docstring and tests
+- Bump version to 2.4.0
+
 ## [v2.3.0] — 2026-04-03
 
 ### New Features
