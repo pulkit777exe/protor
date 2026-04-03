@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from protor import __version__
 from protor.updater import (
     PYPI_URL,
+    _is_editable_install,
     check_for_update,
     get_current_version,
     get_latest_version,
@@ -19,6 +20,91 @@ from protor.updater import (
 class TestGetCurrentVersion:
     def test_returns_installed_version(self):
         assert get_current_version() == __version__
+
+
+class TestIsEditableInstall:
+    def test_current_env_is_editable(self):
+        result = _is_editable_install()
+        assert result is True
+
+    def test_site_packages_install_false(self):
+        with patch("protor.updater.Path") as mock_path:
+            mock_source = MagicMock()
+            mock_source.resolve.return_value = mock_source
+            mock_source.parents = []
+            mock_project = MagicMock()
+            mock_project.resolve.return_value = mock_project
+            mock_project.__truediv__ = MagicMock(return_value=MagicMock())
+
+            def path_factory(p):
+                if "site-packages" in str(p):
+                    return mock_source
+                return mock_project
+
+            mock_path.side_effect = path_factory
+
+            import protor
+            with patch.object(protor, "__file__", "/usr/lib/python3.13/site-packages/protor/__init__.py"):
+                result = _is_editable_install()
+                assert result is False
+
+
+class TestCmdUpdate:
+    def test_check_flag_shows_version_info(self, capsys):
+        from argparse import Namespace
+
+        from protor.cli import _cmd_update
+
+        args = Namespace(check=True, yes=False)
+
+        with patch("protor.updater._is_editable_install", return_value=False), \
+             patch("protor.cli.check_for_update") as mock_check:
+            mock_check.return_value = {
+                "current": "2.0.0",
+                "latest": "2.1.0",
+                "update_available": True,
+            }
+            _cmd_update(args)
+            captured = capsys.readouterr()
+            assert "2.0.0" in captured.out
+            assert "2.1.0" in captured.out
+
+    def test_yes_flag_skips_confirmation(self, capsys):
+        from argparse import Namespace
+
+        from protor.cli import _cmd_update
+
+        args = Namespace(check=False, yes=True)
+
+        with patch("protor.updater._is_editable_install", return_value=False), \
+             patch("protor.cli.check_for_update") as mock_check, \
+             patch("protor.cli.perform_update", return_value=True):
+            mock_check.return_value = {
+                "current": "2.0.0",
+                "latest": "2.1.0",
+                "update_available": True,
+            }
+            _cmd_update(args)
+            captured = capsys.readouterr()
+            assert "updated to v2.1.0" in captured.out
+
+    def test_no_update_available(self, capsys):
+        from argparse import Namespace
+
+        from protor.cli import _cmd_update
+
+        args = Namespace(check=False, yes=False)
+
+        with patch("protor.updater._is_editable_install", return_value=False), \
+             patch("protor.cli.check_for_update") as mock_check:
+            mock_check.return_value = {
+                "current": "2.0.0",
+                "latest": "2.0.0",
+                "update_available": False,
+            }
+            _cmd_update(args)
+            captured = capsys.readouterr()
+            assert "already up to date" in captured.out.lower()
 
 
 class TestGetLatestVersion:
