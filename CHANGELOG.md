@@ -1,5 +1,26 @@
 # Changelog
 
+## [v2.2.0] — 2026-04-03
+
+### New Features
+- Add `update` command to check for and install updates from PyPI
+- Add per-domain rate limiting with configurable politeness delays
+- Add robots.txt support — blocks scraping of disallowed URLs
+- Add `python -m protor` support via `__main__.py`
+- Add URL validation at CLI entry points with helpful error messages
+
+### Improvements
+- Migrate all hardcoded values to `config.py` (crawler delay, concurrency, headers, Ollama base, max data chars)
+- Improve `human_bytes` precision using float division
+- Update CI workflow: replace flake8/black with ruff, add mypy type-checking
+- Support Python 3.11, 3.12, 3.13 in CI matrix
+
+### Bug Fixes
+- Fix pre-existing test failures in `test_scraper.py`, `test_crawler.py`, `test_cli.py`, `test_analyzer.py`
+- Fix `_abort` test that incorrectly expected `SystemExit` when `sys.exit` was mocked
+- Add missing `mock_ollama_response` fixture to `conftest.py`
+- Register `asyncio` marker in pytest configuration
+
 ## [v2.1.0] — 2026-04-03
 
 ### New Features
