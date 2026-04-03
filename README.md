@@ -2,17 +2,16 @@
 
 > scrape websites. analyze with ai. no bs.
 
-a cli tool that actually works. scrapes web content with curl, feeds it to your local ollama models, gets insights. that's it.
+a cli tool that actually works. scrapes web content with async aiohttp, feeds it to your local ollama models, gets insights. that's it.
 
 ## why this exists
 
-because paying for web scraping apis is kinda mid when you can just use curl and a local llm. also because sometimes you need to analyze a bunch of sites and doing it manually is literally painful.
+because paying for web scraping apis is kinda mid when you can just use aiohttp and a local llm. also because sometimes you need to analyze a bunch of sites and doing it manually is literally painful.
 
 ## what you need
 
-- python 3.8+ (obviously)
-- curl (you probably have it)
-- [ollama](https://ollama.ai) running locally
+- python 3.11+
+- [ollama](https://ollama.ai) running locally {with model of your choice}
 
 ### get ollama set up
 
@@ -28,16 +27,18 @@ ollama serve
 
 ## install
 
+### from pypi (recommended)
+
 ```bash
-# clone this
-git clone <your-repo-url>
-cd basic-llm-web-scraper
+pip install protor
+```
 
-# install it
+### from source
+
+```bash
+git clone https://github.com/pulkit777exe/protor.git
+cd protor
 pip install -e .
-
-# or just
-pip install -r requirements.txt
 ```
 
 ## how to use
@@ -61,7 +62,17 @@ protor scrape https://example.com https://another-site.com
 protor scrape https://example.com --no-js
 
 # custom settings
-protor scrape https://example.com --output my_data --timeout 60
+protor scrape https://example.com --output my_data --timeout 60 --concurrency 3
+```
+
+### crawl a whole site
+
+```bash
+# crawl up to 10 pages
+protor crawl https://example.com
+
+# deeper crawl
+protor crawl https://example.com --max-pages 50
 ```
 
 ### analyze what you scraped
@@ -94,6 +105,12 @@ protor run https://site1.com https://site2.com https://site3.com \
   --model mistral \
   --focus seo \
   --no-js
+```
+
+### check your version
+
+```bash
+protor version
 ```
 
 ## what the focus modes do
@@ -177,14 +194,14 @@ ollama list
 ollama pull llama3
 ```
 
-### curl failing
+### connection failing
 
 ```bash
-# test manually
-curl -sL https://example.com
-
 # try longer timeout
 protor scrape https://example.com --timeout 120
+
+# reduce concurrency if getting blocked
+protor scrape https://example.com --concurrency 2
 ```
 
 ### analysis taking forever
@@ -201,22 +218,32 @@ protor scrape https://example.com --timeout 120
 - codellama is best for technical analysis
 - mistral is faster than llama3
 - use custom output dirs for different projects
+- retry logic is built-in for transient failures (429, 5xx)
 
 ## what's inside
 
 ```
 protor/
 ├── cli.py          # command interface
-├── scraper.py      # does the scraping
-├── analyzer.py     # talks to ollama
+├── scraper.py      # async html + js scraper
+├── crawler.py      # bfs site crawler
+├── analyzer.py     # ollama integration
+├── models.py       # typed dataclasses
+├── exceptions.py   # error hierarchy
+├── config.py       # centralized constants
+├── theme.py        # rich console theming
 └── utils.py        # helper stuff
 ```
 
 ## customize it
 
-want different analysis prompts? edit the `ANALYSIS_PROMPTS` in `protor/analyzer.py`
+want different analysis prompts? edit the `_PROMPTS` dict in `protor/analyzer.py`
 
-need different rate limits? check `protor/scraper.py` (0.3s between js files, 1s between sites)
+need different timeouts or concurrency? check `protor/config.py`
+
+## changelog
+
+see [CHANGELOG.md](CHANGELOG.md) for the full history.
 
 ## legal stuff
 
@@ -227,9 +254,9 @@ just don't be weird and scrape sites that explicitly say no. respect robots.txt.
 ## tech stack
 
 - ollama (local llm inference)
-- beautifulsoup (html parsing)
-- requests (http stuff)
-- curl (the goat)
+- beautifulsoup4 + lxml (html parsing)
+- aiohttp (async http)
+- rich (cli output)
 
 ---
 
