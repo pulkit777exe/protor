@@ -1,5 +1,13 @@
 # Changelog
 
+## [v2.3.0] — 2026-04-03
+
+### New Features
+- Add progress callbacks for library users
+- Add custom headers support for auth tokens
+- Add HTTP caching to avoid re-fetching unchanged pages
+- Add custom prompts via CLI `--prompt` flag or file `--prompt-file`
+
 ## [v2.2.0] — 2026-04-03
 
 ### New Features

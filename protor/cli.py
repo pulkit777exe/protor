@@ -72,7 +72,12 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
         if args.output == "analysis"
         else Path(args.output)
     )
-    analyze_with_ollama(data, args.model, args.focus, out)
+    prompt = None
+    if args.prompt:
+        prompt = args.prompt
+    elif args.prompt_file:
+        prompt = Path(args.prompt_file).read_text(encoding="utf-8")
+    analyze_with_ollama(data, args.model, args.focus, out, prompt=prompt)
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
@@ -197,6 +202,10 @@ def _build_parser() -> argparse.ArgumentParser:
                     help="analysis focus (default: general)")
     ap.add_argument("--output", "-o", default="analysis", metavar="DIR",
                     help="output directory (default: ~/Downloads/protor/analysis)")
+    ap.add_argument("--prompt", "-p",  default=None, metavar="TEXT",
+                    help="custom analysis prompt (overrides default)")
+    ap.add_argument("--prompt-file",   default=None, metavar="PATH",
+                    help="read custom prompt from file")
     ap.set_defaults(func=_cmd_analyze)
 
     # ── run (scrape + analyze) ───────────────────────────────────────────────

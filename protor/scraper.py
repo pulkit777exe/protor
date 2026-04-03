@@ -5,10 +5,10 @@ Async HTML + JS scraper built on aiohttp.
 
 Public API
 ----------
-    scrape_multiple(urls, output_dir, *, download_js, timeout, concurrency)
+    scrape_multiple(urls, output_dir, *, download_js, timeout, concurrency, cache, headers, on_progress)
       → str   path to the generated sites_index.json
 
-    scrape_site_async(session, url, output_dir, download_js, row_state)
+    scrape_site_async(session, url, output_dir, download_js, row_state, cache)
       → SiteManifest | None   (None on failure)
 
 Internal helpers are prefixed with _ and are not part of the public API.
@@ -19,8 +19,13 @@ from __future__ import annotations
 import asyncio
 import random
 import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlparse
+
+if TYPE_CHECKING:
+    pass
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -42,13 +47,20 @@ from .config import (
     RETRYABLE_STATUS,
 )
 from .exceptions import FetchError
+from .http_cache import CacheEntry, HTTPCache
 from .models import SiteManifest, SiteMetadata
 from .rate_limiter import DomainRateLimiter
 from .robots import check_robots
 from .theme import ERR, OK, SPIN, bright, console, header_rule, label, muted
 from .utils import human_bytes, safe_filename, save_json, timestamp
 
+
+
 __all__ = ["extract_links", "scrape_multiple", "scrape_site_async"]
+
+
+
+
 
 
 # ── HTML parsing helpers ──────────────────────────────────────────────────────
@@ -114,15 +126,27 @@ async def _fetch(
     url: str,
     timeout: int = DEFAULT_TIMEOUT,
     max_retries: int = MAX_RETRIES,
+    cache: HTTPCache | None = None,
 ) -> tuple[str, int]:
     """
     Fetch *url* with retry logic and return (text, bytes_received).
     Raises FetchError on HTTP >= 400 or connection problems.
     """
+    if cache:
+        cached = cache.get(url)
+        if cached:
+            return cached.body, 0
+
+    conditional = cache.conditional_headers(url) if cache else {}
     last_exc: Exception | None = None
     for attempt in range(max_retries):
         try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+            async with session.get(url, headers=conditional or None, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+                if r.status == 304 and cache:
+                    cached = cache.get(url)
+                    if cached:
+                        return cached.body, 0
+                    raise FetchError(url, "304 Not Modified with no cache entry")
                 if r.status >= 400:
                     if r.status in RETRYABLE_STATUS and attempt < max_retries - 1:
                         delay = RETRY_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 0.5)
@@ -130,7 +154,15 @@ async def _fetch(
                         continue
                     raise FetchError(url, f"HTTP {r.status}")
                 data = await r.read()
-                return data.decode("utf-8", errors="replace"), len(data)
+                text = data.decode("utf-8", errors="replace")
+                if cache:
+                    cache.put(url, CacheEntry(
+                        etag=r.headers.get("ETag"),
+                        last_modified=r.headers.get("Last-Modified"),
+                        body=text,
+                        status=r.status,
+                    ))
+                return text, len(data)
         except TimeoutError as exc:
             last_exc = exc
             if attempt < max_retries - 1:
@@ -217,6 +249,7 @@ async def scrape_site_async(
     output_dir: Path,
     download_js: bool,
     row_state: dict,
+    cache: HTTPCache | None = None,
 ) -> SiteManifest | None:
     """
     Scrape a single *url*.
@@ -232,7 +265,7 @@ async def scrape_site_async(
     t0 = time.perf_counter()
 
     try:
-        html, nbytes = await _fetch(session, url)
+        html, nbytes = await _fetch(session, url, cache=cache)
     except FetchError as exc:
         row_state["status"] = "error"
         row_state["note"]   = str(exc)
@@ -290,7 +323,11 @@ async def _run_all(
     download_js: bool,
     timeout: int,
     concurrency: int,
+    cache: HTTPCache | None = None,
+    headers: dict[str, str] | None = None,
+    on_progress: Callable[[str, str, dict], None] | None = None,
 ) -> tuple[list[SiteManifest], int]:
+    session_headers = {**HEADERS, **(headers or {})}
     rows = [
         {"idx": i + 1, "domain": urlparse(u).netloc or u,
          "status": "waiting", "bytes": None, "ms": None, "js": None, "error": False}
@@ -307,12 +344,17 @@ async def _run_all(
             if not await check_robots(url, session):
                 row["status"] = "blocked"
                 row["error"] = True
+                if on_progress:
+                    on_progress(url, "blocked", row)
                 return None
-            return await scrape_site_async(session, url, output_dir, download_js, row)
+            result = await scrape_site_async(session, url, output_dir, download_js, row, cache=cache)
+            if on_progress:
+                on_progress(url, row.get("status", "done"), row)
+            return result
 
     connector = aiohttp.TCPConnector(limit=concurrency)
     cookie_jar = aiohttp.CookieJar()
-    async with aiohttp.ClientSession(headers=HEADERS, connector=connector, cookie_jar=cookie_jar) as session:
+    async with aiohttp.ClientSession(headers=session_headers, connector=connector, cookie_jar=cookie_jar) as session:
         with Live(console=console, refresh_per_second=10) as live:
             task_group = asyncio.gather(
                 *[_bounded(session, u, rows[i]) for i, u in enumerate(urls)],
@@ -343,6 +385,9 @@ def scrape_multiple(
     download_js: bool = True,
     timeout: int = DEFAULT_TIMEOUT,
     concurrency: int = DEFAULT_CONCURRENCY,
+    cache: HTTPCache | None = None,
+    headers: dict[str, str] | None = None,
+    on_progress: Callable[[str, str, dict], None] | None = None,
 ) -> str:
     """
     Scrape *urls* concurrently and write a ``sites_index.json`` index file.
@@ -359,6 +404,8 @@ def scrape_multiple(
         Per-request timeout in seconds.
     concurrency:
         Maximum simultaneous requests.
+    cache:
+        Optional HTTP cache for conditional requests (ETag/Last-Modified).
 
     Returns
     -------
@@ -367,6 +414,9 @@ def scrape_multiple(
     """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
+
+    if cache is None:
+        cache = HTTPCache()
 
     console.print()
     console.print(header_rule("Protor — Scraper"))
@@ -378,7 +428,7 @@ def scrape_multiple(
     console.print()
 
     manifests, error_count = asyncio.run(
-        _run_all(urls, out, download_js, timeout, concurrency)
+        _run_all(urls, out, download_js, timeout, concurrency, cache=cache, headers=headers, on_progress=on_progress)
     )
 
     ok_n   = sum(1 for m in manifests if m.success)
