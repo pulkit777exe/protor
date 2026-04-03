@@ -37,15 +37,18 @@ from .config import (
     MAX_JS_FILES,
     MAX_RETRIES,
     MAX_TEXT_CHARS,
-    RETRYABLE_STATUS,
+    RATE_LIMIT_DELAY,
     RETRY_BACKOFF_BASE,
+    RETRYABLE_STATUS,
 )
 from .exceptions import FetchError
 from .models import SiteManifest, SiteMetadata
-from .theme import OK, ERR, SPIN, console, header_rule, label, bright, muted
-from .utils import safe_filename, save_json, timestamp, human_bytes
+from .rate_limiter import DomainRateLimiter
+from .robots import check_robots
+from .theme import ERR, OK, SPIN, bright, console, header_rule, label, muted
+from .utils import human_bytes, safe_filename, save_json, timestamp
 
-__all__ = ["scrape_multiple", "scrape_site_async", "extract_links"]
+__all__ = ["extract_links", "scrape_multiple", "scrape_site_async"]
 
 
 # ── HTML parsing helpers ──────────────────────────────────────────────────────
@@ -128,7 +131,7 @@ async def _fetch(
                     raise FetchError(url, f"HTTP {r.status}")
                 data = await r.read()
                 return data.decode("utf-8", errors="replace"), len(data)
-        except asyncio.TimeoutError as exc:
+        except TimeoutError as exc:
             last_exc = exc
             if attempt < max_retries - 1:
                 delay = RETRY_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 0.5)
@@ -157,7 +160,7 @@ async def _download_file(
             if r.status == 200:
                 dest.write_bytes(await r.read())
                 return True
-    except Exception:  # noqa: BLE001
+    except Exception:
         pass
     return False
 
@@ -295,9 +298,16 @@ async def _run_all(
     ]
 
     sem = asyncio.Semaphore(concurrency)
+    limiter = DomainRateLimiter(delay=RATE_LIMIT_DELAY)
 
     async def _bounded(session: aiohttp.ClientSession, url: str, row: dict) -> SiteManifest | None:
         async with sem:
+            domain = urlparse(url).netloc
+            await limiter.wait(domain)
+            if not await check_robots(url, session):
+                row["status"] = "blocked"
+                row["error"] = True
+                return None
             return await scrape_site_async(session, url, output_dir, download_js, row)
 
     connector = aiohttp.TCPConnector(limit=concurrency)

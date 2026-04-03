@@ -25,6 +25,7 @@ from rich.table import Table
 from rich.text import Text
 
 from .config import CRAWLER_CONCURRENCY, CRAWLER_DELAY, DEFAULT_MAX_PAGES, HEADERS
+from .robots import check_robots
 from .scraper import _fetch, extract_links, scrape_site_async
 from .theme import ERR, OK, SPIN, bright, console, header_rule, label, muted
 from .utils import get_default_output_dir
@@ -152,6 +153,10 @@ class Crawler:
                     live.update(_render(self._state, str(self.output_dir)))
 
                     try:
+                        if not await check_robots(url, session):
+                            self._state.log[-1].status = "err"
+                            self._state.log[-1].note = "blocked by robots.txt"
+                            continue
                         html, _ = await _fetch(session, url)
                         for link in extract_links(html, url):
                             if link not in self._visited and link not in self._queue:

@@ -13,6 +13,8 @@ MAX_JS_FILES: int = 15
 MAX_TEXT_CHARS: int = 10_000
 MAX_DATA_CHARS: int = 8_000
 JS_DOWNLOAD_TIMEOUT: int = 15
+RATE_LIMIT_DELAY: float = 0.5
+RATE_LIMIT_DELAY: float = 0.5
 
 # ── crawler ───────────────────────────────────────────────────────────────────
 

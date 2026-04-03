@@ -1,10 +1,17 @@
 """Unit tests for protor.crawler module"""
-import pytest
-from unittest.mock import patch, MagicMock, AsyncMock
 from collections import deque
 from pathlib import Path
+from unittest.mock import AsyncMock, MagicMock, patch
 
-from protor.crawler import Crawler, _CrawlLog, _State, _render
+import pytest
+
+from protor.crawler import Crawler, _CrawlLog, _render, _State
+
+ROBOTS_PATCH = patch("protor.crawler.check_robots", new_callable=AsyncMock, return_value=True)
+
+ROBOTS_PATCH = patch("protor.crawler.check_robots", new_callable=AsyncMock, return_value=True)
+
+ROBOTS_PATCH = patch("protor.crawler.check_robots", new_callable=AsyncMock, return_value=True)
 
 
 class TestCrawlLog:
@@ -90,7 +97,8 @@ class TestCrawlerCrawl:
              patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch, \
              patch("protor.crawler.extract_links", return_value=[]) as mock_links, \
              patch("protor.crawler.scrape_site_async", new_callable=AsyncMock) as mock_scrape, \
-             patch("protor.crawler.Live"):
+             patch("protor.crawler.Live"), \
+             ROBOTS_PATCH:
 
             mock_fetch.return_value = ("<html><body>Hello</body></html>", 100)
             mock_scrape.return_value = MagicMock()
@@ -108,7 +116,8 @@ class TestCrawlerCrawl:
 
         with patch("protor.crawler.aiohttp.ClientSession") as mock_session_cls, \
              patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch, \
-             patch("protor.crawler.Live"):
+             patch("protor.crawler.Live"), \
+             ROBOTS_PATCH:
 
             mock_fetch.side_effect = Exception("Connection refused")
 
@@ -132,7 +141,8 @@ class TestCrawlerCrawl:
              patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch, \
              patch("protor.crawler.extract_links", return_value=[]) as mock_links, \
              patch("protor.crawler.scrape_site_async", new_callable=AsyncMock) as mock_scrape, \
-             patch("protor.crawler.Live"):
+             patch("protor.crawler.Live"), \
+             ROBOTS_PATCH:
 
             mock_fetch.return_value = ("<html><body>Hello</body></html>", 100)
             mock_scrape.return_value = MagicMock()
@@ -153,7 +163,8 @@ class TestCrawlerCrawl:
                  "https://example.com/contact",
              ]) as mock_links, \
              patch("protor.crawler.scrape_site_async", new_callable=AsyncMock) as mock_scrape, \
-             patch("protor.crawler.Live"):
+             patch("protor.crawler.Live"), \
+             ROBOTS_PATCH:
 
             mock_fetch.return_value = ("<html><body>Hello</body></html>", 100)
             mock_scrape.return_value = MagicMock()
@@ -173,7 +184,8 @@ class TestCrawlerCrawl:
              patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch, \
              patch("protor.crawler.extract_links", return_value=[]) as mock_links, \
              patch("protor.crawler.scrape_site_async", new_callable=AsyncMock) as mock_scrape, \
-             patch("protor.crawler.Live"):
+             patch("protor.crawler.Live"), \
+             ROBOTS_PATCH:
 
             mock_fetch.return_value = ("<html><body>Hello</body></html>", 100)
             mock_scrape.return_value = MagicMock()
