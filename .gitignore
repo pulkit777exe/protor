@@ -9,3 +9,4 @@ htmlcov
 .coverage
 tests/__pycache__
 protorenv
+dist
