@@ -17,6 +17,7 @@ Internal helpers are prefixed with _ and are not part of the public API.
 from __future__ import annotations
 
 import asyncio
+import random
 import time
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
@@ -28,27 +29,23 @@ from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
+from .config import (
+    DEFAULT_CONCURRENCY,
+    DEFAULT_TIMEOUT,
+    HEADERS,
+    JS_DOWNLOAD_TIMEOUT,
+    MAX_JS_FILES,
+    MAX_RETRIES,
+    MAX_TEXT_CHARS,
+    RETRYABLE_STATUS,
+    RETRY_BACKOFF_BASE,
+)
 from .exceptions import FetchError
 from .models import SiteManifest, SiteMetadata
 from .theme import OK, ERR, SPIN, console, header_rule, label, bright, muted
 from .utils import safe_filename, save_json, timestamp, human_bytes
 
 __all__ = ["scrape_multiple", "scrape_site_async", "extract_links"]
-
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-    "Accept-Language": "en-US,en;q=0.9",
-    "Accept-Encoding": "gzip, deflate, br",
-}
-
-_DEFAULT_CONCURRENCY = 6
-_DEFAULT_TIMEOUT     = 30
-_MAX_JS_FILES        = 15
-_MAX_TEXT_CHARS      = 10_000
-_MAX_DATA_CHARS      = 8_000
 
 
 # ── HTML parsing helpers ──────────────────────────────────────────────────────
@@ -58,9 +55,9 @@ def _extract_metadata(soup: BeautifulSoup) -> SiteMetadata:
     if soup.title and soup.title.string:
         meta.title = soup.title.string.strip()
     for tag in soup.find_all("meta"):
-        name    = tag.get("name", "").lower()
-        prop    = tag.get("property", "").lower()
-        content = tag.get("content", "")
+        name    = str(tag.get("name", "") or "").lower()
+        prop    = str(tag.get("property", "") or "").lower()
+        content = str(tag.get("content", "") or "")
         if name == "description":
             meta.description = content
         elif name == "keywords":
@@ -72,12 +69,12 @@ def _extract_metadata(soup: BeautifulSoup) -> SiteMetadata:
     return meta
 
 
-def _extract_js_links(html: str, base_url: str) -> list[str]:
-    soup = BeautifulSoup(html, "lxml")
+def _extract_js_links_from_soup(soup: BeautifulSoup, base_url: str) -> list[str]:
+    """Extract JS script src URLs from an existing BeautifulSoup object."""
     seen: set[str] = set()
     links: list[str] = []
     for tag in soup.find_all("script", src=True):
-        full = urljoin(base_url, tag["src"])
+        full = urljoin(base_url, str(tag["src"]))
         if full not in seen and full.startswith("http"):
             seen.add(full)
             links.append(full)
@@ -91,7 +88,7 @@ def extract_links(html: str, base_url: str) -> list[str]:
     seen: set[str] = set()
     links: list[str] = []
     for tag in soup.find_all("a", href=True):
-        full = urljoin(base_url, tag["href"]).split("#")[0]
+        full = urljoin(base_url, str(tag["href"])).split("#")[0]
         p = urlparse(full)
         if p.netloc == base_domain and p.scheme in ("http", "https") and full not in seen:
             seen.add(full)
@@ -99,12 +96,12 @@ def extract_links(html: str, base_url: str) -> list[str]:
     return links
 
 
-def _extract_text(html: str) -> str:
-    soup = BeautifulSoup(html, "lxml")
+def _extract_text_from_soup(soup: BeautifulSoup) -> str:
+    """Extract visible text from an existing BeautifulSoup object."""
     for tag in soup(["script", "style", "nav", "footer", "header"]):
         tag.decompose()
     lines = (ln.strip() for ln in soup.get_text("\n").splitlines())
-    return "\n".join(ln for ln in lines if ln)[:_MAX_TEXT_CHARS]
+    return "\n".join(ln for ln in lines if ln)[:MAX_TEXT_CHARS]
 
 
 # ── async fetch primitives ────────────────────────────────────────────────────
@@ -112,24 +109,41 @@ def _extract_text(html: str) -> str:
 async def _fetch(
     session: aiohttp.ClientSession,
     url: str,
-    timeout: int = _DEFAULT_TIMEOUT,
+    timeout: int = DEFAULT_TIMEOUT,
+    max_retries: int = MAX_RETRIES,
 ) -> tuple[str, int]:
     """
-    Fetch *url* and return (text, bytes_received).
+    Fetch *url* with retry logic and return (text, bytes_received).
     Raises FetchError on HTTP >= 400 or connection problems.
     """
-    try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
-            if r.status >= 400:
-                raise FetchError(url, f"HTTP {r.status}")
-            data = await r.read()
-            return data.decode("utf-8", errors="replace"), len(data)
-    except FetchError:
-        raise
-    except asyncio.TimeoutError as exc:
-        raise FetchError(url, "timeout") from exc
-    except aiohttp.ClientError as exc:
-        raise FetchError(url, str(exc)) from exc
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as r:
+                if r.status >= 400:
+                    if r.status in RETRYABLE_STATUS and attempt < max_retries - 1:
+                        delay = RETRY_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 0.5)
+                        await asyncio.sleep(delay)
+                        continue
+                    raise FetchError(url, f"HTTP {r.status}")
+                data = await r.read()
+                return data.decode("utf-8", errors="replace"), len(data)
+        except asyncio.TimeoutError as exc:
+            last_exc = exc
+            if attempt < max_retries - 1:
+                delay = RETRY_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 0.5)
+                await asyncio.sleep(delay)
+                continue
+            raise FetchError(url, "timeout") from exc
+        except aiohttp.ClientError as exc:
+            last_exc = exc
+            if attempt < max_retries - 1:
+                delay = RETRY_BACKOFF_BASE * (2 ** attempt) + random.uniform(0, 0.5)
+                await asyncio.sleep(delay)
+                continue
+            raise FetchError(url, str(exc)) from exc
+
+    raise FetchError(url, f"failed after {max_retries} retries") from last_exc
 
 
 async def _download_file(
@@ -139,7 +153,7 @@ async def _download_file(
 ) -> bool:
     dest.parent.mkdir(parents=True, exist_ok=True)
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as r:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=JS_DOWNLOAD_TIMEOUT)) as r:
             if r.status == 200:
                 dest.write_bytes(await r.read())
                 return True
@@ -182,8 +196,8 @@ def _build_table(rows: list[dict]) -> Table:
             s = Text(f"  {SPIN} {status}", style="yellow")
 
         t.add_row(
-            str(r["idx"]),
-            r["domain"],
+            str(r.get("idx", "")),
+            r.get("domain", ""),
             s,
             human_bytes(r["bytes"]) if r.get("bytes") else "—",
             f"{r['ms']}ms"          if r.get("ms")    else "—",
@@ -227,11 +241,11 @@ async def scrape_site_async(
 
     soup     = BeautifulSoup(html, "lxml")
     metadata = _extract_metadata(soup)
-    text     = _extract_text(html)
+    text     = _extract_text_from_soup(soup)
 
     js_downloaded: list[str] = []
     if download_js:
-        js_links = _extract_js_links(html, url)[:_MAX_JS_FILES]
+        js_links = _extract_js_links_from_soup(soup, url)[:MAX_JS_FILES]
         if js_links:
             row_state["status"] = f"js:{len(js_links)}"
             js_dir = site_dir / "js"
@@ -273,14 +287,13 @@ async def _run_all(
     download_js: bool,
     timeout: int,
     concurrency: int,
-) -> list[SiteManifest]:
+) -> tuple[list[SiteManifest], int]:
     rows = [
         {"idx": i + 1, "domain": urlparse(u).netloc or u,
-         "status": "waiting", "bytes": None, "ms": None, "js": None}
+         "status": "waiting", "bytes": None, "ms": None, "js": None, "error": False}
         for i, u in enumerate(urls)
     ]
 
-    manifests: list[SiteManifest] = []
     sem = asyncio.Semaphore(concurrency)
 
     async def _bounded(session: aiohttp.ClientSession, url: str, row: dict) -> SiteManifest | None:
@@ -288,7 +301,8 @@ async def _run_all(
             return await scrape_site_async(session, url, output_dir, download_js, row)
 
     connector = aiohttp.TCPConnector(limit=concurrency)
-    async with aiohttp.ClientSession(headers=_HEADERS, connector=connector) as session:
+    cookie_jar = aiohttp.CookieJar()
+    async with aiohttp.ClientSession(headers=HEADERS, connector=connector, cookie_jar=cookie_jar) as session:
         with Live(console=console, refresh_per_second=10) as live:
             task_group = asyncio.gather(
                 *[_bounded(session, u, rows[i]) for i, u in enumerate(urls)],
@@ -301,8 +315,15 @@ async def _run_all(
 
         results = await task_group
 
-    manifests = [m for m in results if isinstance(m, SiteManifest)]
-    return manifests
+    manifests: list[SiteManifest] = []
+    error_count = 0
+    for result in results:
+        if isinstance(result, SiteManifest):
+            manifests.append(result)
+        else:
+            error_count += 1
+
+    return manifests, error_count
 
 
 def scrape_multiple(
@@ -310,8 +331,8 @@ def scrape_multiple(
     output_dir: str | Path = "data",
     *,
     download_js: bool = True,
-    timeout: int = _DEFAULT_TIMEOUT,
-    concurrency: int = _DEFAULT_CONCURRENCY,
+    timeout: int = DEFAULT_TIMEOUT,
+    concurrency: int = DEFAULT_CONCURRENCY,
 ) -> str:
     """
     Scrape *urls* concurrently and write a ``sites_index.json`` index file.
@@ -346,17 +367,18 @@ def scrape_multiple(
     )
     console.print()
 
-    manifests = asyncio.run(_run_all(urls, out, download_js, timeout, concurrency))
+    manifests, error_count = asyncio.run(
+        _run_all(urls, out, download_js, timeout, concurrency)
+    )
 
     ok_n   = sum(1 for m in manifests if m.success)
-    err_n  = len(urls) - ok_n
     total  = sum(m.bytes_received for m in manifests)
     avg_ms = round(sum(m.elapsed_ms for m in manifests) / max(ok_n, 1)) if ok_n else 0
 
     console.print()
     console.print(
-        f"  ✓ {bright(str(ok_n))} scraped  "
-        + (f"✗ {bright(str(err_n))} failed  " if err_n else "")
+        f"  {OK} {bright(str(ok_n))} scraped  "
+        + (f"{ERR} {bright(str(error_count))} failed  " if error_count else "")
         + f"{muted(human_bytes(total) + ' total')}  {muted(f'avg {avg_ms}ms')}"
     )
 
