@@ -13,26 +13,19 @@ Public API
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
-from typing import TYPE_CHECKING
 
 import requests
 from rich import box
 from rich.table import Table
 
+from .config import ANALYSIS_MAX_DATA_CHARS, OLLAMA_BASE
 from .exceptions import OllamaModelNotFoundError, OllamaUnavailableError
 from .models import AnalysisResult, SiteManifest
-from .theme import OK, console, header_rule, section_rule, label, bright, muted, err, info
+from .theme import OK, bright, console, err, header_rule, info, label, muted, section_rule
 from .utils import save_json, timestamp
 
-if TYPE_CHECKING:
-    pass
-
-__all__ = ["analyze_with_ollama", "list_ollama_models", "check_ollama"]
-
-_OLLAMA_BASE = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
-_MAX_DATA_CHARS = 8_000
+__all__ = ["analyze_with_ollama", "check_ollama", "list_ollama_models"]
 
 # ── prompts ───────────────────────────────────────────────────────────────────
 
@@ -79,7 +72,7 @@ FOCUS_CHOICES = list(_PROMPTS.keys())
 
 # ── Ollama helpers ────────────────────────────────────────────────────────────
 
-def check_ollama(base: str = _OLLAMA_BASE) -> bool:
+def check_ollama(base: str = OLLAMA_BASE) -> bool:
     """Return True if Ollama is reachable."""
     try:
         return requests.get(f"{base}/api/tags", timeout=5).status_code == 200
@@ -87,17 +80,17 @@ def check_ollama(base: str = _OLLAMA_BASE) -> bool:
         return False
 
 
-def _list_models(base: str = _OLLAMA_BASE) -> list[dict]:
+def _list_models(base: str = OLLAMA_BASE) -> list[dict]:
     r = requests.get(f"{base}/api/tags", timeout=5)
     r.raise_for_status()
     return r.json().get("models", [])
 
 
-def _model_exists(model: str, base: str = _OLLAMA_BASE) -> bool:
+def _model_exists(model: str, base: str = OLLAMA_BASE) -> bool:
     return any(m.get("name") == model for m in _list_models(base))
 
 
-def list_ollama_models(base: str = _OLLAMA_BASE) -> None:
+def list_ollama_models(base: str = OLLAMA_BASE) -> None:
     console.print()
     console.print(header_rule("Available Models"))
     console.print()
@@ -110,7 +103,7 @@ def list_ollama_models(base: str = _OLLAMA_BASE) -> None:
 
     models = _list_models(base)
     if not models:
-        console.print(f"  ! No models installed.")
+        console.print("  ! No models installed.")
         console.print(f"  {info('Pull one with: ollama pull llama3')}")
         console.print()
         return
@@ -151,14 +144,14 @@ def _prepare_context(data: list[dict | SiteManifest]) -> str:
         )
 
     full = "\n---\n".join(parts)
-    if len(full) > _MAX_DATA_CHARS:
-        full = full[:_MAX_DATA_CHARS] + "\n\n[truncated]"
+    if len(full) > ANALYSIS_MAX_DATA_CHARS:
+        full = full[:ANALYSIS_MAX_DATA_CHARS] + "\n\n[truncated]"
     return full
 
 
 # ── streaming ─────────────────────────────────────────────────────────────────
 
-def _stream(model: str, prompt: str, base: str = _OLLAMA_BASE) -> str:
+def _stream(model: str, prompt: str, base: str = OLLAMA_BASE) -> str:
     """POST to Ollama and stream response tokens to the terminal."""
     full: list[str] = []
 
@@ -206,7 +199,7 @@ def analyze_with_ollama(
     focus: str = "general",
     output_dir: str | Path = "analysis",
     *,
-    base_url: str = _OLLAMA_BASE,
+    base_url: str = OLLAMA_BASE,
 ) -> AnalysisResult:
     """
     Analyse scraped *data* with a locally-running Ollama *model*.

@@ -11,7 +11,6 @@ Public API
 from __future__ import annotations
 
 import asyncio
-import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,18 +24,12 @@ from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
 
+from .config import CRAWLER_CONCURRENCY, CRAWLER_DELAY, DEFAULT_MAX_PAGES, HEADERS
 from .scraper import _fetch, extract_links, scrape_site_async
-from .theme import OK, ERR, SPIN, console, header_rule, label, bright, muted
+from .theme import ERR, OK, SPIN, bright, console, header_rule, label, muted
 from .utils import get_default_output_dir
 
 __all__ = ["Crawler"]
-
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
-        "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-    ),
-}
 
 
 @dataclass
@@ -52,7 +45,7 @@ class _State:
     errors:   int = 0
     current:  str = ""
     queue_n:  int = 0
-    max_pages: int = 10
+    max_pages: int = DEFAULT_MAX_PAGES
     log: list[_CrawlLog] = field(default_factory=list)
 
 
@@ -107,7 +100,7 @@ class Crawler:
     def __init__(
         self,
         start_url: str,
-        max_pages: int = 10,
+        max_pages: int = DEFAULT_MAX_PAGES,
         output_dir: str | Path | None = None,
     ) -> None:
         self.start_url  = start_url
@@ -142,8 +135,8 @@ class Crawler:
     # ── internal ──────────────────────────────────────────────────────────────
 
     async def _run(self) -> None:
-        connector = aiohttp.TCPConnector(limit=4)
-        async with aiohttp.ClientSession(headers=_HEADERS, connector=connector) as session:
+        connector = aiohttp.TCPConnector(limit=CRAWLER_CONCURRENCY)
+        async with aiohttp.ClientSession(headers=HEADERS, connector=connector) as session:
             with Live(console=console, refresh_per_second=6) as live:
                 while self._queue and self._state.scraped < self.max_pages:
                     url = self._queue.popleft()
@@ -167,13 +160,13 @@ class Crawler:
                         await scrape_site_async(session, url, self.output_dir, False, row)
                         self._state.scraped += 1
                         self._state.log[-1].status = "ok"
-                    except Exception as exc:  # noqa: BLE001
+                    except Exception as exc:
                         self._state.errors += 1
                         self._state.log[-1].status = "err"
                         self._state.log[-1].note = str(exc)
 
                     self._state.queue_n = len(self._queue)
                     live.update(_render(self._state, str(self.output_dir)))
-                    await asyncio.sleep(0.25)
+                    await asyncio.sleep(CRAWLER_DELAY)
 
                 live.update(_render(self._state, str(self.output_dir)))
