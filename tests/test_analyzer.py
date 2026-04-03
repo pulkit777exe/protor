@@ -85,7 +85,7 @@ class TestPrepareContext:
         result = _prepare_context([sample_manifest])
         assert isinstance(result, str)
         assert "example.com" in result
-        assert "Test Page" in result
+        assert "Example Domain" in result
 
     def test_prepare_multiple_manifests(self, sample_manifest):
         manifests = [sample_manifest, sample_manifest]

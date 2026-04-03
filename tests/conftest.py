@@ -83,3 +83,13 @@ def sites_index_file(tmp_path: Path, sample_manifests: list[dict]) -> Path:
     f = tmp_path / "sites_index.json"
     f.write_text(json.dumps(sample_manifests), encoding="utf-8")
     return f
+
+
+@pytest.fixture
+def mock_ollama_response() -> dict:
+    return {"response": "Test analysis result", "done": False}
+
+
+@pytest.fixture
+def mock_ollama_response() -> dict:
+    return {"response": "Test analysis result", "done": False}

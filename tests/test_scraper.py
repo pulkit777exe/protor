@@ -6,9 +6,9 @@ import pytest
 from bs4 import BeautifulSoup
 
 from protor.scraper import (
-    _extract_js_links,
+    _extract_js_links_from_soup,
     _extract_metadata,
-    _extract_text,
+    _extract_text_from_soup,
     extract_links,
 )
 from tests.conftest import EMPTY_HTML, SIMPLE_HTML
@@ -54,21 +54,25 @@ class TestExtractMetadata:
 
 class TestExtractJsLinks:
     def test_finds_relative_and_absolute(self):
-        links = _extract_js_links(SIMPLE_HTML, "https://example.com")
+        soup = BeautifulSoup(SIMPLE_HTML, "lxml")
+        links = _extract_js_links_from_soup(soup, "https://example.com")
         assert "https://example.com/static/app.js" in links
         assert "https://cdn.example.com/lib.js" in links
 
     def test_deduplicates(self):
         html = '<script src="/a.js"></script><script src="/a.js"></script>'
-        links = _extract_js_links(html, "https://example.com")
+        soup = BeautifulSoup(html, "lxml")
+        links = _extract_js_links_from_soup(soup, "https://example.com")
         assert links.count("https://example.com/a.js") == 1
 
     def test_empty(self):
-        assert _extract_js_links(EMPTY_HTML, "https://example.com") == []
+        soup = BeautifulSoup(EMPTY_HTML, "lxml")
+        assert _extract_js_links_from_soup(soup, "https://example.com") == []
 
     def test_ignores_inline_scripts(self):
         html = "<script>console.log('inline')</script>"
-        assert _extract_js_links(html, "https://example.com") == []
+        soup = BeautifulSoup(html, "lxml")
+        assert _extract_js_links_from_soup(soup, "https://example.com") == []
 
 
 class TestExtractLinks:
@@ -98,21 +102,25 @@ class TestExtractLinks:
 
 class TestExtractText:
     def test_removes_nav_footer_scripts(self):
-        text = _extract_text(SIMPLE_HTML)
+        soup = BeautifulSoup(SIMPLE_HTML, "lxml")
+        text = _extract_text_from_soup(soup)
         assert "Navigation" not in text
         assert "Footer text" not in text
         assert "console.log" not in text
 
     def test_includes_main_content(self):
-        text = _extract_text(SIMPLE_HTML)
+        soup = BeautifulSoup(SIMPLE_HTML, "lxml")
+        text = _extract_text_from_soup(soup)
         assert "Hello World" in text
         assert "main content" in text
 
     def test_truncates_long_content(self):
         long_html = "<p>" + ("x " * 10_000) + "</p>"
-        text = _extract_text(long_html)
+        soup = BeautifulSoup(long_html, "lxml")
+        text = _extract_text_from_soup(soup)
         assert len(text) <= 10_000
 
     def test_empty_html_returns_empty(self):
-        text = _extract_text(EMPTY_HTML)
+        soup = BeautifulSoup(EMPTY_HTML, "lxml")
+        text = _extract_text_from_soup(soup)
         assert text.strip() == ""

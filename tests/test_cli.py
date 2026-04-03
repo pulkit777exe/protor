@@ -123,7 +123,6 @@ class TestLoadIndex:
 
 class TestAbort:
     def test_abort_exits(self):
-        with pytest.raises(SystemExit) as exc_info:
-            with patch("protor.cli.sys.exit") as mock_exit:
-                _abort("Test error", "Test hint")
-                mock_exit.assert_called_once_with(1)
+        with patch("protor.cli.sys.exit") as mock_exit:
+            _abort("Test error", "Test hint")
+            mock_exit.assert_called_once_with(1)
