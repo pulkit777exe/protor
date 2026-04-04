@@ -1,26 +1,31 @@
 # Changelog
 
-## [v2.4.0] — 2026-04-03
+## [v2.5.0] — 2026-04-04
 
 ### New Features
-- Add output format options: CSV, HTML, and plain text alongside default markdown
-- Add `--format` flag to `protor analyze` command
+- Add multi-LLM backend support: OpenAI and Anthropic alongside Ollama
+- Add `llm_backends.py` module with abstract `LLMBackend` class and concrete implementations
+- Add factory function `create_backend()` for easy backend switching
 
-### API Changes
-- Clarify `extract_links` as public API with dedicated docstring and tests
-- Bump version to 2.4.0
+### Test Improvements
+- Add 97 new tests (113 → 210 total), covering formatters, HTTP cache, robots.txt, rate limiter, LLM backends, scraper internals, and CLI handlers
+- Increase test coverage from 61% to 84%
+- Fix all pre-existing test failures and mock path issues
+
+### Code Quality
+- Fix all ruff lint issues (89 auto-fixed + 8 manual)
+- Add proper exception chaining (`raise ... from exc`) throughout codebase
+- Remove duplicate code (ROBOTS_PATCH, RATE_LIMIT_DELAY)
+- Sort all import blocks, remove unused imports, add trailing newlines
+- Replace ambiguous variable names, remove empty TYPE_CHECKING blocks
+
+### Bug Fixes
+- Fix duplicate optional dependency entries in pyproject.toml
+- Fix `test_integration.py` mock paths for refactored CLI imports
+- Fix `test_analyzer.py` to use `_stream_backend` instead of removed `_stream`
+- Fix end-to-end test to use actual async `scrape_site_async` API
 
 ## [v2.4.0] — 2026-04-03
-
-### New Features
-- Add output format options: CSV, HTML, and plain text alongside default markdown
-- Add `--format` flag to `protor analyze` command
-
-### API Changes
-- Clarify `extract_links` as public API with dedicated docstring and tests
-- Bump version to 2.4.0
-
-## [v2.3.0] — 2026-04-03
 
 ### New Features
 - Add progress callbacks for library users
