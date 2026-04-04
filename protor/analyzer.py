@@ -1,18 +1,17 @@
 """
 protor.analyzer
 ~~~~~~~~~~~~~~~
-Analyze scraped sites using a locally-running Ollama model.
+Analyze scraped sites using LLM backends (Ollama, OpenAI, Anthropic).
 
 Public API
 ----------
-    analyze_with_ollama(data, model, focus, output_dir)
+    analyze(data, model, focus, output_dir, backend, prompt, fmt)
     list_ollama_models()
     check_ollama() -> bool
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import requests
@@ -22,11 +21,12 @@ from rich.table import Table
 from .config import ANALYSIS_MAX_DATA_CHARS, OLLAMA_BASE
 from .exceptions import OllamaModelNotFoundError, OllamaUnavailableError
 from .formatters import format_output, write_output
+from .llm_backends import LLMBackend, create_backend
 from .models import AnalysisResult, SiteManifest
 from .theme import OK, console, header_rule, section_rule, label, bright, muted, err, info
 from .utils import save_json, timestamp
 
-__all__ = ["analyze_with_ollama", "check_ollama", "list_ollama_models"]
+__all__ = ["analyze", "analyze_with_ollama", "check_ollama", "list_ollama_models"]
 
 # ── prompts ───────────────────────────────────────────────────────────────────
 
@@ -152,73 +152,44 @@ def _prepare_context(data: list[dict | SiteManifest]) -> str:
 
 # ── streaming ─────────────────────────────────────────────────────────────────
 
-def _stream(model: str, prompt: str, base: str = OLLAMA_BASE) -> str:
-    """POST to Ollama and stream response tokens to the terminal."""
-    full: list[str] = []
-
+def _stream_backend(backend: LLMBackend, prompt: str) -> str:
+    """Stream response from an LLM backend to the terminal."""
     console.print()
-    console.print(section_rule(f"Response · {model}"))
+    console.print(section_rule(f"Response · {backend.model_name}"))
     console.print()
-
-    resp = requests.post(
-        f"{base}/api/generate",
-        json={"model": model, "prompt": prompt, "stream": True},
-        stream=True,
-        timeout=300,
-    )
-
-    if resp.status_code == 404:
-        raise OllamaModelNotFoundError(model)
-    resp.raise_for_status()
-
-    for line in resp.iter_lines():
-        if not line:
-            continue
-        try:
-            chunk = json.loads(line)
-        except json.JSONDecodeError:
-            continue
-        text = chunk.get("response", "")
-        if text:
-            console.print(text, end="", style="grey85")
-            full.append(text)
-        if chunk.get("done"):
-            break
-
-    console.print()
-    console.print()
-    console.print(section_rule("end"))
-    console.print()
-    return "".join(full)
+    return backend.stream(prompt)
 
 
 # ── public entry point ────────────────────────────────────────────────────────
 
-def analyze_with_ollama(
+def analyze(
     data: list[dict | SiteManifest],
     model: str = "llama3",
     focus: str = "general",
     output_dir: str | Path = "analysis",
     *,
-    base_url: str = OLLAMA_BASE,
+    backend: str = "ollama",
+    base_url: str | None = None,
     prompt: str | None = None,
     fmt: str = "markdown",
 ) -> AnalysisResult:
     """
-    Analyse scraped *data* with a locally-running Ollama *model*.
+    Analyse scraped *data* with an LLM *model* using the specified *backend*.
 
     Parameters
     ----------
     data:
         List of SiteManifest dicts (output of scrape_multiple).
     model:
-        Ollama model name, e.g. ``"llama3"``, ``"mistral"``.
+        Model name, e.g. ``"llama3"``, ``"gpt-4o"``, ``"claude-3-5-sonnet-20241022"``.
     focus:
         One of ``"general"``, ``"technical"``, ``"content"``, ``"seo"``.
     output_dir:
         Directory to write the analysis report.
+    backend:
+        LLM backend: ``"ollama"``, ``"openai"``, or ``"anthropic"``.
     base_url:
-        Ollama base URL (override with ``OLLAMA_HOST`` env var).
+        Ollama base URL (only used when backend is ``"ollama"``).
     prompt:
         Custom analysis prompt (overrides the built-in focus-based prompt).
     fmt:
@@ -231,19 +202,24 @@ def analyze_with_ollama(
     Raises
     ------
     OllamaUnavailableError
-        If Ollama is not running.
+        If Ollama backend is selected and is not running.
     OllamaModelNotFoundError
-        If the requested model is not installed.
+        If the requested model is not installed (Ollama only).
     """
     console.print()
     console.print(header_rule("Protor — Analyzer"))
     console.print()
 
-    if not check_ollama(base_url):
-        raise OllamaUnavailableError(base_url)
+    llm = create_backend(backend, model, base_url=base_url)
+
+    if not llm.check_available():
+        if backend == "ollama":
+            raise OllamaUnavailableError(base_url or OLLAMA_BASE)
+        raise RuntimeError(f"{backend.capitalize()} backend unavailable. Check your API key and connection.")
 
     console.print(
-        f"  {label('model')} {bright(model)}   "
+        f"  {label('backend')} {bright(backend)}   "
+        f"{label('model')} {bright(model)}   "
         f"{label('focus')} {bright(focus)}   "
         f"{label('sites')} {bright(str(len(data)))}"
     )
@@ -265,7 +241,7 @@ def analyze_with_ollama(
             f"Analysis:"
         )
 
-    raw = _stream(model, full_prompt, base_url)
+    raw = _stream_backend(llm, full_prompt)
 
     result = AnalysisResult(
         model=model,
@@ -288,3 +264,20 @@ def analyze_with_ollama(
     )
     console.print()
     return result
+
+
+def analyze_with_ollama(
+    data: list[dict | SiteManifest],
+    model: str = "llama3",
+    focus: str = "general",
+    output_dir: str | Path = "analysis",
+    *,
+    base_url: str = OLLAMA_BASE,
+    prompt: str | None = None,
+    fmt: str = "markdown",
+) -> AnalysisResult:
+    """Backwards-compatible wrapper around *analyze* using the Ollama backend."""
+    return analyze(
+        data, model, focus, output_dir,
+        backend="ollama", base_url=base_url, prompt=prompt, fmt=fmt,
+    )

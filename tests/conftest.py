@@ -41,6 +41,7 @@ EMPTY_HTML = "<html><body></body></html>"
 
 # ── manifest fixture ──────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def sample_manifest() -> SiteManifest:
     return SiteManifest(
@@ -71,6 +72,7 @@ def sample_manifests(sample_manifest: SiteManifest) -> list[dict]:
 
 # ── temp output dir ───────────────────────────────────────────────────────────
 
+
 @pytest.fixture
 def tmp_output(tmp_path: Path) -> Path:
     out = tmp_path / "protor_output"
@@ -83,11 +85,6 @@ def sites_index_file(tmp_path: Path, sample_manifests: list[dict]) -> Path:
     f = tmp_path / "sites_index.json"
     f.write_text(json.dumps(sample_manifests), encoding="utf-8")
     return f
-
-
-@pytest.fixture
-def mock_ollama_response() -> dict:
-    return {"response": "Test analysis result", "done": False}
 
 
 @pytest.fixture

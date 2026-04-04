@@ -1,4 +1,5 @@
 """Unit tests for protor.analyzer module"""
+
 import json
 import pytest
 import responses
@@ -7,7 +8,7 @@ from protor.analyzer import (
     check_ollama,
     list_ollama_models,
     _prepare_context,
-    _stream,
+    _stream_backend,
     analyze_with_ollama,
     FOCUS_CHOICES,
 )
@@ -48,7 +49,11 @@ class TestListOllamaModels:
             "http://localhost:11434/api/tags",
             json={
                 "models": [
-                    {"name": "llama3:latest", "size": 4661224192, "modified_at": "2024-01-01T00:00:00Z"},
+                    {
+                        "name": "llama3:latest",
+                        "size": 4661224192,
+                        "modified_at": "2024-01-01T00:00:00Z",
+                    },
                 ]
             },
             status=200,
@@ -102,39 +107,29 @@ class TestPrepareContext:
         assert result == ""
 
     def test_dict_input(self):
-        data = [{
-            "domain": "test.com",
-            "url": "https://test.com",
-            "metadata": {"title": "Test", "description": "Desc"},
-            "js_count": 3,
-            "text_content": "Hello world",
-        }]
+        data = [
+            {
+                "domain": "test.com",
+                "url": "https://test.com",
+                "metadata": {"title": "Test", "description": "Desc"},
+                "js_count": 3,
+                "text_content": "Hello world",
+            }
+        ]
         result = _prepare_context(data)
         assert "test.com" in result
         assert "Hello world" in result
 
 
-class TestStream:
-    @responses.activate
-    def test_stream_response_success(self, mock_ollama_response):
-        responses.add(
-            responses.POST,
-            "http://localhost:11434/api/generate",
-            json={**mock_ollama_response, "done": True},
-            status=200,
-        )
-        result = _stream("llama3", "Test prompt")
-        assert isinstance(result, str)
-
-    @responses.activate
-    def test_stream_model_not_found(self):
-        responses.add(
-            responses.POST,
-            "http://localhost:11434/api/generate",
-            status=404,
-        )
-        with pytest.raises(OllamaModelNotFoundError):
-            _stream("nonexistent", "Test prompt")
+class TestStreamBackend:
+    @patch("protor.analyzer.console")
+    def test_stream_backend_success(self, mock_console):
+        mock_backend = MagicMock()
+        mock_backend.model_name = "llama3"
+        mock_backend.stream.return_value = "Test response"
+        result = _stream_backend(mock_backend, "Test prompt")
+        assert result == "Test response"
+        mock_backend.stream.assert_called_once_with("Test prompt")
 
 
 class TestFocusChoices:

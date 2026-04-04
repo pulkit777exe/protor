@@ -207,7 +207,7 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--prompt-file",   default=None, metavar="PATH",
                     help="read custom prompt from file")
     ap.add_argument("--format",        choices=("markdown", "csv", "html", "text"),
-                    default="markdown", help="output format (default: markdown)")
+                    help="output format (default: markdown)")
     ap.set_defaults(func=_cmd_analyze)
 
     # ── run (scrape + analyze) ───────────────────────────────────────────────
