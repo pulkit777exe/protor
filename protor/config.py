@@ -14,7 +14,6 @@ MAX_TEXT_CHARS: int = 10_000
 MAX_DATA_CHARS: int = 8_000
 JS_DOWNLOAD_TIMEOUT: int = 15
 RATE_LIMIT_DELAY: float = 0.5
-RATE_LIMIT_DELAY: float = 0.5
 
 # ── crawler ───────────────────────────────────────────────────────────────────
 
@@ -47,6 +46,7 @@ RETRYABLE_STATUS: set[int] = {429, 500, 502, 503, 504}
 RETRY_BACKOFF_BASE: float = 0.5
 
 # ── paths ─────────────────────────────────────────────────────────────────────
+
 
 def get_default_output_dir() -> Path:
     """Return a sensible default output directory, cross-platform."""

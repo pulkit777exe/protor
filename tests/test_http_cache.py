@@ -2,8 +2,9 @@
 
 import json
 import time
+
 import pytest
-from pathlib import Path
+
 from protor.http_cache import CacheEntry, HTTPCache
 
 

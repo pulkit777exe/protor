@@ -1,11 +1,14 @@
 """Integration tests for protor CLI"""
 
-import pytest
-import os
-import tempfile
+import contextlib
 import json
+import os
 import shutil
-from unittest.mock import patch, MagicMock
+import tempfile
+from unittest.mock import MagicMock, patch
+
+import pytest
+
 from protor.cli import cli
 
 
@@ -29,11 +32,8 @@ class TestCLIIntegration:
         # Simulate CLI call
         with patch(
             "sys.argv", ["protor", "scrape", "https://example.com", "--output", self.temp_dir]
-        ):
-            try:
-                cli()
-            except SystemExit:
-                pass
+        ), contextlib.suppress(SystemExit):
+            cli()
 
         mock_scrape.assert_called_once()
 
@@ -42,11 +42,8 @@ class TestCLIIntegration:
         """Test list-models command"""
         mock_list.return_value = None
 
-        with patch("sys.argv", ["protor", "models"]):
-            try:
-                cli()
-            except SystemExit:
-                pass
+        with patch("sys.argv", ["protor", "models"]), contextlib.suppress(SystemExit):
+            cli()
 
         mock_list.assert_called_once()
 
@@ -67,11 +64,8 @@ class TestCLIIntegration:
         with patch(
             "sys.argv",
             ["protor", "run", "https://example.com", "-m", "llama3", "--output", self.temp_dir],
-        ):
-            try:
-                cli()
-            except SystemExit:
-                pass
+        ), contextlib.suppress(SystemExit):
+            cli()
 
         mock_scrape_multiple.assert_called_once()
         mock_analyze.assert_called_once()
@@ -93,9 +87,10 @@ class TestEndToEnd:
         """Test complete scrape and save workflow"""
         import asyncio
         from pathlib import Path
-        from unittest.mock import AsyncMock, MagicMock
-        from protor.scraper import scrape_site_async
+        from unittest.mock import AsyncMock
+
         from protor.models import SiteManifest
+        from protor.scraper import scrape_site_async
 
         sample_html = """
         <html>

@@ -1,13 +1,14 @@
 """Tests for protor.llm_backends module."""
 
 import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-from unittest.mock import patch, MagicMock
+
 from protor.llm_backends import (
-    LLMBackend,
+    BACKEND_CHOICES,
     OllamaBackend,
     create_backend,
-    BACKEND_CHOICES,
 )
 
 

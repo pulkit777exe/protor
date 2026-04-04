@@ -93,9 +93,9 @@ class TestCrawlerCrawl:
         c = Crawler("https://example.com", max_pages=1)
         c._queue = deque(["https://example.com"])
 
-        with patch("protor.crawler.aiohttp.ClientSession") as mock_session_cls, \
+        with patch("protor.crawler.aiohttp.ClientSession"), \
              patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch, \
-             patch("protor.crawler.extract_links", return_value=[]) as mock_links, \
+             patch("protor.crawler.extract_links", return_value=[]), \
              patch("protor.crawler.scrape_site_async", new_callable=AsyncMock) as mock_scrape, \
              patch("protor.crawler.Live"), \
              ROBOTS_PATCH:
@@ -114,7 +114,7 @@ class TestCrawlerCrawl:
         c = Crawler("https://example.com", max_pages=1)
         c._queue = deque(["https://example.com"])
 
-        with patch("protor.crawler.aiohttp.ClientSession") as mock_session_cls, \
+        with patch("protor.crawler.aiohttp.ClientSession"), \
              patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch, \
              patch("protor.crawler.Live"), \
              ROBOTS_PATCH:
@@ -137,9 +137,9 @@ class TestCrawlerCrawl:
             "https://example.com/3",
         ])
 
-        with patch("protor.crawler.aiohttp.ClientSession") as mock_session_cls, \
+        with patch("protor.crawler.aiohttp.ClientSession"), \
              patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch, \
-             patch("protor.crawler.extract_links", return_value=[]) as mock_links, \
+             patch("protor.crawler.extract_links", return_value=[]), \
              patch("protor.crawler.scrape_site_async", new_callable=AsyncMock) as mock_scrape, \
              patch("protor.crawler.Live"), \
              ROBOTS_PATCH:
@@ -156,12 +156,12 @@ class TestCrawlerCrawl:
         c = Crawler("https://example.com", max_pages=3)
         c._queue = deque(["https://example.com"])
 
-        with patch("protor.crawler.aiohttp.ClientSession") as mock_session_cls, \
+        with patch("protor.crawler.aiohttp.ClientSession"), \
              patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch, \
              patch("protor.crawler.extract_links", return_value=[
                  "https://example.com/about",
                  "https://example.com/contact",
-             ]) as mock_links, \
+             ]), \
              patch("protor.crawler.scrape_site_async", new_callable=AsyncMock) as mock_scrape, \
              patch("protor.crawler.Live"), \
              ROBOTS_PATCH:
@@ -180,9 +180,9 @@ class TestCrawlerCrawl:
         c._queue = deque(["https://example.com", "https://example.com"])
         c._visited = set()
 
-        with patch("protor.crawler.aiohttp.ClientSession") as mock_session_cls, \
+        with patch("protor.crawler.aiohttp.ClientSession"), \
              patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch, \
-             patch("protor.crawler.extract_links", return_value=[]) as mock_links, \
+             patch("protor.crawler.extract_links", return_value=[]), \
              patch("protor.crawler.scrape_site_async", new_callable=AsyncMock) as mock_scrape, \
              patch("protor.crawler.Live"), \
              ROBOTS_PATCH:

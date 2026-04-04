@@ -19,13 +19,9 @@ from __future__ import annotations
 import asyncio
 import random
 import time
-from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlparse
-
-if TYPE_CHECKING:
-    pass
 
 import aiohttp
 from bs4 import BeautifulSoup
@@ -54,7 +50,8 @@ from .robots import check_robots
 from .theme import ERR, OK, SPIN, bright, console, header_rule, label, muted
 from .utils import human_bytes, safe_filename, save_json, timestamp
 
-
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 __all__ = ["extract_links", "scrape_multiple", "scrape_site_async"]
 
@@ -294,7 +291,7 @@ async def scrape_site_async(
                 for i, jurl in enumerate(js_links)
             ]
             results       = await asyncio.gather(*tasks)
-            js_downloaded = [u for u, ok in zip(js_links, results) if ok]
+            js_downloaded = [u for u, ok in zip(js_links, results, strict=False) if ok]
 
     manifest = SiteManifest(
         url            = url,

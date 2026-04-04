@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
 from urllib.parse import urljoin, urlparse
 from urllib.robotparser import RobotFileParser
 
-import aiohttp
-
 from .config import DEFAULT_TIMEOUT, HEADERS
+
+if TYPE_CHECKING:
+    import aiohttp
 
 _cache: dict[str, RobotFileParser] = {}
 

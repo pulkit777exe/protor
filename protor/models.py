@@ -6,7 +6,7 @@ comparable in tests, and self-documenting.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field, asdict
+from dataclasses import asdict, dataclass, field
 from typing import Any
 
 
@@ -40,7 +40,7 @@ class SiteManifest:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "SiteManifest":
+    def from_dict(cls, d: dict[str, Any]) -> SiteManifest:
         meta_raw = d.pop("metadata", {})
         meta = SiteMetadata(**{k: v for k, v in meta_raw.items() if k in SiteMetadata.__dataclass_fields__})
         # compat: old key name

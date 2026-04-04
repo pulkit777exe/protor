@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import pytest
 
 from protor.models import SiteManifest, SiteMetadata
 
+if TYPE_CHECKING:
+    from pathlib import Path
 
 # ── HTML fixtures ─────────────────────────────────────────────────────────────
 

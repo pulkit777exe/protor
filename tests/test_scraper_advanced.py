@@ -1,21 +1,20 @@
 """Additional tests for protor.scraper module - async fetch and scrape_multiple."""
 
-import asyncio
-import json
-import pytest
-from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
+from bs4 import BeautifulSoup
+
+from protor.exceptions import FetchError
+from protor.http_cache import CacheEntry, HTTPCache
 from protor.scraper import (
-    _fetch,
-    _download_file,
     _build_table,
+    _download_file,
     _extract_js_links_from_soup,
     _extract_text_from_soup,
+    _fetch,
     scrape_multiple,
 )
-from protor.exceptions import FetchError
-from bs4 import BeautifulSoup
-from protor.http_cache import CacheEntry, HTTPCache
 
 
 class TestFetch:
@@ -49,7 +48,7 @@ class TestFetch:
 
         mock_session.get = MagicMock(side_effect=[mock_response_500, mock_response_200])
 
-        text, nbytes = await _fetch(mock_session, "https://example.com", max_retries=3)
+        text, _nbytes = await _fetch(mock_session, "https://example.com", max_retries=3)
         assert text == "ok"
 
     @pytest.mark.asyncio

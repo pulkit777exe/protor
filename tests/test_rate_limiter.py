@@ -1,8 +1,10 @@
 """Tests for protor.rate_limiter module."""
 
 import asyncio
-import pytest
 import time
+
+import pytest
+
 from protor.rate_limiter import DomainRateLimiter
 
 

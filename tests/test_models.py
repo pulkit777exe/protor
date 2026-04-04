@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from protor.models import AnalysisResult, SiteManifest, SiteMetadata
 
 

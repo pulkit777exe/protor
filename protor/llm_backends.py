@@ -4,18 +4,14 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    pass
 
 __all__ = [
+    "BACKEND_CHOICES",
+    "AnthropicBackend",
     "LLMBackend",
     "OllamaBackend",
     "OpenAIBackend",
-    "AnthropicBackend",
     "create_backend",
-    "BACKEND_CHOICES",
 ]
 
 BACKEND_CHOICES = ("ollama", "openai", "anthropic")
@@ -54,6 +50,7 @@ class OllamaBackend(LLMBackend):
 
     def check_available(self) -> bool:
         import requests
+
         try:
             resp = requests.get(f"{self._base_url}/api/tags", timeout=5)
             return resp.status_code == 200
@@ -62,6 +59,7 @@ class OllamaBackend(LLMBackend):
 
     def stream(self, prompt: str) -> str:
         import json
+
         import requests
         from rich.console import Console
 
@@ -76,7 +74,9 @@ class OllamaBackend(LLMBackend):
         )
 
         if resp.status_code == 404:
-            raise RuntimeError(f"Model '{self._model}' not found. Pull with: ollama pull {self._model}")
+            raise RuntimeError(
+                f"Model '{self._model}' not found. Pull with: ollama pull {self._model}"
+            )
         resp.raise_for_status()
 
         for line in resp.iter_lines():
@@ -113,6 +113,7 @@ class OpenAIBackend(LLMBackend):
 
     def check_available(self) -> bool:
         import openai
+
         try:
             client = openai.OpenAI(api_key=self._api_key)
             client.models.list()
@@ -139,10 +140,10 @@ class OpenAIBackend(LLMBackend):
                 if delta.content:
                     console.print(delta.content, end="", style="grey85")
                     full.append(delta.content)
-        except openai.AuthenticationError:
-            raise RuntimeError("Invalid OpenAI API key")
-        except openai.NotFoundError:
-            raise RuntimeError(f"Model '{self._model}' not available")
+        except openai.AuthenticationError as exc:
+            raise RuntimeError("Invalid OpenAI API key") from exc
+        except openai.NotFoundError as exc:
+            raise RuntimeError(f"Model '{self._model}' not available") from exc
 
         console.print()
         console.print()
@@ -164,6 +165,7 @@ class AnthropicBackend(LLMBackend):
 
     def check_available(self) -> bool:
         import requests
+
         try:
             resp = requests.get(
                 "https://api.anthropic.com/v1/messages",
@@ -194,10 +196,10 @@ class AnthropicBackend(LLMBackend):
                 for text in stream.text_stream:
                     console.print(text, end="", style="grey85")
                     full.append(text)
-        except anthropic.AuthenticationError:
-            raise RuntimeError("Invalid Anthropic API key")
-        except anthropic.NotFoundError:
-            raise RuntimeError(f"Model '{self._model}' not available")
+        except anthropic.AuthenticationError as exc:
+            raise RuntimeError("Invalid Anthropic API key") from exc
+        except anthropic.NotFoundError as exc:
+            raise RuntimeError(f"Model '{self._model}' not available") from exc
 
         console.print()
         console.print()

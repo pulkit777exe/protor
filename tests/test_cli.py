@@ -1,10 +1,10 @@
 """Unit tests for protor.cli module"""
-import pytest
 import json
-from unittest.mock import patch, MagicMock
-from pathlib import Path
+from unittest.mock import patch
 
-from protor.cli import _build_parser, _abort, _load_index
+import pytest
+
+from protor.cli import _abort, _build_parser, _load_index
 from protor.exceptions import DataFileNotFoundError
 
 

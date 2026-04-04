@@ -15,7 +15,7 @@ __all__ = ["FORMAT_CHOICES", "format_output", "write_output"]
 FORMAT_CHOICES = ("markdown", "csv", "html", "text")
 
 
-def _to_text(result: "AnalysisResult") -> str:
+def _to_text(result: AnalysisResult) -> str:
     lines = [
         "Website Analysis Report",
         "=" * 40,
@@ -31,7 +31,7 @@ def _to_text(result: "AnalysisResult") -> str:
     return "\n".join(lines)
 
 
-def _to_csv(result: "AnalysisResult") -> str:
+def _to_csv(result: AnalysisResult) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["timestamp", "model", "focus", "sites_analyzed", "analysis"])
@@ -39,7 +39,7 @@ def _to_csv(result: "AnalysisResult") -> str:
     return output.getvalue()
 
 
-def _to_html(result: "AnalysisResult") -> str:
+def _to_html(result: AnalysisResult) -> str:
     import html as html_mod
     return (
         "<!DOCTYPE html>\n"
@@ -66,7 +66,7 @@ def _to_html(result: "AnalysisResult") -> str:
     )
 
 
-def format_output(result: "AnalysisResult", fmt: str = "markdown") -> str:
+def format_output(result: AnalysisResult, fmt: str = "markdown") -> str:
     """Format *result* as the requested output format."""
     if fmt == "markdown":
         return (
@@ -85,7 +85,7 @@ def format_output(result: "AnalysisResult", fmt: str = "markdown") -> str:
     raise ValueError(f"Unknown format: {fmt!r}")
 
 
-def write_output(result: "AnalysisResult", output_dir: str | Path, fmt: str = "markdown") -> Path:
+def write_output(result: AnalysisResult, output_dir: str | Path, fmt: str = "markdown") -> Path:
     """Write *result* to *output_dir* in the requested format."""
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)

@@ -1,17 +1,15 @@
 """Tests for protor.cli command handlers and error paths."""
 
 import json
-import os
+from unittest.mock import MagicMock, patch
+
 import pytest
-import tempfile
-import shutil
-from unittest.mock import patch, MagicMock
-from pathlib import Path
+
 from protor.cli import (
     _cmd_analyze,
     _cmd_crawl,
-    _cmd_version,
     _cmd_update,
+    _cmd_version,
     _load_index,
     cli,
 )

@@ -1,19 +1,16 @@
 """Unit tests for protor.analyzer module"""
 
-import json
-import pytest
+from unittest.mock import MagicMock, patch
+
 import responses
-from unittest.mock import patch, MagicMock
+
 from protor.analyzer import (
-    check_ollama,
-    list_ollama_models,
+    FOCUS_CHOICES,
     _prepare_context,
     _stream_backend,
-    analyze_with_ollama,
-    FOCUS_CHOICES,
+    check_ollama,
+    list_ollama_models,
 )
-from protor.exceptions import OllamaModelNotFoundError, OllamaUnavailableError
-from protor.models import SiteManifest, SiteMetadata, AnalysisResult
 
 
 class TestCheckOllama:

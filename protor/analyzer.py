@@ -19,11 +19,11 @@ from rich import box
 from rich.table import Table
 
 from .config import ANALYSIS_MAX_DATA_CHARS, OLLAMA_BASE
-from .exceptions import OllamaModelNotFoundError, OllamaUnavailableError
-from .formatters import format_output, write_output
+from .exceptions import OllamaUnavailableError
+from .formatters import write_output
 from .llm_backends import LLMBackend, create_backend
 from .models import AnalysisResult, SiteManifest
-from .theme import OK, console, header_rule, section_rule, label, bright, muted, err, info
+from .theme import OK, bright, console, err, header_rule, info, label, muted, section_rule
 from .utils import save_json, timestamp
 
 __all__ = ["analyze", "analyze_with_ollama", "check_ollama", "list_ollama_models"]
@@ -130,10 +130,7 @@ def _prepare_context(data: list[dict | SiteManifest]) -> str:
     """Flatten site data into a concise LLM context string."""
     parts: list[str] = []
     for i, site in enumerate(data, 1):
-        if isinstance(site, SiteManifest):
-            d = site.to_dict()
-        else:
-            d = site
+        d = site.to_dict() if isinstance(site, SiteManifest) else site
         m = d.get("metadata", {})
         parts.append(
             f"## [{i}] {d.get('domain', 'unknown')}\n"

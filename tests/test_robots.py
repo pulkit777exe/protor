@@ -1,14 +1,15 @@
 """Tests for protor.robots module."""
 
+from unittest.mock import AsyncMock, MagicMock
+
 import pytest
-import asyncio
-from unittest.mock import AsyncMock, MagicMock, patch
+
 from protor.robots import (
+    _cache,
     _fetch_robots,
-    is_allowed,
     check_robots,
     clear_cache,
-    _cache,
+    is_allowed,
 )
 
 
@@ -105,7 +106,7 @@ class TestCheckRobots:
         mock_session = AsyncMock()
         mock_session.get.side_effect = Exception("Connection refused")
 
-        result = await check_robots("https://example.com/page", mock_session)
+        await check_robots("https://example.com/page", mock_session)
         # When robots.txt can't be fetched, an empty RobotFileParser is cached
         # and can_fetch returns True for an empty parser
         assert _cache.get("https://example.com") is not None

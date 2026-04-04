@@ -1,8 +1,9 @@
 """Tests for protor.formatters module."""
 
+
 import pytest
-from pathlib import Path
-from protor.formatters import format_output, write_output, FORMAT_CHOICES
+
+from protor.formatters import FORMAT_CHOICES, format_output, write_output
 from protor.models import AnalysisResult
 
 

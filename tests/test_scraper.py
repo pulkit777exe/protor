@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
 from bs4 import BeautifulSoup
 
 from protor.scraper import (
@@ -83,7 +82,7 @@ class TestExtractLinks:
 
     def test_excludes_external_links(self):
         links = extract_links(SIMPLE_HTML, "https://example.com")
-        assert not any("external.com" in l for l in links)
+        assert not any("external.com" in link for link in links)
 
     def test_deduplicates(self):
         html = '<a href="/page">A</a><a href="/page">B</a>'
@@ -94,7 +93,7 @@ class TestExtractLinks:
         html = '<a href="/page#section">Link</a>'
         links = extract_links(html, "https://example.com")
         assert "https://example.com/page" in links
-        assert not any("#" in l for l in links)
+        assert not any("#" in link for link in links)
 
     def test_empty_html(self):
         assert extract_links(EMPTY_HTML, "https://example.com") == []
