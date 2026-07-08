@@ -1,5 +1,34 @@
 # Changelog
 
+## [v2.6.0] — 2026-07-08
+
+### New Features
+- Add Markdown output via `--markdown` flag — clean, readable conversion with noise removal
+- Add crawl checkpoint/resume — `--resume` picks up where a crawl left off
+- Add content filtering — `--content-filter` strips ads, nav, footer, and boilerplate
+- Add SQLite-backed crawl queue — BFS ordering with persistent visited tracking
+- Add User-Agent rotation — randomizes UA per request from a pool of 15 real browsers
+- Add schema-based extraction — `--schema schema.json` extracts structured JSON from HTML
+- Add domain/ad blocking — `--block-ads` blocks 100+ known ad/tracker domains out of the box
+- Add hook system — `before_fetch`, `after_fetch`, `before_parse`, `after_parse` callbacks
+- Add auto-scaling concurrency — `--auto-scale` dynamically adjusts workers based on latency
+- Add `extract` command for standalone schema-based extraction from saved HTML files
+
+### Open Source
+- Add CONTRIBUTING.md with development setup, testing, and contribution guidelines
+- Add GitHub issue templates (bug report + feature request)
+- Add CODE_OF_CONDUCT.md
+- Fix license format to SPDX expression in pyproject.toml
+- Add Python 3.13 to classifiers
+
+### Test Improvements
+- Add 72 new tests for markdown, blocklist, and extractor modules (210 → 282 total)
+- Increase test coverage from 69% to 79%
+
+### Code Quality
+- Fix all ruff lint errors and format issues
+- Clean up unused imports across all test files
+
 ## [v2.5.0] — 2026-04-04
 
 ### New Features

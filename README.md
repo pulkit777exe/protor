@@ -238,16 +238,28 @@ protor scrape https://example.com --concurrency 2
 ```
 protor/
 ├── cli.py          # command interface
-├── scraper.py      # async html + js scraper
-├── crawler.py      # bfs site crawler
-├── analyzer.py     # ollama integration
+├── scraper.py      # async html + js scraper with hooks, UA rotation, auto-scaling
+├── crawler.py      # bfs site crawler with checkpoint/resume
+├── analyzer.py     # ollama/openai/anthropic integration
+├── extractor.py    # schema-based structured data extraction
+├── markdown.py     # html to clean markdown converter
+├── blocklist.py    # ad/tracker domain blocking (100+ domains)
 ├── models.py       # typed dataclasses
 ├── exceptions.py   # error hierarchy
 ├── config.py       # centralized constants
+├── llm_backends.py # multi-backend llm abstraction
 ├── theme.py        # rich console theming
+├── http_cache.py   # conditional http caching
+├── robots.py       # robots.txt support
+├── rate_limiter.py # per-domain rate limiting
 ├── updater.py      # pypi update checker
+├── formatters.py   # output formatting
 └── utils.py        # helper stuff
 ```
+
+## contributing
+
+see [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 ## customize it
 
