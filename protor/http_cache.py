@@ -43,7 +43,9 @@ class HTTPCache:
     """Simple disk-backed HTTP cache using ETag/Last-Modified."""
 
     def __init__(self, cache_dir: str | Path | None = None, ttl: int = 3600) -> None:
-        self._cache_dir = Path(cache_dir) if cache_dir else Path.home() / ".cache" / "protor" / "http"
+        self._cache_dir = (
+            Path(cache_dir) if cache_dir else Path.home() / ".cache" / "protor" / "http"
+        )
         self._cache_dir.mkdir(parents=True, exist_ok=True)
         self._ttl = ttl
         self._index: dict[str, CacheEntry] = self._load_index()

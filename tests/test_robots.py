@@ -53,6 +53,7 @@ class TestIsAllowed:
 
     def test_returns_true_when_allowed(self):
         from urllib.robotparser import RobotFileParser
+
         rp = RobotFileParser()
         rp.parse(["User-agent: *", "Allow: /"])
         _cache["https://example.com"] = rp
@@ -60,6 +61,7 @@ class TestIsAllowed:
 
     def test_returns_false_when_disallowed(self):
         from urllib.robotparser import RobotFileParser
+
         rp = RobotFileParser()
         rp.parse(["User-agent: *", "Disallow: /secret"])
         _cache["https://example.com"] = rp
@@ -67,6 +69,7 @@ class TestIsAllowed:
 
     def test_custom_user_agent(self):
         from urllib.robotparser import RobotFileParser
+
         rp = RobotFileParser()
         rp.parse(["User-agent: Googlebot", "Disallow: /", "User-agent: *", "Allow: /"])
         _cache["https://example.com"] = rp
@@ -103,6 +106,7 @@ class TestCheckRobots:
     @pytest.mark.asyncio
     async def test_check_robots_handles_error(self):
         from protor.robots import _cache
+
         mock_session = AsyncMock()
         mock_session.get.side_effect = Exception("Connection refused")
 
@@ -115,6 +119,7 @@ class TestCheckRobots:
 class TestClearCache:
     def test_clear_cache(self):
         from urllib.robotparser import RobotFileParser
+
         _cache["https://example.com"] = RobotFileParser()
         assert len(_cache) > 0
 

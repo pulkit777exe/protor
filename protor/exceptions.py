@@ -19,10 +19,7 @@ class OllamaUnavailableError(ProtorError):
 
     def __init__(self, base_url: str = "http://localhost:11434") -> None:
         self.base_url = base_url
-        super().__init__(
-            f"Cannot reach Ollama at {base_url}. "
-            "Start it with: ollama serve"
-        )
+        super().__init__(f"Cannot reach Ollama at {base_url}. Start it with: ollama serve")
 
 
 class OllamaModelNotFoundError(ProtorError):
@@ -30,9 +27,7 @@ class OllamaModelNotFoundError(ProtorError):
 
     def __init__(self, model: str) -> None:
         self.model = model
-        super().__init__(
-            f"Model {model!r} not found. Pull it with: ollama pull {model}"
-        )
+        super().__init__(f"Model {model!r} not found. Pull it with: ollama pull {model}")
 
 
 class DataFileNotFoundError(ProtorError):
@@ -40,7 +35,4 @@ class DataFileNotFoundError(ProtorError):
 
     def __init__(self, path: str) -> None:
         self.path = path
-        super().__init__(
-            f"Data file not found: {path!r}. "
-            "Run: protor scrape <urls>"
-        )
+        super().__init__(f"Data file not found: {path!r}. Run: protor scrape <urls>")

@@ -124,16 +124,20 @@ class TestHTTPCache:
         cache_dir = tmp_path / "http_cache"
         cache_dir.mkdir()
         index = cache_dir / "index.json"
-        index.write_text(json.dumps({
-            "https://example.com": {
-                "etag": "loaded",
-                "last_modified": None,
-                "body": "restored",
-                "status": 200,
-                "timestamp": time.time(),
-                "ttl": 3600,
-            }
-        }))
+        index.write_text(
+            json.dumps(
+                {
+                    "https://example.com": {
+                        "etag": "loaded",
+                        "last_modified": None,
+                        "body": "restored",
+                        "status": 200,
+                        "timestamp": time.time(),
+                        "ttl": 3600,
+                    }
+                }
+            )
+        )
 
         cache = HTTPCache(cache_dir=cache_dir)
         entry = cache.get("https://example.com")

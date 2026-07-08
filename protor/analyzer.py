@@ -39,7 +39,6 @@ You are a concise web analyst. Given scraped website data provide:
 4. **Insights** — interesting patterns
 5. **Recommendations** — improvements or use cases
 Be direct. Use Markdown. No filler.""",
-
     "technical": """\
 You are a technical analyst. Analyse:
 1. **Tech Stack** — frontend/backend technologies
@@ -48,7 +47,6 @@ You are a technical analyst. Analyse:
 4. **Security** — potential concerns
 5. **Architecture** — overall design approach
 Be specific. Use Markdown.""",
-
     "content": """\
 You are a content strategist. Analyse:
 1. **Content Quality** — writing style, clarity, depth
@@ -57,7 +55,6 @@ You are a content strategist. Analyse:
 4. **Engagement** — CTAs and user journey
 5. **Audience** — target demographic and tone
 Be actionable. Use Markdown.""",
-
     "seo": """\
 You are an SEO specialist. Analyse:
 1. **Meta Tags** — title, description, keyword quality
@@ -72,6 +69,7 @@ FOCUS_CHOICES = list(_PROMPTS.keys())
 
 
 # ── Ollama helpers ────────────────────────────────────────────────────────────
+
 
 def check_ollama(base: str = OLLAMA_BASE) -> bool:
     """Return True if Ollama is reachable."""
@@ -109,14 +107,15 @@ def list_ollama_models(base: str = OLLAMA_BASE) -> None:
         console.print()
         return
 
-    t = Table(box=box.SIMPLE, show_header=True, header_style="bold white",
-              show_edge=False, padding=(0, 1))
-    t.add_column("Model",    style="white",  min_width=30)
-    t.add_column("Size",     style="grey74", width=10,  justify="right")
+    t = Table(
+        box=box.SIMPLE, show_header=True, header_style="bold white", show_edge=False, padding=(0, 1)
+    )
+    t.add_column("Model", style="white", min_width=30)
+    t.add_column("Size", style="grey74", width=10, justify="right")
     t.add_column("Modified", style="grey50", width=12)
 
     for m in models:
-        gb  = m.get("size", 0) / (1024 ** 3)
+        gb = m.get("size", 0) / (1024**3)
         mod = m.get("modified_at", "")[:10]
         t.add_row(m.get("name", "?"), f"{gb:.1f} GB", mod)
 
@@ -125,6 +124,7 @@ def list_ollama_models(base: str = OLLAMA_BASE) -> None:
 
 
 # ── data preparation ──────────────────────────────────────────────────────────
+
 
 def _prepare_context(data: list[dict | SiteManifest]) -> str:
     """Flatten site data into a concise LLM context string."""
@@ -149,6 +149,7 @@ def _prepare_context(data: list[dict | SiteManifest]) -> str:
 
 # ── streaming ─────────────────────────────────────────────────────────────────
 
+
 def _stream_backend(backend: LLMBackend, prompt: str) -> str:
     """Stream response from an LLM backend to the terminal."""
     console.print()
@@ -158,6 +159,7 @@ def _stream_backend(backend: LLMBackend, prompt: str) -> str:
 
 
 # ── public entry point ────────────────────────────────────────────────────────
+
 
 def analyze(
     data: list[dict | SiteManifest],
@@ -212,7 +214,9 @@ def analyze(
     if not llm.check_available():
         if backend == "ollama":
             raise OllamaUnavailableError(base_url or OLLAMA_BASE)
-        raise RuntimeError(f"{backend.capitalize()} backend unavailable. Check your API key and connection.")
+        raise RuntimeError(
+            f"{backend.capitalize()} backend unavailable. Check your API key and connection."
+        )
 
     console.print(
         f"  {label('backend')} {bright(backend)}   "
@@ -255,9 +259,7 @@ def analyze(
     report_path = write_output(result, out, fmt)
 
     console.print(
-        f"  {OK} {label('saved')} "
-        f"{muted(str(report_path))}  "
-        f"{muted(str(out / 'analysis.json'))}"
+        f"  {OK} {label('saved')} {muted(str(report_path))}  {muted(str(out / 'analysis.json'))}"
     )
     console.print()
     return result
@@ -275,6 +277,12 @@ def analyze_with_ollama(
 ) -> AnalysisResult:
     """Backwards-compatible wrapper around *analyze* using the Ollama backend."""
     return analyze(
-        data, model, focus, output_dir,
-        backend="ollama", base_url=base_url, prompt=prompt, fmt=fmt,
+        data,
+        model,
+        focus,
+        output_dir,
+        backend="ollama",
+        base_url=base_url,
+        prompt=prompt,
+        fmt=fmt,
     )

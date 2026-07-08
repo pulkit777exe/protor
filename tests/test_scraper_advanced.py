@@ -121,27 +121,51 @@ class TestDownloadFile:
 
 class TestBuildTable:
     def test_build_table_done(self):
-        rows = [{"idx": 1, "domain": "example.com", "status": "done", "bytes": 1024, "ms": 100, "js": 2}]
+        rows = [
+            {"idx": 1, "domain": "example.com", "status": "done", "bytes": 1024, "ms": 100, "js": 2}
+        ]
         table = _build_table(rows)
         assert table is not None
 
     def test_build_table_error(self):
-        rows = [{"idx": 1, "domain": "example.com", "status": "error", "bytes": 0, "ms": 50, "js": 0}]
+        rows = [
+            {"idx": 1, "domain": "example.com", "status": "error", "bytes": 0, "ms": 50, "js": 0}
+        ]
         table = _build_table(rows)
         assert table is not None
 
     def test_build_table_waiting(self):
-        rows = [{"idx": 1, "domain": "example.com", "status": "waiting", "bytes": None, "ms": None, "js": None}]
+        rows = [
+            {
+                "idx": 1,
+                "domain": "example.com",
+                "status": "waiting",
+                "bytes": None,
+                "ms": None,
+                "js": None,
+            }
+        ]
         table = _build_table(rows)
         assert table is not None
 
     def test_build_table_fetching(self):
-        rows = [{"idx": 1, "domain": "example.com", "status": "fetching", "bytes": None, "ms": None, "js": None}]
+        rows = [
+            {
+                "idx": 1,
+                "domain": "example.com",
+                "status": "fetching",
+                "bytes": None,
+                "ms": None,
+                "js": None,
+            }
+        ]
         table = _build_table(rows)
         assert table is not None
 
     def test_build_table_js_status(self):
-        rows = [{"idx": 1, "domain": "example.com", "status": "js:5", "bytes": 512, "ms": 200, "js": 5}]
+        rows = [
+            {"idx": 1, "domain": "example.com", "status": "js:5", "bytes": 512, "ms": 200, "js": 5}
+        ]
         table = _build_table(rows)
         assert table is not None
 

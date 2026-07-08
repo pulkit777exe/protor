@@ -81,18 +81,22 @@ class TestTimestamp:
     def test_format(self):
         ts = timestamp()
         import re
+
         assert re.match(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", ts)
 
 
 class TestHumanBytes:
-    @pytest.mark.parametrize("n,expected", [
-        (0,       "0 B"),
-        (512,     "512 B"),
-        (1024,    "1.0 KB"),
-        (1536,    "1.5 KB"),
-        (1_048_576, "1.0 MB"),
-        (1_073_741_824, "1.0 GB"),
-    ])
+    @pytest.mark.parametrize(
+        "n,expected",
+        [
+            (0, "0 B"),
+            (512, "512 B"),
+            (1024, "1.0 KB"),
+            (1536, "1.5 KB"),
+            (1_048_576, "1.0 MB"),
+            (1_073_741_824, "1.0 GB"),
+        ],
+    )
     def test_units(self, n: int, expected: str):
         assert human_bytes(n) == expected
 

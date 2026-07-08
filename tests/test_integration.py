@@ -30,9 +30,12 @@ class TestCLIIntegration:
         mock_scrape.return_value = os.path.join(self.temp_dir, "sites_index.json")
 
         # Simulate CLI call
-        with patch(
-            "sys.argv", ["protor", "scrape", "https://example.com", "--output", self.temp_dir]
-        ), contextlib.suppress(SystemExit):
+        with (
+            patch(
+                "sys.argv", ["protor", "scrape", "https://example.com", "--output", self.temp_dir]
+            ),
+            contextlib.suppress(SystemExit),
+        ):
             cli()
 
         mock_scrape.assert_called_once()
@@ -61,10 +64,13 @@ class TestCLIIntegration:
         mock_scrape_multiple.return_value = json_path
         mock_analyze.return_value = "analysis.md"
 
-        with patch(
-            "sys.argv",
-            ["protor", "run", "https://example.com", "-m", "llama3", "--output", self.temp_dir],
-        ), contextlib.suppress(SystemExit):
+        with (
+            patch(
+                "sys.argv",
+                ["protor", "run", "https://example.com", "-m", "llama3", "--output", self.temp_dir],
+            ),
+            contextlib.suppress(SystemExit),
+        ):
             cli()
 
         mock_scrape_multiple.assert_called_once()

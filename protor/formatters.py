@@ -35,17 +35,20 @@ def _to_csv(result: AnalysisResult) -> str:
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["timestamp", "model", "focus", "sites_analyzed", "analysis"])
-    writer.writerow([result.timestamp, result.model, result.focus, result.sites_analyzed, result.analysis])
+    writer.writerow(
+        [result.timestamp, result.model, result.focus, result.sites_analyzed, result.analysis]
+    )
     return output.getvalue()
 
 
 def _to_html(result: AnalysisResult) -> str:
     import html as html_mod
+
     return (
         "<!DOCTYPE html>\n"
-        "<html lang=\"en\">\n"
+        '<html lang="en">\n'
         "<head>\n"
-        "<meta charset=\"utf-8\">\n"
+        '<meta charset="utf-8">\n'
         "<title>Website Analysis Report</title>\n"
         "<style>\n"
         "body { font-family: system-ui, sans-serif; max-width: 800px; margin: 2rem auto; padding: 0 1rem; line-height: 1.6; }\n"
@@ -56,11 +59,11 @@ def _to_html(result: AnalysisResult) -> str:
         "</head>\n"
         "<body>\n"
         f"<h1>Website Analysis Report</h1>\n"
-        f"<p class=\"meta\">Generated: {html_mod.escape(result.timestamp)} | "
+        f'<p class="meta">Generated: {html_mod.escape(result.timestamp)} | '
         f"Model: <code>{html_mod.escape(result.model)}</code> | "
         f"Focus: {html_mod.escape(result.focus)} | "
         f"Sites: {result.sites_analyzed}</p>\n"
-        f"<div class=\"analysis\">{html_mod.escape(result.analysis)}</div>\n"
+        f'<div class="analysis">{html_mod.escape(result.analysis)}</div>\n'
         "</body>\n"
         "</html>\n"
     )

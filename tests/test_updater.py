@@ -44,7 +44,10 @@ class TestIsEditableInstall:
             mock_path.side_effect = path_factory
 
             import protor
-            with patch.object(protor, "__file__", "/usr/lib/python3.13/site-packages/protor/__init__.py"):
+
+            with patch.object(
+                protor, "__file__", "/usr/lib/python3.13/site-packages/protor/__init__.py"
+            ):
                 result = _is_editable_install()
                 assert result is False
 
@@ -57,8 +60,10 @@ class TestCmdUpdate:
 
         args = Namespace(check=True, yes=False)
 
-        with patch("protor.updater._is_editable_install", return_value=False), \
-             patch("protor.cli.check_for_update") as mock_check:
+        with (
+            patch("protor.updater._is_editable_install", return_value=False),
+            patch("protor.cli.check_for_update") as mock_check,
+        ):
             mock_check.return_value = {
                 "current": "2.0.0",
                 "latest": "2.1.0",
@@ -76,9 +81,11 @@ class TestCmdUpdate:
 
         args = Namespace(check=False, yes=True)
 
-        with patch("protor.updater._is_editable_install", return_value=False), \
-             patch("protor.cli.check_for_update") as mock_check, \
-             patch("protor.cli.perform_update", return_value=True):
+        with (
+            patch("protor.updater._is_editable_install", return_value=False),
+            patch("protor.cli.check_for_update") as mock_check,
+            patch("protor.cli.perform_update", return_value=True),
+        ):
             mock_check.return_value = {
                 "current": "2.0.0",
                 "latest": "2.1.0",
@@ -95,8 +102,10 @@ class TestCmdUpdate:
 
         args = Namespace(check=False, yes=False)
 
-        with patch("protor.updater._is_editable_install", return_value=False), \
-             patch("protor.cli.check_for_update") as mock_check:
+        with (
+            patch("protor.updater._is_editable_install", return_value=False),
+            patch("protor.cli.check_for_update") as mock_check,
+        ):
             mock_check.return_value = {
                 "current": "2.0.0",
                 "latest": "2.0.0",
@@ -111,9 +120,7 @@ class TestGetLatestVersion:
     @patch("protor.updater.urlopen")
     def test_success(self, mock_urlopen):
         mock_response = MagicMock()
-        mock_response.read.return_value = json.dumps({
-            "info": {"version": "3.0.0"}
-        }).encode()
+        mock_response.read.return_value = json.dumps({"info": {"version": "3.0.0"}}).encode()
         mock_response.__enter__ = MagicMock(return_value=mock_response)
         mock_response.__exit__ = MagicMock(return_value=False)
         mock_urlopen.return_value = mock_response
@@ -125,6 +132,7 @@ class TestGetLatestVersion:
     @patch("protor.updater.urlopen")
     def test_network_error_returns_none(self, mock_urlopen):
         from urllib.error import URLError
+
         mock_urlopen.side_effect = URLError("network error")
 
         result = get_latest_version()

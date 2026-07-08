@@ -1,4 +1,5 @@
 """Unit tests for protor.cli module"""
+
 import json
 from unittest.mock import patch
 
@@ -24,11 +25,19 @@ class TestBuildParser:
 
     def test_scrape_with_options(self):
         parser = _build_parser()
-        args = parser.parse_args([
-            "scrape", "https://example.com", "--no-js",
-            "--timeout", "60", "--concurrency", "3",
-            "--output", "/tmp/test"
-        ])
+        args = parser.parse_args(
+            [
+                "scrape",
+                "https://example.com",
+                "--no-js",
+                "--timeout",
+                "60",
+                "--concurrency",
+                "3",
+                "--output",
+                "/tmp/test",
+            ]
+        )
         assert args.no_js is True
         assert args.timeout == 60
         assert args.concurrency == 3
@@ -44,12 +53,19 @@ class TestBuildParser:
 
     def test_analyze_with_options(self):
         parser = _build_parser()
-        args = parser.parse_args([
-            "analyze", "--model", "mistral",
-            "--focus", "technical",
-            "--file", "/tmp/data.json",
-            "--output", "/tmp/analysis"
-        ])
+        args = parser.parse_args(
+            [
+                "analyze",
+                "--model",
+                "mistral",
+                "--focus",
+                "technical",
+                "--file",
+                "/tmp/data.json",
+                "--output",
+                "/tmp/analysis",
+            ]
+        )
         assert args.model == "mistral"
         assert args.focus == "technical"
         assert args.file == "/tmp/data.json"
@@ -65,11 +81,20 @@ class TestBuildParser:
 
     def test_run_with_options(self):
         parser = _build_parser()
-        args = parser.parse_args([
-            "run", "https://example.com", "https://other.com",
-            "--model", "codellama", "--focus", "seo",
-            "--no-js", "--concurrency", "2"
-        ])
+        args = parser.parse_args(
+            [
+                "run",
+                "https://example.com",
+                "https://other.com",
+                "--model",
+                "codellama",
+                "--focus",
+                "seo",
+                "--no-js",
+                "--concurrency",
+                "2",
+            ]
+        )
         assert args.urls == ["https://example.com", "https://other.com"]
         assert args.model == "codellama"
         assert args.focus == "seo"
@@ -85,10 +110,9 @@ class TestBuildParser:
 
     def test_crawl_with_options(self):
         parser = _build_parser()
-        args = parser.parse_args([
-            "crawl", "https://example.com",
-            "--max-pages", "50", "--output", "/tmp/crawl"
-        ])
+        args = parser.parse_args(
+            ["crawl", "https://example.com", "--max-pages", "50", "--output", "/tmp/crawl"]
+        )
         assert args.max_pages == 50
         assert args.output == "/tmp/crawl"
 

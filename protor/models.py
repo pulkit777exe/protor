@@ -32,6 +32,8 @@ class SiteManifest:
     elapsed_ms: int
     timestamp: str
     success: bool = True
+    markdown_content: str = ""
+    extracted_data: list[dict[str, Any]] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         d = asdict(self)
@@ -42,7 +44,9 @@ class SiteManifest:
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SiteManifest:
         meta_raw = d.pop("metadata", {})
-        meta = SiteMetadata(**{k: v for k, v in meta_raw.items() if k in SiteMetadata.__dataclass_fields__})
+        meta = SiteMetadata(
+            **{k: v for k, v in meta_raw.items() if k in SiteMetadata.__dataclass_fields__}
+        )
         # compat: old key name
         if "bytes" in d and "bytes_received" not in d:
             d["bytes_received"] = d.pop("bytes")

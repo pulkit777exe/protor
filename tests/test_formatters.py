@@ -1,6 +1,5 @@
 """Tests for protor.formatters module."""
 
-
 import pytest
 
 from protor.formatters import FORMAT_CHOICES, format_output, write_output

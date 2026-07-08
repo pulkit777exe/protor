@@ -14,7 +14,9 @@ if TYPE_CHECKING:
 _cache: dict[str, RobotFileParser] = {}
 
 
-async def _fetch_robots(base_url: str, session: aiohttp.ClientSession | None = None) -> RobotFileParser:
+async def _fetch_robots(
+    base_url: str, session: aiohttp.ClientSession | None = None
+) -> RobotFileParser:
     """Fetch and parse robots.txt for *base_url*, caching the result."""
     if base_url in _cache:
         return _cache[base_url]
