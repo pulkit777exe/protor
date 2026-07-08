@@ -49,9 +49,10 @@ def _abort(msg: str, hint: str = "") -> None:
     sys.exit(1)
 
 
-def _load_index(path: str) -> list[dict]:
+def _load_index(path: str) -> list[dict]:  # type: ignore[type-arg]
     try:
-        return load_json(path)
+        result = load_json(path)
+        return list(result)
     except FileNotFoundError as exc:
         raise DataFileNotFoundError(path) from exc
 
@@ -91,7 +92,7 @@ def _cmd_analyze(args: argparse.Namespace) -> None:
         prompt = args.prompt
     elif args.prompt_file:
         prompt = Path(args.prompt_file).read_text(encoding="utf-8")
-    analyze_with_ollama(data, args.model, args.focus, out, prompt=prompt, fmt=args.format)
+    analyze_with_ollama(data, args.model, args.focus, out, prompt=prompt, fmt=args.format)  # type: ignore[arg-type]
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
@@ -116,7 +117,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
         auto_scale=args.auto_scale,
     )
     data = _load_index(index)
-    analyze_with_ollama(data, args.model, args.focus, base / "analysis")
+    analyze_with_ollama(data, args.model, args.focus, base / "analysis")  # type: ignore[arg-type]
 
 
 def _cmd_crawl(args: argparse.Namespace) -> None:

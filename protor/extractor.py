@@ -130,10 +130,10 @@ def _extract_field_value(element: Tag, field: FieldSchema, base_url: str) -> Any
         return str(val) if val is not None else field.default
     elif field.type == "href":
         href = element.get("href", "")
-        return urljoin(base_url, href) if href else field.default
+        return urljoin(base_url, str(href)) if href else field.default
     elif field.type == "src":
         src = element.get("src", "")
-        return urljoin(base_url, src) if src else field.default
+        return urljoin(base_url, str(src)) if src else field.default
     elif field.type == "regex":
         text = element.get_text(strip=True)
         pattern = field.attribute  # reuse attribute for regex pattern
@@ -193,7 +193,7 @@ class Extractor:
                 try:
                     elements = container.select(f.selector)
                 except Exception:
-                    elements = []
+                    elements = []  # type: ignore[assignment]
 
                 if not elements:
                     record[f.name] = f.default

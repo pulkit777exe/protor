@@ -105,7 +105,7 @@ class _CrawlQueue:
         ).fetchone()
         if row is None:
             return None
-        url = row[0]
+        url: str = row[0]
         self._conn.execute("DELETE FROM queue WHERE url = ?", (url,))
         self._conn.commit()
         return url

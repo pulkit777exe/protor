@@ -26,7 +26,10 @@ async def _fetch_robots(
 
     if session:
         try:
-            async with session.get(robots_url, timeout=DEFAULT_TIMEOUT) as resp:
+            import aiohttp as _aiohttp
+
+            timeout_obj = _aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
+            async with session.get(robots_url, timeout=timeout_obj) as resp:
                 if resp.status == 200:
                     text = await resp.text()
                     rp.parse(text.splitlines())

@@ -74,7 +74,9 @@ FOCUS_CHOICES = list(_PROMPTS.keys())
 def check_ollama(base: str = OLLAMA_BASE) -> bool:
     """Return True if Ollama is reachable."""
     try:
-        return requests.get(f"{base}/api/tags", timeout=5).status_code == 200
+        resp = requests.get(f"{base}/api/tags", timeout=5)
+        status: int = resp.status_code
+        return status == 200
     except Exception:
         return False
 
@@ -82,7 +84,8 @@ def check_ollama(base: str = OLLAMA_BASE) -> bool:
 def _list_models(base: str = OLLAMA_BASE) -> list[dict]:
     r = requests.get(f"{base}/api/tags", timeout=5)
     r.raise_for_status()
-    return r.json().get("models", [])
+    data = r.json()
+    return list(data.get("models", []))
 
 
 def _model_exists(model: str, base: str = OLLAMA_BASE) -> bool:

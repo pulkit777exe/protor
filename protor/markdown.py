@@ -27,8 +27,10 @@ def _is_noise(tag: Tag) -> bool:
     """Check if a tag is likely noise based on common patterns."""
     if tag.name in _NOISE_TAGS:
         return True
-    classes = " ".join(tag.get("class", []))
-    ids = " ".join(tag.get("id", []))
+    raw_classes = tag.get("class")
+    classes = " ".join(raw_classes) if isinstance(raw_classes, list) else str(raw_classes or "")
+    raw_ids = tag.get("id")
+    ids = " ".join(raw_ids) if isinstance(raw_ids, list) else str(raw_ids or "")
     noise_patterns = re.compile(
         r"sidebar|widget|popup|modal|overlay|banner|cookie|consent|newsletter|"
         r"subscribe|social|share|comment|disqus|related|recommended|advertisement|"
@@ -108,7 +110,7 @@ def _process_element(tag: Tag, base_url: str, lines: list[str], depth: int) -> N
         src = tag.get("src", "")
         alt = tag.get("alt", "")
         if src:
-            full_src = urljoin(base_url, src)
+            full_src = urljoin(base_url, str(src))
             lines.append(f"![{alt}]({full_src})")
         return
 
@@ -117,7 +119,7 @@ def _process_element(tag: Tag, base_url: str, lines: list[str], depth: int) -> N
         href = tag.get("href", "")
         text = tag.get_text(strip=True)
         if href and text:
-            full_href = urljoin(base_url, href)
+            full_href = urljoin(base_url, str(href))
             lines.append(f"[{text}]({full_href})")
         elif text:
             lines.append(text)
@@ -193,15 +195,15 @@ def _process_table(tag: Tag, base_url: str, lines: list[str]) -> None:
     # Determine column widths
     num_cols = max(len(r) for r in table_data)
     col_widths = [0] * num_cols
-    for row in table_data:
-        for i, cell in enumerate(row):
+    for row_data in table_data:
+        for i, cell in enumerate(row_data):
             if i < num_cols:
                 col_widths[i] = max(col_widths[i], len(cell))
 
     # Normalize row lengths
-    for row in table_data:
-        while len(row) < num_cols:
-            row.append("")
+    for row_data in table_data:
+        while len(row_data) < num_cols:
+            row_data.append("")
 
     lines.append("")
     # Header
@@ -209,8 +211,10 @@ def _process_table(tag: Tag, base_url: str, lines: list[str]) -> None:
     lines.append("| " + " | ".join(c.ljust(col_widths[i]) for i, c in enumerate(header)) + " |")
     lines.append("| " + " | ".join("-" * col_widths[i] for i in range(num_cols)) + " |")
     # Body
-    for row in table_data[1:]:
-        lines.append("| " + " | ".join(c.ljust(col_widths[i]) for i, c in enumerate(row)) + " |")
+    for row_data in table_data[1:]:
+        lines.append(
+            "| " + " | ".join(c.ljust(col_widths[i]) for i, c in enumerate(row_data)) + " |"
+        )
     lines.append("")
 
 

@@ -49,24 +49,25 @@ class OllamaBackend(LLMBackend):
         return self._model
 
     def check_available(self) -> bool:
-        import requests
+        import requests as _requests
 
         try:
-            resp = requests.get(f"{self._base_url}/api/tags", timeout=5)
-            return resp.status_code == 200
+            resp = _requests.get(f"{self._base_url}/api/tags", timeout=5)
+            status: int = resp.status_code
+            return status == 200
         except Exception:
             return False
 
     def stream(self, prompt: str) -> str:
         import json
 
-        import requests
+        import requests as _requests
         from rich.console import Console
 
         console = Console()
         full: list[str] = []
 
-        resp = requests.post(
+        resp = _requests.post(
             f"{self._base_url}/api/generate",
             json={"model": self._model, "prompt": prompt, "stream": True},
             stream=True,
@@ -206,9 +207,9 @@ class AnthropicBackend(LLMBackend):
         return "".join(full)
 
 
-def create_backend(backend: str, model: str, **kwargs) -> LLMBackend:
+def create_backend(backend: str, model: str, **kwargs: object) -> LLMBackend:
     """Factory function to create an LLM backend."""
-    backends = {
+    backends: dict[str, type[LLMBackend]] = {
         "ollama": OllamaBackend,
         "openai": OpenAIBackend,
         "anthropic": AnthropicBackend,
@@ -216,4 +217,4 @@ def create_backend(backend: str, model: str, **kwargs) -> LLMBackend:
     cls = backends.get(backend.lower())
     if cls is None:
         raise ValueError(f"Unknown backend: {backend!r}. Choose from: {', '.join(backends)}")
-    return cls(model, **kwargs)
+    return cls(model, **kwargs)  # type: ignore[call-arg]

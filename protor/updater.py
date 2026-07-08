@@ -31,7 +31,8 @@ def get_latest_version() -> str | None:
     try:
         with urlopen(PYPI_URL, timeout=UPDATE_TIMEOUT) as response:
             data = json.loads(response.read().decode())
-            return data.get("info", {}).get("version")
+            version = data.get("info", {}).get("version")
+            return str(version) if version is not None else None
     except (URLError, OSError, json.JSONDecodeError, KeyError):
         return None
 
