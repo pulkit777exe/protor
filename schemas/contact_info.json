@@ -1,0 +1,9 @@
+{
+  "name": "contact_info",
+  "fields": [
+    {"name": "emails", "selector": "a[href^='mailto:']", "type": "href", "multiple": true},
+    {"name": "phones", "selector": "a[href^='tel:']", "type": "href", "multiple": true},
+    {"name": "address", "selector": "address", "type": "text"},
+    {"name": "social_links", "selector": "a[href*='twitter.com'], a[href*='linkedin.com'], a[href*='github.com']", "type": "href", "multiple": true}
+  ]
+}

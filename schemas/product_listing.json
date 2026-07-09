@@ -1,0 +1,11 @@
+{
+  "name": "product_listing",
+  "base_selector": ".product-card",
+  "fields": [
+    {"name": "title", "selector": "h2.product-title", "type": "text"},
+    {"name": "price", "selector": ".price", "type": "text"},
+    {"name": "link", "selector": "a.product-link", "type": "href"},
+    {"name": "image", "selector": "img.product-image", "type": "src"},
+    {"name": "rating", "selector": ".rating", "type": "attribute", "attribute": "data-rating"}
+  ]
+}

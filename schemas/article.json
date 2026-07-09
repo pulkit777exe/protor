@@ -1,0 +1,12 @@
+{
+  "name": "article",
+  "base_selector": "article",
+  "fields": [
+    {"name": "title", "selector": "h1", "type": "text"},
+    {"name": "author", "selector": ".author, [rel=author]", "type": "text"},
+    {"name": "date", "selector": "time", "type": "attribute", "attribute": "datetime"},
+    {"name": "content", "selector": ".article-body, .post-content", "type": "html"},
+    {"name": "tags", "selector": ".tag, .label", "type": "text", "multiple": true},
+    {"name": "hero_image", "selector": ".hero img, .featured-image img", "type": "src"}
+  ]
+}
