@@ -59,6 +59,21 @@ def _backoff(attempt: int) -> float:
     return delay
 
 
+def _from_cache(entry: CacheEntry) -> FetchResult:
+    """
+    Build a result from a cache hit.
+
+    ``nbytes`` reflects the body actually served, not the bytes transferred.
+    Reporting 0 made every cached page render as ``—`` in the results table and
+    ``0 B total`` in the summary, which reads as "nothing was scraped".
+    """
+    return FetchResult(
+        text=entry.body,
+        nbytes=len(entry.body.encode("utf-8")),
+        status=entry.status,
+    )
+
+
 async def fetch(
     session: aiohttp.ClientSession,
     url: str,
@@ -79,7 +94,7 @@ async def fetch(
     if cache:
         cached = cache.get(url)
         if cached:
-            return FetchResult(text=cached.body, nbytes=0, status=cached.status)
+            return _from_cache(cached)
 
     hook_ctx: dict[str, Any] = {"url": url, "headers": {}}
     for hook in (hooks or {}).get("before_fetch", []):
@@ -98,7 +113,7 @@ async def fetch(
                 if r.status == 304 and cache:
                     cached = cache.get(url)
                     if cached:
-                        return FetchResult(text=cached.body, nbytes=0, status=cached.status)
+                        return _from_cache(cached)
                     raise FetchError(url, "304 Not Modified with no cache entry")
                 if r.status >= 400:
                     if r.status in RETRYABLE_STATUS and attempt < max_retries - 1:

@@ -62,30 +62,33 @@ class TestFetch:
             await fetch(mock_session, "https://example.com", max_retries=2)
 
     @pytest.mark.asyncio
-    async def test_fetch_cache_hit(self):
-        mock_session = AsyncMock()
+    async def test_fetch_cache_hit(self, fake_session):
+        session = fake_session()
         cache = HTTPCache()
         cache.put("https://example.com", CacheEntry(body="cached"))
 
-        result = await fetch(mock_session, "https://example.com", cache=cache)
+        result = await fetch(session, "https://example.com", cache=cache)
         assert result.text == "cached"
-        assert result.nbytes == 0
+        # Reports the body it served, not 0 bytes, so cached pages do not
+        # render as "—" in the results table.
+        assert result.nbytes == len(b"cached")
+        assert session.requested == []
 
     @pytest.mark.asyncio
-    async def test_fetch_304_with_cache(self):
-        mock_session = AsyncMock()
-        mock_response = AsyncMock()
-        mock_response.status = 304
-        mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-        mock_response.__aexit__ = AsyncMock(return_value=False)
-        mock_session.get = MagicMock(return_value=mock_response)
+    async def test_fetch_304_with_cache(self, fake_session):
+        from tests.conftest import FakeResponse
+
+        session = fake_session(
+            routes={"https://example.com": FakeResponse(status=304)}
+        )
 
         cache = HTTPCache()
         cache.put("https://example.com", CacheEntry(etag="abc", body="cached"))
 
-        result = await fetch(mock_session, "https://example.com", cache=cache)
+        result = await fetch(session, "https://example.com", cache=cache)
         assert result.text == "cached"
-        assert result.nbytes == 0
+        assert result.nbytes == len(b"cached")
+        assert result.status == 200
 
 
 class TestDownloadFile:

@@ -271,6 +271,47 @@ class TestPageFilenames:
         assert b == "blog-a.html"
 
 
+# ── cached pages must report real sizes ──────────────────────────────────────
+
+
+class TestCacheHitReporting:
+    @pytest.mark.asyncio
+    async def test_cached_page_reports_its_body_size(self, tmp_path):
+        """A cache hit reported 0 bytes, rendering as "—" in the results table."""
+        from protor.fetcher import fetch
+        from protor.http_cache import CacheEntry, HTTPCache
+        from tests.conftest import FakeResponse, FakeSession
+
+        body = "<html><body>" + "x" * 500 + "</body></html>"
+        url = "https://x.com/"
+        cache = HTTPCache(cache_dir=tmp_path / "c")
+        cache.put(url, CacheEntry(body=body))
+
+        session = FakeSession(routes={url: FakeResponse(status=200, body=body)})
+        result = await fetch(session, url, cache=cache)
+
+        assert result.text == body
+        assert result.nbytes == len(body.encode("utf-8"))
+        assert session.requested == [], "should have been served from cache"
+
+    @pytest.mark.asyncio
+    async def test_not_modified_reports_body_size(self, tmp_path):
+        from protor.fetcher import fetch
+        from protor.http_cache import CacheEntry, HTTPCache
+        from tests.conftest import FakeResponse, FakeSession
+
+        body = "y" * 300
+        url = "https://x.com/"
+        cache = HTTPCache(cache_dir=tmp_path / "c")
+        cache.put(url, CacheEntry(body=body, etag='W/"abc"'))
+
+        session = FakeSession(routes={url: FakeResponse(status=304)})
+        result = await fetch(session, url, cache=cache)
+
+        assert result.text == body
+        assert result.nbytes == len(body.encode("utf-8"))
+
+
 # ── crawler rendering ────────────────────────────────────────────────────────
 
 
