@@ -78,9 +78,7 @@ class TestFetch:
     async def test_fetch_304_with_cache(self, fake_session):
         from tests.conftest import FakeResponse
 
-        session = fake_session(
-            routes={"https://example.com": FakeResponse(status=304)}
-        )
+        session = fake_session(routes={"https://example.com": FakeResponse(status=304)})
 
         cache = HTTPCache()
         cache.put("https://example.com", CacheEntry(etag="abc", body="cached"))
