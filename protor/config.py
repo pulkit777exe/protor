@@ -10,6 +10,11 @@ DEFAULT_CONCURRENCY: int = 6
 DEFAULT_TIMEOUT: int = 30
 MAX_JS_FILES: int = 15
 MAX_TEXT_CHARS: int = 10_000
+#: Cap on the Markdown artefact stored per page. Markdown is denser than plain
+#: text (links, headings, code fences) so it gets a larger budget, but it is
+#: still derived data — the saved HTML is the source of truth — and an uncapped
+#: value let one long page add ~119k characters to every manifest.
+MAX_MARKDOWN_CHARS: int = 40_000
 JS_DOWNLOAD_TIMEOUT: int = 15
 RATE_LIMIT_DELAY: float = 0.5
 

@@ -413,22 +413,31 @@ class CrawlEngine:
 
             js_downloaded: list[str] = []
             if self._download_js and page.js_links:
-                js_links = page.js_links[: config.MAX_JS_FILES]
-                row["status"] = f"js:{len(js_links)}"
-                self._emit(f"js:{len(js_links)}", url, row)
-                js_dir = site_dir / "js"
-                js_dir.mkdir(parents=True, exist_ok=True)
-                taken: set[str] = set()
-                tasks = [
-                    download_file(
-                        session,
-                        jurl,
-                        js_dir / self._js_filename(i, jurl, taken),
-                    )
-                    for i, jurl in enumerate(js_links)
+                # The blocklist guards the page fetch, but script tags point at
+                # third-party CDNs — exactly the ad/tracker hosts --block-ads
+                # exists to avoid. Filter them here too, or the flag silently
+                # does nothing while still making the requests.
+                js_links = [
+                    j
+                    for j in page.js_links[: config.MAX_JS_FILES]
+                    if self._blocklist is None or not self._blocklist.is_url_blocked(j)
                 ]
-                results = await asyncio.gather(*tasks)
-                js_downloaded = [jurl for jurl, ok in zip(js_links, results, strict=False) if ok]
+                if js_links:
+                    row["status"] = f"js:{len(js_links)}"
+                    self._emit(f"js:{len(js_links)}", url, row)
+                    js_dir = site_dir / "js"
+                    js_dir.mkdir(parents=True, exist_ok=True)
+                    taken: set[str] = set()
+                    tasks = [
+                        download_file(
+                            session,
+                            jurl,
+                            js_dir / self._js_filename(i, jurl, taken),
+                        )
+                        for i, jurl in enumerate(js_links)
+                    ]
+                    results = await asyncio.gather(*tasks)
+                    js_downloaded = [u for u, ok in zip(js_links, results, strict=False) if ok]
 
             extracted = None
             if self._extraction_schema is not None:

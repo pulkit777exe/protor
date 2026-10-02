@@ -43,7 +43,9 @@ class SiteManifest:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> SiteManifest:
-        meta_raw = d.pop("metadata", {})
+        # `metadata: null` is valid JSON and appears in hand-written or
+        # third-party indexes; treating it as absent keeps from_dict total.
+        meta_raw = d.pop("metadata", None) or {}
         meta = SiteMetadata(
             **{k: v for k, v in meta_raw.items() if k in SiteMetadata.__dataclass_fields__}
         )

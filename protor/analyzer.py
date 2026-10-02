@@ -223,7 +223,8 @@ _DESCRIPTION_BUDGETS = (_DESCRIPTION_MAX, 80, 0)
 def _site_header(i: int, site: dict | SiteManifest, desc_budget: int) -> str:
     """Render a site's identity block (everything except its content preview)."""
     d = site.to_dict() if isinstance(site, SiteManifest) else site
-    m = d.get("metadata", {})
+    # Tolerate a null/absent metadata block rather than raising on a bad index.
+    m = d.get("metadata") or {}
     head = f"## [{i}] {d.get('domain', 'unknown')}\nURL: {d.get('url', '')}\n"
     title = str(m.get("title", ""))
     if title:
@@ -255,7 +256,7 @@ def _prepare_context(data: list[dict | SiteManifest], max_chars: int | None = No
 
     bodies = [
         str(
-            (site.to_dict() if isinstance(site, SiteManifest) else site).get("text_content", "")
+            (site.to_dict() if isinstance(site, SiteManifest) else site).get("text_content") or ""
         ).strip()
         for site in data
     ]

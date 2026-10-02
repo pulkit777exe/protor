@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import datetime
@@ -9,10 +10,29 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
 
+#: Most filesystems cap a single path component at 255 bytes. Staying well under
+#: that leaves room for a suffix we may need to add.
+MAX_FILENAME_LEN = 200
+
+_UNSAFE = re.compile(r"[^a-zA-Z0-9_.-]")
+
 
 def safe_filename(name: str) -> str:
-    """Return a filesystem-safe version of *name*."""
-    return re.sub(r"[^a-zA-Z0-9_.-]", "_", name).strip("_") or "unnamed"
+    """
+    Return a filesystem-safe version of *name*.
+
+    Sanitises illegal characters and keeps the result within
+    :data:`MAX_FILENAME_LEN`. A long name is truncated and given a short hash of
+    the original, so two different URLs that share a long prefix still produce
+    different files rather than overwriting each other.
+    """
+    cleaned = _UNSAFE.sub("_", name).strip("_") or "unnamed"
+    if len(cleaned) <= MAX_FILENAME_LEN:
+        return cleaned
+    digest = hashlib.sha256(cleaned.encode("utf-8")).hexdigest()[:12]
+    suffix = Path(cleaned).suffix[:16]
+    stem = cleaned[: MAX_FILENAME_LEN - len(digest) - len(suffix) - 1].rstrip("_")
+    return f"{stem}.{digest}{suffix}"
 
 
 def canonicalize_url(url: str) -> str:

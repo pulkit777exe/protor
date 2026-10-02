@@ -30,7 +30,8 @@ class TestState:
         assert s.current == ""
         assert s.queue_n == 0
         assert s.max_pages == 10
-        assert s.log == []
+        assert list(s.log) == []
+        assert s.log_total == 0
 
     def test_custom_max_pages(self):
         s = _State(max_pages=50)

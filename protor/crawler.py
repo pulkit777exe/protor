@@ -23,6 +23,7 @@ import asyncio
 import json
 import sqlite3
 import time
+from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
@@ -42,7 +43,18 @@ from .config import (
 from .engine import CrawlEngine, RecursiveSource
 from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
-from .theme import ERR, OK, SKIP, SPIN, bright, console, header_rule, label, muted
+from .theme import (
+    ERR,
+    OK,
+    SKIP,
+    SPIN,
+    bright,
+    console,
+    header_rule,
+    label,
+    muted,
+    warn,
+)
 from .utils import canonicalize_url, get_default_output_dir, save_json
 
 __all__ = ["Crawler"]
@@ -214,11 +226,20 @@ class _CrawlQueue:
 # ── crawl state ──────────────────────────────────────────────────────────────
 
 
+#: Entries kept in the live log. The view only renders the most recent slice,
+#: so retaining every page of a large crawl grew memory for nothing.
+_LOG_HISTORY = 200
+
+#: Rows shown in the live log table.
+_LOG_VIEW = 20
+
+
 @dataclass
 class _CrawlLog:
     status: str  # "ok" | "err" | "active" | "blocked" | "skip"
     domain: str
     note: str = ""
+    url: str = ""
 
 
 @dataclass
@@ -229,7 +250,10 @@ class _State:
     current: str = ""
     queue_n: int = 0
     max_pages: int = DEFAULT_MAX_PAGES
-    log: list[_CrawlLog] = field(default_factory=list)
+    log: deque[_CrawlLog] = field(default_factory=lambda: deque(maxlen=_LOG_HISTORY))
+    #: Total log entries ever appended, so numbering stays stable once the
+    #: deque starts discarding old rows.
+    log_total: int = 0
 
 
 _BAR_WIDTH = 32
@@ -267,8 +291,9 @@ def _render(state: _State, output_dir: str) -> Group:
     log_t.add_column("Domain", style="white", min_width=28)
     log_t.add_column("Status", width=10)
 
-    recent = state.log[-20:]
-    for i, entry in enumerate(recent, max(1, len(state.log) - 19)):
+    recent = list(state.log)[-_LOG_VIEW:]
+    first_index = max(1, state.log_total - len(recent) + 1)
+    for i, entry in enumerate(recent, first_index):
         if entry.status == "ok":
             s = Text(f"{OK} done", style="green")
         elif entry.status == "err":
@@ -319,7 +344,7 @@ class Crawler:
 
         self._base_domain = urlparse(start_url).netloc
         self._state = _State(max_pages=max_pages)
-        self._log_index: dict[str, int] = {}
+        self._log_index: dict[str, _CrawlLog] = {}
 
         # SQLite queue
         db_path = self.output_dir / "crawl_queue.db"
@@ -328,15 +353,26 @@ class Crawler:
         # Load checkpoint if resuming
         checkpoint_path = self.output_dir / CHECKPOINT_FILENAME
         if resume and checkpoint_path.exists():
+            original = self._queue
             try:
                 cp = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-                self._queue = _CrawlQueue.from_checkpoint(cp, db_path)
+                restored = _CrawlQueue.from_checkpoint(cp, db_path)
+            except Exception as exc:
+                # Previously swallowed with `pass`: the user asked to resume and
+                # silently got a fresh crawl, with no clue why. Also leaked the
+                # original connection when the restore failed part-way.
+                console.print(
+                    f"  {warn(f'Could not resume from checkpoint: {exc}')}\n"
+                    f"  {muted('Starting a fresh crawl instead.')}"
+                )
+                restored = None
+            if restored is not None:
+                original.close()
+                self._queue = restored
                 self._state.scraped = self._queue.success_count
                 console.print(
                     f"  {OK} Resumed from checkpoint — {self._state.scraped} pages already scraped"
                 )
-            except Exception:
-                pass
 
         # Always ensure start_url is queued
         self._queue.enqueue(start_url)
@@ -410,8 +446,7 @@ class Crawler:
 
         if status == "fetching":
             self._state.current = url
-            self._log_index[url] = len(self._state.log)
-            self._state.log.append(_CrawlLog("active", domain))
+            self._append_log(url, "active", domain)
         elif status.startswith("js:"):
             # Status is "js:N"; comparing against the bare "js:" never matched.
             self._update_log(url, "active", domain)
@@ -423,14 +458,32 @@ class Crawler:
             self._update_log(url, "err", domain, str(row.get("note", "")))
         elif status == "blocked":
             self._state.blocked += 1
-            self._state.log.append(_CrawlLog("blocked", domain, note=str(row.get("note", ""))))
+            self._append_log(url, "blocked", domain, str(row.get("note", "")))
         elif status == "skipped":
             self._update_log(url, "skip", domain, str(row.get("note", "")))
 
+    def _append_log(self, url: str, status: str, domain: str, note: str = "") -> None:
+        """
+        Add a log row, tracking it by URL so later events can update it in place.
+
+        The log is a bounded deque, so rows are tracked by identity rather than
+        by index: an index-based map silently pointed at the wrong row once the
+        deque began discarding old entries. Evicted rows are dropped from the
+        map too, keeping it bounded alongside the log.
+        """
+        log = self._state.log
+        if len(log) == log.maxlen and log.maxlen:
+            evicted = log[0]
+            self._log_index.pop(evicted.url, None)
+        entry = _CrawlLog(status, domain, note, url=url)
+        log.append(entry)
+        self._state.log_total += 1
+        self._log_index[url] = entry
+
     def _update_log(self, url: str, status: str, domain: str, note: str = "") -> None:
-        idx = self._log_index.get(url)
-        if idx is not None and idx < len(self._state.log):
-            self._state.log[idx].status = status
-            self._state.log[idx].note = note
-        else:
-            self._state.log.append(_CrawlLog(status, domain, note))
+        entry = self._log_index.get(url)
+        if entry is None:
+            self._append_log(url, status, domain, note)
+            return
+        entry.status = status
+        entry.note = note

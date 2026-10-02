@@ -7,6 +7,7 @@ behaviour so it cannot silently regress.
 import io
 
 import pytest
+from rich.console import Console
 
 from protor.analyzer import _prepare_context
 from protor.crawler import _render, _State
@@ -269,6 +270,287 @@ class TestPageFilenames:
         assert a != b
         assert a == "docs-a.html"
         assert b == "blog-a.html"
+
+
+# ── hostile inputs must not crash a run ──────────────────────────────────────
+
+
+class TestHostileInputs:
+    def test_long_url_segment_produces_a_writable_filename(self, tmp_path):
+        """A 400-char path segment exceeded the 255-byte filesystem limit."""
+        from protor.utils import page_filename
+
+        name = page_filename(f"https://x.com/{'a' * 400}")
+        assert len(name) <= 200
+        (tmp_path / name).write_text("ok")  # must not raise OSError
+
+    def test_truncated_long_names_stay_distinct(self):
+        """Two long URLs sharing a prefix must not collapse to one file."""
+        from protor.utils import safe_filename
+
+        base = "a" * 400
+        assert safe_filename(base) != safe_filename(base + "b")
+
+    def test_normal_filenames_are_unchanged(self):
+        from protor.utils import page_filename, safe_filename
+
+        assert safe_filename("app.js") == "app.js"
+        assert safe_filename("vendor.min.js") == "vendor.min.js"
+        assert safe_filename("a/b") == "a_b"
+        assert safe_filename("") == "unnamed"
+        assert page_filename("https://x.com/") == "index.html"
+        assert page_filename("https://x.com/docs/guide.html") == "docs-guide.html"
+
+    def test_manifest_with_null_metadata_is_accepted(self):
+        """`"metadata": null` is valid JSON and used to raise AttributeError."""
+        from protor.models import SiteManifest
+
+        m = SiteManifest.from_dict(
+            {
+                "metadata": None,
+                "url": "u",
+                "domain": "d",
+                "html_file": "f",
+                "text_content": "t",
+                "js_files": [],
+                "js_count": 0,
+                "bytes_received": 1,
+                "elapsed_ms": 1,
+                "timestamp": "ts",
+            }
+        )
+        assert m.metadata.title == ""
+
+    def test_analysis_context_survives_null_metadata(self):
+        from protor.analyzer import _prepare_context
+
+        ctx = _prepare_context(
+            [{"metadata": None, "domain": "x.com", "url": "u", "text_content": "body"}]
+        )
+        assert "x.com" in ctx
+        assert "body" in ctx
+
+    def test_analysis_context_survives_missing_text(self):
+        from protor.analyzer import _prepare_context
+
+        ctx = _prepare_context([{"metadata": {}, "domain": "x.com", "url": "u"}])
+        assert "x.com" in ctx
+
+    def test_corrupt_checkpoint_is_reported_not_swallowed(self, tmp_path):
+        """--resume used to `except: pass`, silently starting over."""
+        from protor.crawler import Crawler
+
+        (tmp_path / "crawl_checkpoint.json").write_text("{ not valid json", encoding="utf-8")
+        crawler = Crawler("https://example.com", max_pages=1, output_dir=tmp_path, resume=True)
+        try:
+            # Still usable: the crawl proceeds on a fresh queue.
+            assert crawler._queue is not None
+            assert crawler._queue.success_count == 0
+        finally:
+            crawler._queue.close()
+
+
+# ── --block-ads must cover script downloads ──────────────────────────────────
+
+
+class TestBlocklistCoversJsDownloads:
+    @pytest.mark.asyncio
+    async def test_tracker_scripts_are_not_fetched(self, tmp_path, monkeypatch):
+        """--block-ads guards the page fetch but scripts come from the very
+        tracker CDNs it exists to avoid, so the flag did nothing."""
+        from protor.blocklist import Blocklist
+        from protor.engine import CrawlEngine, StaticQueue, StaticSource
+
+        html = (
+            "<html><head>"
+            '<script src="https://www.googletagmanager.com/gtm.js"></script>'
+            '<script src="https://example.com/app.js"></script>'
+            "</head><body>hi</body></html>"
+        )
+        fetched: list[str] = []
+
+        async def fake_fetch(session, url, **kwargs):
+            fetched.append(url)
+            return type("R", (), {"text": html, "nbytes": len(html), "status": 200})()
+
+        monkeypatch.setattr("protor.engine.fetch", fake_fetch)
+
+        async def fake_download(session, url, dest):
+            fetched.append(url)
+            return True
+
+        monkeypatch.setattr("protor.engine.download_file", fake_download)
+
+        engine = CrawlEngine(
+            queue=StaticQueue(["https://example.com/"]),
+            link_source=StaticSource(),
+            output_dir=tmp_path,
+            max_targets=1,
+            download_js=True,
+            blocklist=Blocklist(block_ads=True),
+        )
+        await engine.arun()
+
+        # The tracker script is dropped; the site's own script is still fetched.
+        assert "https://www.googletagmanager.com/gtm.js" not in fetched
+        assert fetched == ["https://example.com/", "https://example.com/app.js"]
+
+    @pytest.mark.asyncio
+    async def test_no_blocklist_means_scripts_still_download(self, tmp_path, monkeypatch):
+        from protor.engine import CrawlEngine, StaticQueue, StaticSource
+
+        html = '<html><head><script src="https://example.com/app.js"></script></head><body>x</body></html>'
+        fetched: list[str] = []
+
+        async def fake_fetch(session, url, **kwargs):
+            fetched.append(url)
+            return type("R", (), {"text": html, "nbytes": len(html), "status": 200})()
+
+        monkeypatch.setattr("protor.engine.fetch", fake_fetch)
+
+        async def fake_download(session, url, dest):
+            fetched.append(url)
+            return True
+
+        monkeypatch.setattr("protor.engine.download_file", fake_download)
+
+        engine = CrawlEngine(
+            queue=StaticQueue(["https://example.com/"]),
+            link_source=StaticSource(),
+            output_dir=tmp_path,
+            max_targets=1,
+            download_js=True,
+        )
+        manifests = (await engine.arun(), engine.manifests)[1]
+        assert manifests[0].js_count == 1
+        assert fetched == ["https://example.com/", "https://example.com/app.js"]
+
+
+# ── HTTP cache must not leak or preload ──────────────────────────────────────
+
+
+class TestCacheHygiene:
+    def test_bodies_are_not_preloaded_into_memory(self, tmp_path):
+        """Loading every body made the disk cache fully RAM-resident."""
+        from protor.http_cache import CacheEntry, HTTPCache
+
+        cache = HTTPCache(cache_dir=tmp_path / "c")
+        for i in range(20):
+            cache.put(f"https://s{i}.com/", CacheEntry(body="x" * 50_000))
+        cache.flush()
+
+        reopened = HTTPCache(cache_dir=tmp_path / "c")
+        resident = sum(len(e.body) for e in reopened._index.values())
+        assert resident == 0
+        assert len(reopened._index) == 20
+        # ...but the body is still available on demand.
+        assert reopened.get("https://s3.com/").body == "x" * 50_000
+
+    def test_expired_body_files_are_deleted(self, tmp_path):
+        """get() dropped the index entry but left the bytes on disk forever."""
+        from protor.http_cache import CacheEntry, HTTPCache
+
+        cache = HTTPCache(cache_dir=tmp_path / "c", ttl=1)
+        cache.put("https://a.com/", CacheEntry(body="payload"))
+        cache.flush()
+        assert list((tmp_path / "c" / "bodies").glob("*.body"))
+
+        cache._index["https://a.com/"].timestamp -= 10_000
+        assert cache.get("https://a.com/") is None
+        assert list((tmp_path / "c" / "bodies").glob("*.body")) == []
+
+    def test_prune_reclaims_an_abandoned_cache(self, tmp_path):
+        from protor.http_cache import CacheEntry, HTTPCache
+
+        # ttl=0 makes every entry expired on write, so the on-disk state is
+        # genuinely stale rather than mutated behind the cache's back.
+        cache = HTTPCache(cache_dir=tmp_path / "c", ttl=0)
+        for i in range(10):
+            cache.put(f"https://s{i}.com/", CacheEntry(body="y" * 10_000))
+        cache.flush()
+
+        reopened = HTTPCache(cache_dir=tmp_path / "c", ttl=0)
+        assert reopened._index == {}
+        assert list((tmp_path / "c" / "bodies").glob("*.body")) == []
+
+    def test_orphaned_bodies_are_swept(self, tmp_path):
+        """A lost index used to leave every body file behind."""
+        from protor.http_cache import CacheEntry, HTTPCache
+
+        cache = HTTPCache(cache_dir=tmp_path / "c")
+        cache.put("https://a.com/", CacheEntry(body="orphan"))
+        cache.flush()
+        (tmp_path / "c" / "index.json").unlink()
+
+        reopened = HTTPCache(cache_dir=tmp_path / "c")
+        assert reopened._index == {}
+        assert list((tmp_path / "c" / "bodies").glob("*.body")) == []
+
+    def test_clear_removes_everything(self, tmp_path):
+        from protor.http_cache import CacheEntry, HTTPCache
+
+        cache = HTTPCache(cache_dir=tmp_path / "c")
+        cache.put("https://a.com/", CacheEntry(body="x"))
+        cache.flush()
+        cache.clear()
+        assert cache.size_bytes() == 0
+
+
+# ── derived artefacts must be bounded ────────────────────────────────────────
+
+
+class TestMarkdownIsBounded:
+    def test_long_page_markdown_is_capped(self):
+        """A 3000-paragraph page put ~119k characters into every manifest."""
+        from protor.config import MAX_MARKDOWN_CHARS
+        from protor.parser import parse_html
+
+        html = (
+            "<html><body>"
+            + "".join(f"<p>Paragraph {i} of prose.</p>" for i in range(2000))
+            + "</body></html>"
+        )
+        _, page = parse_html(html, "https://e.com/")
+        assert len(page.markdown_content) <= MAX_MARKDOWN_CHARS + 32
+        assert page.markdown_content.endswith("[truncated]")
+
+    def test_short_pages_are_untouched(self):
+        from protor.parser import parse_html
+
+        _, page = parse_html("<html><body><p>hi</p></body></html>", "https://e.com/")
+        assert "[truncated]" not in page.markdown_content
+
+
+# ── crawler live state must stay bounded ─────────────────────────────────────
+
+
+class TestCrawlStateIsBounded:
+    def test_log_does_not_grow_without_limit(self):
+        from protor.crawler import _CrawlLog, _State
+
+        state = _State(max_pages=100_000)
+        for i in range(5_000):
+            state.log.append(_CrawlLog("ok", "x.com", url=f"https://x.com/{i}"))
+            state.log_total += 1
+        assert len(state.log) <= 200
+        assert state.log_total == 5_000
+
+    def test_row_numbering_stays_stable_after_eviction(self):
+        """Rows are tracked by identity, so numbering reflects true position."""
+        from protor.crawler import _CrawlLog, _render, _State
+
+        state = _State(max_pages=100_000)
+        for i in range(500):
+            state.log.append(_CrawlLog("ok", "x.com", url=f"u{i}"))
+            state.log_total += 1
+
+        console = Console(width=120, record=True, file=io.StringIO())
+        console.print(_render(state, "/tmp/out"))
+        out = console.export_text()
+        # 500 appended, 200 retained, 20 shown: the visible window is 481..500.
+        assert "481" in out
+        assert "500" in out
+        assert "1 " not in out.split("Domain")[-1].splitlines()[1]
 
 
 # ── cached pages must report real sizes ──────────────────────────────────────

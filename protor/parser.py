@@ -20,7 +20,7 @@ from urllib.parse import urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
-from .config import MAX_TEXT_CHARS
+from .config import MAX_MARKDOWN_CHARS, MAX_TEXT_CHARS
 from .markdown import clean_soup, soup_to_markdown
 from .models import SiteMetadata
 
@@ -59,6 +59,7 @@ def parse_soup(
     base_url: str,
     *,
     max_chars: int = MAX_TEXT_CHARS,
+    max_markdown_chars: int = MAX_MARKDOWN_CHARS,
 ) -> ParsedPage:
     """Derive a :class:`ParsedPage` from an already-parsed tree."""
     # Links and JS references are harvested from the raw tree first, because
@@ -73,10 +74,17 @@ def parse_soup(
     return ParsedPage(
         metadata=_extract_metadata(soup),
         text_content=_extract_text(soup, max_chars),
-        markdown_content=soup_to_markdown(soup, base_url),
+        markdown_content=_truncate(soup_to_markdown(soup, base_url), max_markdown_chars),
         links=links,
         js_links=js_links,
     )
+
+
+def _truncate(text: str, limit: int) -> str:
+    """Trim *text* to *limit* characters, marking that it was cut."""
+    if limit <= 0 or len(text) <= limit:
+        return text
+    return text[:limit].rstrip() + "\n\n[truncated]"
 
 
 def extract_links(html: str, base_url: str) -> list[str]:
