@@ -11,7 +11,11 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # Pinned rather than `ubuntu-latest`: on 2026-10-19 that label starts
+    # resolving to Ubuntu 26, which would change the OS underneath a release
+    # path we depend on without anyone choosing to. Pinning keeps CI
+    # reproducible and defers the bump to a deliberate, visible change.
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         python-version: ["3.11", "3.12", "3.13"]

@@ -11,7 +11,8 @@ permissions:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    # Pinned for the same reason as ci.yml — see the note there.
+    runs-on: ubuntu-24.04
     environment:
       name: pypi
       url: https://pypi.org/p/protor
@@ -38,7 +39,8 @@ jobs:
           password: ${{ secrets.PYPI_API_TOKEN }}
 
   github-release:
-    runs-on: ubuntu-latest
+    # Pinned for the same reason as the publish job — see ci.yml.
+    runs-on: ubuntu-24.04
     needs: publish
     steps:
       - uses: actions/checkout@v5
