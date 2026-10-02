@@ -6,13 +6,11 @@ import pytest
 from bs4 import BeautifulSoup
 
 from protor.exceptions import FetchError
+from protor.fetcher import download_file, fetch
 from protor.http_cache import CacheEntry, HTTPCache
+from protor.parser import _extract_js_links, _extract_text
 from protor.scraper import (
     _build_table,
-    _download_file,
-    _extract_js_links_from_soup,
-    _extract_text_from_soup,
-    _fetch,
     scrape_multiple,
 )
 
@@ -28,9 +26,9 @@ class TestFetch:
         mock_response.__aexit__ = AsyncMock(return_value=False)
         mock_session.get = MagicMock(return_value=mock_response)
 
-        text, nbytes = await _fetch(mock_session, "https://example.com")
-        assert text == "<html>Hello</html>"
-        assert nbytes == 18  # len(b"<html>Hello</html>")
+        result = await fetch(mock_session, "https://example.com")
+        assert result.text == "<html>Hello</html>"
+        assert result.nbytes == 18  # len(b"<html>Hello</html>")
 
     @pytest.mark.asyncio
     async def test_fetch_retries_on_500(self):
@@ -48,8 +46,8 @@ class TestFetch:
 
         mock_session.get = MagicMock(side_effect=[mock_response_500, mock_response_200])
 
-        text, _nbytes = await _fetch(mock_session, "https://example.com", max_retries=3)
-        assert text == "ok"
+        result = await fetch(mock_session, "https://example.com", max_retries=3)
+        assert result.text == "ok"
 
     @pytest.mark.asyncio
     async def test_fetch_raises_after_max_retries(self):
@@ -61,7 +59,7 @@ class TestFetch:
         mock_session.get = MagicMock(return_value=mock_response)
 
         with pytest.raises(FetchError):
-            await _fetch(mock_session, "https://example.com", max_retries=2)
+            await fetch(mock_session, "https://example.com", max_retries=2)
 
     @pytest.mark.asyncio
     async def test_fetch_cache_hit(self):
@@ -69,9 +67,9 @@ class TestFetch:
         cache = HTTPCache()
         cache.put("https://example.com", CacheEntry(body="cached"))
 
-        text, nbytes = await _fetch(mock_session, "https://example.com", cache=cache)
-        assert text == "cached"
-        assert nbytes == 0
+        result = await fetch(mock_session, "https://example.com", cache=cache)
+        assert result.text == "cached"
+        assert result.nbytes == 0
 
     @pytest.mark.asyncio
     async def test_fetch_304_with_cache(self):
@@ -85,9 +83,9 @@ class TestFetch:
         cache = HTTPCache()
         cache.put("https://example.com", CacheEntry(etag="abc", body="cached"))
 
-        text, nbytes = await _fetch(mock_session, "https://example.com", cache=cache)
-        assert text == "cached"
-        assert nbytes == 0
+        result = await fetch(mock_session, "https://example.com", cache=cache)
+        assert result.text == "cached"
+        assert result.nbytes == 0
 
 
 class TestDownloadFile:
@@ -102,21 +100,35 @@ class TestDownloadFile:
         mock_session.get = MagicMock(return_value=mock_response)
 
         dest = tmp_path / "test.js"
-        result = await _download_file(mock_session, "https://example.com/app.js", dest)
+        result = await download_file(mock_session, "https://example.com/app.js", dest)
 
         assert result is True
         assert dest.exists()
         assert dest.read_bytes() == b"js content"
 
     @pytest.mark.asyncio
-    async def test_download_failure(self, tmp_path):
-        mock_session = AsyncMock()
-        mock_session.get.side_effect = Exception("Connection refused")
+    async def test_download_failure(self, tmp_path, fake_session):
+        session = fake_session(raises=ConnectionRefusedError("refused"))
 
         dest = tmp_path / "test.js"
-        result = await _download_file(mock_session, "https://example.com/app.js", dest)
+        result = await download_file(session, "https://example.com/app.js", dest)
 
         assert result is False
+        assert not dest.exists()
+
+    @pytest.mark.asyncio
+    async def test_download_non_200_returns_false(self, tmp_path, fake_session):
+        from tests.conftest import FakeResponse
+
+        session = fake_session(
+            routes={"https://example.com/app.js": FakeResponse(status=404, body="nope")}
+        )
+
+        dest = tmp_path / "test.js"
+        result = await download_file(session, "https://example.com/app.js", dest)
+
+        assert result is False
+        assert not dest.exists()
 
 
 class TestBuildTable:
@@ -174,20 +186,20 @@ class TestExtractJsLinksFromSoup:
     def test_finds_script_src(self):
         html = '<html><script src="/app.js"></script><script src="https://cdn.com/lib.js"></script></html>'
         soup = BeautifulSoup(html, "lxml")
-        links = _extract_js_links_from_soup(soup, "https://example.com")
+        links = _extract_js_links(soup, "https://example.com")
         assert "https://example.com/app.js" in links
         assert "https://cdn.com/lib.js" in links
 
     def test_ignores_inline_scripts(self):
         html = '<html><script>console.log("hi")</script></html>'
         soup = BeautifulSoup(html, "lxml")
-        links = _extract_js_links_from_soup(soup, "https://example.com")
+        links = _extract_js_links(soup, "https://example.com")
         assert links == []
 
     def test_deduplicates(self):
         html = '<html><script src="/app.js"></script><script src="/app.js"></script></html>'
         soup = BeautifulSoup(html, "lxml")
-        links = _extract_js_links_from_soup(soup, "https://example.com")
+        links = _extract_js_links(soup, "https://example.com")
         assert len(links) == 1
 
 
@@ -202,13 +214,13 @@ class TestExtractTextFromSoup:
             <main>Main content</main>
         </html>"""
         soup = BeautifulSoup(html, "lxml")
-        text = _extract_text_from_soup(soup)
+        text = _extract_text(soup)
         assert "var x=1" not in text
         assert "Main content" in text
 
     def test_empty_soup(self):
         soup = BeautifulSoup("<html></html>", "lxml")
-        text = _extract_text_from_soup(soup)
+        text = _extract_text(soup)
         assert text == ""
 
 

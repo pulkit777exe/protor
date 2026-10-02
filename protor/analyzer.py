@@ -18,12 +18,12 @@ import requests
 from rich import box
 from rich.table import Table
 
-from .config import ANALYSIS_MAX_DATA_CHARS, OLLAMA_BASE
+from .config import ANALYSIS_MAX_DATA_CHARS, OLLAMA_BASE, OLLAMA_CHECK_TIMEOUT
 from .exceptions import OllamaUnavailableError
 from .formatters import write_output
 from .llm_backends import LLMBackend, create_backend
 from .models import AnalysisResult, SiteManifest
-from .theme import OK, bright, console, err, header_rule, info, label, muted, section_rule
+from .theme import OK, bright, console, err, header_rule, info, label, muted, section_rule, warn
 from .utils import save_json, timestamp
 
 __all__ = ["analyze", "analyze_with_ollama", "check_ollama", "list_ollama_models"]
@@ -74,7 +74,7 @@ FOCUS_CHOICES = list(_PROMPTS.keys())
 def check_ollama(base: str = OLLAMA_BASE) -> bool:
     """Return True if Ollama is reachable."""
     try:
-        resp = requests.get(f"{base}/api/tags", timeout=5)
+        resp = requests.get(f"{base}/api/tags", timeout=OLLAMA_CHECK_TIMEOUT)
         status: int = resp.status_code
         return status == 200
     except Exception:
@@ -89,6 +89,7 @@ def _list_models(base: str = OLLAMA_BASE) -> list[dict]:
 
 
 def _model_exists(model: str, base: str = OLLAMA_BASE) -> bool:
+    """Return True if *model* is installed locally."""
     return any(m.get("name") == model for m in _list_models(base))
 
 
@@ -129,36 +130,94 @@ def list_ollama_models(base: str = OLLAMA_BASE) -> None:
 # ── data preparation ──────────────────────────────────────────────────────────
 
 
-def _prepare_context(data: list[dict | SiteManifest]) -> str:
-    """Flatten site data into a concise LLM context string."""
-    parts: list[str] = []
-    for i, site in enumerate(data, 1):
-        d = site.to_dict() if isinstance(site, SiteManifest) else site
-        m = d.get("metadata", {})
-        parts.append(
-            f"## [{i}] {d.get('domain', 'unknown')}\n"
-            f"URL: {d.get('url', '')}\n"
-            f"Title: {m.get('title', '')}\n"
-            f"Description: {m.get('description', '')}\n"
-            f"JS files: {d.get('js_count', 0)}\n\n"
-            f"### Content preview\n{d.get('text_content', '')[:1_500]}\n"
-        )
+#: Longest meta description carried into the prompt. A 1,000-char description
+#: tells the model nothing extra but consumes the whole content budget.
+_DESCRIPTION_MAX = 160
 
-    full = "\n---\n".join(parts)
-    if len(full) > ANALYSIS_MAX_DATA_CHARS:
-        full = full[:ANALYSIS_MAX_DATA_CHARS] + "\n\n[truncated]"
-    return full
+#: Description budgets tried in order as the site count grows. Sites are never
+#: dropped, so something has to give when the headers alone overflow the cap.
+_DESCRIPTION_BUDGETS = (_DESCRIPTION_MAX, 80, 0)
+
+
+def _site_header(i: int, site: dict | SiteManifest, desc_budget: int) -> str:
+    """Render a site's identity block (everything except its content preview)."""
+    d = site.to_dict() if isinstance(site, SiteManifest) else site
+    m = d.get("metadata", {})
+    head = f"## [{i}] {d.get('domain', 'unknown')}\nURL: {d.get('url', '')}\n"
+    title = str(m.get("title", ""))
+    if title:
+        head += f"Title: {title}\n"
+    if desc_budget:
+        desc = str(m.get("description", "")).strip()
+        if len(desc) > desc_budget:
+            desc = desc[: desc_budget - 1].rstrip() + "…"
+        if desc:
+            head += f"Description: {desc}\n"
+    return f"{head}JS files: {d.get('js_count', 0)}\n\n### Content preview\n"
+
+
+def _prepare_context(data: list[dict | SiteManifest], max_chars: int | None = None) -> str:
+    """
+    Flatten site data into a concise LLM context string.
+
+    Every site keeps its header and the remaining budget is split evenly across
+    the content previews. A flat per-site preview plus a global cut used to drop
+    whole sites: with 10 sites, only 5 reached the model while the report still
+    claimed "Sites: 10".
+
+    For very large batches the descriptions shorten and then drop before any
+    site is dropped, and the result is guaranteed to fit within *max_chars*.
+    """
+    limit = max_chars or ANALYSIS_MAX_DATA_CHARS
+    if not data:
+        return ""
+
+    bodies = [
+        str(
+            (site.to_dict() if isinstance(site, SiteManifest) else site).get("text_content", "")
+        ).strip()
+        for site in data
+    ]
+    # "\n---\n" between entries plus a trailing newline per body.
+    framing = 6 * len(data)
+
+    for desc_budget in _DESCRIPTION_BUDGETS:
+        headers = [_site_header(i, site, desc_budget) for i, site in enumerate(data, 1)]
+        per_site = max(0, (limit - framing - sum(len(h) for h in headers)) // len(data))
+        context = "\n---\n".join(
+            f"{h}{body[:per_site]}\n" for h, body in zip(headers, bodies, strict=True)
+        )
+        if len(context) <= limit:
+            return context
+
+    return context[:limit]
+
+
+def _sites_included(context: str) -> int:
+    """Number of site blocks that actually made it into *context*."""
+    return context.count("## [")
 
 
 # ── streaming ─────────────────────────────────────────────────────────────────
 
 
 def _stream_backend(backend: LLMBackend, prompt: str) -> str:
-    """Stream response from an LLM backend to the terminal."""
+    """Stream response from an LLM backend to the terminal, returning the full text."""
     console.print()
     console.print(section_rule(f"Response · {backend.model_name}"))
     console.print()
-    return backend.stream(prompt)
+
+    chunks: list[str] = []
+    for chunk in backend.stream(prompt):
+        # LLM output is Markdown, not rich markup: without markup=False a link
+        # like [docs](url) renders as (url), `[code]` vanishes, and an
+        # unbalanced [/tag] raises MarkupError — losing the whole report after
+        # the model has already been paid for.
+        console.print(chunk, end="", style="grey85", markup=False, highlight=False)
+        chunks.append(chunk)
+    console.print()
+    console.print()
+    return "".join(chunks)
 
 
 # ── public entry point ────────────────────────────────────────────────────────
@@ -221,20 +280,29 @@ def analyze(
             f"{backend.capitalize()} backend unavailable. Check your API key and connection."
         )
 
+    context = _prepare_context(data)
+    # Report what was actually sent, not what was scraped. A batch large enough
+    # to exhaust the character budget cannot fit every site's header, and
+    # claiming otherwise would misreport the analysis.
+    sites_sent = _sites_included(context)
+
     console.print(
         f"  {label('backend')} {bright(backend)}   "
         f"{label('model')} {bright(model)}   "
         f"{label('focus')} {bright(focus)}   "
-        f"{label('sites')} {bright(str(len(data)))}"
+        f"{label('sites')} {bright(f'{sites_sent} of {len(data)}' if sites_sent != len(data) else str(len(data)))}"
     )
+    if sites_sent < len(data):
+        console.print(
+            f"  {warn(f'{len(data) - sites_sent} site(s) exceeded the context budget')}"
+            f"{muted(' — analyze in smaller batches to include them.')}"
+        )
     console.print()
 
     if prompt:
-        context = _prepare_context(data)
         full_prompt = f"{prompt}\n\n{context}"
     else:
         sys_prompt = _PROMPTS.get(focus, _PROMPTS["general"])
-        context = _prepare_context(data)
         full_prompt = (
             f"{sys_prompt}\n\n"
             f"## Scraped Data\n"
@@ -251,7 +319,7 @@ def analyze(
         model=model,
         focus=focus,
         timestamp=timestamp(),
-        sites_analyzed=len(data),
+        sites_analyzed=sites_sent,
         analysis=raw,
     )
 

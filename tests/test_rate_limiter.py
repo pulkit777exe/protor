@@ -26,6 +26,33 @@ class TestDomainRateLimiter:
         assert elapsed >= 0.15
 
     @pytest.mark.asyncio
+    async def test_concurrent_requests_to_one_domain_are_spaced(self):
+        """A read-then-sleep race let every waiter fire at the same instant."""
+        limiter = DomainRateLimiter(delay=0.1)
+        fired: list[float] = []
+
+        async def hit() -> None:
+            await limiter.wait("example.com")
+            fired.append(time.monotonic())
+
+        await asyncio.gather(*[hit() for _ in range(5)])
+
+        gaps = [b - a for a, b in zip(sorted(fired), sorted(fired)[1:], strict=False)]
+        assert all(gap >= 0.09 for gap in gaps), f"requests bunched up: {gaps}"
+
+    @pytest.mark.asyncio
+    async def test_zero_delay_is_a_no_op(self):
+        limiter = DomainRateLimiter(delay=0)
+        await asyncio.gather(*[limiter.wait("example.com") for _ in range(5)])
+
+    @pytest.mark.asyncio
+    async def test_different_domains_do_not_block_each_other(self):
+        limiter = DomainRateLimiter(delay=5.0)
+        start = time.monotonic()
+        await asyncio.gather(*[limiter.wait(f"site{i}.com") for i in range(5)])
+        assert time.monotonic() - start < 1.0
+
+    @pytest.mark.asyncio
     async def test_different_domains_no_delay(self):
         limiter = DomainRateLimiter(delay=0.5)
         await limiter.wait("domain-a.com")

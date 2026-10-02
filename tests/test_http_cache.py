@@ -26,13 +26,14 @@ class TestCacheEntry:
         assert entry.is_expired is True
 
     def test_to_dict(self):
+        """to_dict carries metadata only; bodies live in their own files."""
         entry = CacheEntry(etag="abc123", body="hello", status=200, timestamp=1000.0, ttl=600)
         d = entry.to_dict()
         assert d["etag"] == "abc123"
-        assert d["body"] == "hello"
         assert d["status"] == 200
         assert d["timestamp"] == 1000.0
         assert d["ttl"] == 600
+        assert "body" not in d
 
     def test_from_dict(self):
         data = {
@@ -112,6 +113,7 @@ class TestHTTPCache:
     def test_persists_to_disk(self, tmp_path):
         cache = HTTPCache(cache_dir=tmp_path / "http_cache")
         cache.put("https://example.com", CacheEntry(etag="disk", body="persisted"))
+        cache.flush()
 
         index_path = cache._index_path()
         assert index_path.exists()
@@ -119,18 +121,49 @@ class TestHTTPCache:
         data = json.loads(index_path.read_text())
         assert "https://example.com" in data
         assert data["https://example.com"]["etag"] == "disk"
+        # The body is a separate file, so the index stays small.
+        assert "body" not in data["https://example.com"]
+
+    def test_index_not_rewritten_per_put(self, tmp_path):
+        """The index is flushed once per run, not once per put."""
+        cache = HTTPCache(cache_dir=tmp_path / "http_cache")
+        for i in range(20):
+            cache.put(f"https://example.com/{i}", CacheEntry(body="x" * 1000))
+        assert not cache._index_path().exists()
+
+        cache.flush()
+        assert cache._index_path().exists()
+
+    def test_flush_is_idempotent(self, tmp_path):
+        cache = HTTPCache(cache_dir=tmp_path / "http_cache")
+        cache.put("https://example.com", CacheEntry(body="x"))
+        cache.flush()
+        cache.flush()
+        assert cache.get("https://example.com") is not None
+
+    def test_body_survives_reload(self, tmp_path):
+        cache = HTTPCache(cache_dir=tmp_path / "http_cache")
+        cache.put("https://example.com", CacheEntry(etag="e", body="<html>payload</html>"))
+        cache.flush()
+
+        reloaded = HTTPCache(cache_dir=tmp_path / "http_cache")
+        entry = reloaded.get("https://example.com")
+        assert entry is not None
+        assert entry.body == "<html>payload</html>"
+        assert entry.etag == "e"
 
     def test_loads_existing_index(self, tmp_path):
-        cache_dir = tmp_path / "http_cache"
-        cache_dir.mkdir()
-        index = cache_dir / "index.json"
-        index.write_text(
+        """An index written by an older protor (body inline) still loads."""
+        cache = HTTPCache(cache_dir=tmp_path / "http_cache")
+        body_path = cache._body_path("https://example.com")
+        body_path.parent.mkdir(parents=True, exist_ok=True)
+        body_path.write_text("restored", encoding="utf-8")
+        cache._index_path().write_text(
             json.dumps(
                 {
                     "https://example.com": {
                         "etag": "loaded",
                         "last_modified": None,
-                        "body": "restored",
                         "status": 200,
                         "timestamp": time.time(),
                         "ttl": 3600,
@@ -139,8 +172,8 @@ class TestHTTPCache:
             )
         )
 
-        cache = HTTPCache(cache_dir=cache_dir)
-        entry = cache.get("https://example.com")
+        reloaded = HTTPCache(cache_dir=tmp_path / "http_cache")
+        entry = reloaded.get("https://example.com")
         assert entry is not None
         assert entry.etag == "loaded"
         assert entry.body == "restored"

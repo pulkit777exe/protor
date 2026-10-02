@@ -20,9 +20,9 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import random
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from .analyzer import FOCUS_CHOICES, analyze_with_ollama, list_ollama_models
 from .crawler import Crawler
@@ -33,15 +33,19 @@ from .exceptions import (
     ProtorError,
 )
 from .extractor import ExtractionSchema
+from .formatters import FORMAT_CHOICES
 from .scraper import scrape_multiple
 from .theme import ERR, console, err, info
 from .updater import check_for_update, perform_update
 from .utils import get_default_output_dir, load_json, validate_url
 
+if TYPE_CHECKING:
+    from .models import SiteManifest
+
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 
-def _abort(msg: str, hint: str = "") -> None:
+def _abort(msg: str, hint: str = "") -> NoReturn:
     console.print(f"\n  {err(msg)}")
     if hint:
         console.print(f"  {info(hint)}")
@@ -49,75 +53,90 @@ def _abort(msg: str, hint: str = "") -> None:
     sys.exit(1)
 
 
-def _load_index(path: str) -> list[dict]:  # type: ignore[type-arg]
+def _load_index(path: str) -> list[dict[str, Any] | SiteManifest]:
+    """Load a sites index written by `scrape`."""
     try:
-        result = load_json(path)
-        return list(result)
+        result: list[dict[str, Any] | SiteManifest] = list(load_json(path))
     except FileNotFoundError as exc:
         raise DataFileNotFoundError(path) from exc
+    return result
+
+
+def _load_schema(path: str | None) -> ExtractionSchema | None:
+    """Load an extraction schema from *path*, aborting the CLI on parse errors."""
+    if not path:
+        return None
+    try:
+        return ExtractionSchema.from_json(path)
+    except Exception as e:
+        _abort(f"Failed to load schema: {e}", hint="Schema must be a valid JSON file")
 
 
 # ── command handlers ──────────────────────────────────────────────────────────
 
 
-def _cmd_scrape(args: argparse.Namespace) -> None:
+def _run_scrape(args: argparse.Namespace) -> str:
+    """Shared scrape step for the ``scrape`` and ``run`` subcommands."""
     for url in args.urls:
         validate_url(url)
     base = Path(args.output) if args.output else get_default_output_dir()
 
-    extraction_schema = None
-    if args.schema:
-        try:
-            extraction_schema = ExtractionSchema.from_json(args.schema)
-        except Exception as e:
-            _abort(f"Failed to load schema: {e}", hint="Schema must be a valid JSON file")
-
-    scrape_multiple(
+    return scrape_multiple(
         args.urls,
         base,
         download_js=not args.no_js,
         timeout=args.timeout,
         concurrency=args.concurrency,
-        extraction_schema=extraction_schema,
+        extraction_schema=_load_schema(args.schema),
         block_ads=args.block_ads,
         auto_scale=args.auto_scale,
+        use_cache=args.cache,
     )
+
+
+def _cmd_scrape(args: argparse.Namespace) -> None:
+    _run_scrape(args)
+
+
+def _resolve_prompt(args: argparse.Namespace) -> str | None:
+    """Return the custom prompt from --prompt / --prompt-file, if any."""
+    prompt: str | None = getattr(args, "prompt", None)
+    if prompt:
+        return prompt
+    prompt_file: str | None = getattr(args, "prompt_file", None)
+    if not prompt_file:
+        return None
+    path = Path(prompt_file)
+    if not path.exists():
+        _abort(f"Prompt file not found: {prompt_file}", hint="Check the path to your prompt file")
+    return path.read_text(encoding="utf-8")
 
 
 def _cmd_analyze(args: argparse.Namespace) -> None:
     data = _load_index(args.file)
     out = get_default_output_dir() / "analysis" if args.output == "analysis" else Path(args.output)
-    prompt = None
-    if args.prompt:
-        prompt = args.prompt
-    elif args.prompt_file:
-        prompt = Path(args.prompt_file).read_text(encoding="utf-8")
-    analyze_with_ollama(data, args.model, args.focus, out, prompt=prompt, fmt=args.format)  # type: ignore[arg-type]
+    analyze_with_ollama(
+        data,
+        args.model,
+        args.focus,
+        out,
+        prompt=_resolve_prompt(args),
+        fmt=args.format,
+    )
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
-    for url in args.urls:
-        validate_url(url)
-    base = Path(args.output) if args.output else get_default_output_dir()
-
-    extraction_schema = None
-    if args.schema:
-        try:
-            extraction_schema = ExtractionSchema.from_json(args.schema)
-        except Exception as e:
-            _abort(f"Failed to load schema: {e}", hint="Schema must be a valid JSON file")
-
-    index = scrape_multiple(
-        args.urls,
-        base,
-        download_js=not args.no_js,
-        concurrency=args.concurrency,
-        extraction_schema=extraction_schema,
-        block_ads=args.block_ads,
-        auto_scale=args.auto_scale,
-    )
+    index = _run_scrape(args)
     data = _load_index(index)
-    analyze_with_ollama(data, args.model, args.focus, base / "analysis")  # type: ignore[arg-type]
+    base = Path(args.output) if args.output else get_default_output_dir()
+    analyze_with_ollama(
+        data,
+        args.model,
+        args.focus,
+        base / "analysis",
+        prompt=_resolve_prompt(args),
+        fmt=args.format,
+    )
 
 
 def _cmd_crawl(args: argparse.Namespace) -> None:
@@ -147,17 +166,15 @@ def _cmd_extract(args: argparse.Namespace) -> None:
 
     import aiohttp
 
-    from .config import USER_AGENTS
     from .extractor import Extractor
-    from .scraper import _fetch
+    from .fetcher import fetch
     from .theme import OK, bright, header_rule, label, muted
 
     async def _extract_async() -> list[dict]:
-        headers = {**{"User-Agent": random.choice(USER_AGENTS)}}
-        async with aiohttp.ClientSession(headers=headers) as session:
-            html, _ = await _fetch(session, args.url, timeout=args.timeout)
+        async with aiohttp.ClientSession() as session:
+            result = await fetch(session, args.url, timeout=args.timeout)
             extractor = Extractor(schema, base_url=args.url)
-            return extractor.extract(html)
+            return extractor.extract(result.text)
 
     console.print()
     console.print(header_rule("Protor — Extract"))
@@ -257,6 +274,29 @@ def _cmd_update(args: argparse.Namespace) -> None:
 # ── parser ────────────────────────────────────────────────────────────────────
 
 
+def _add_analysis_flags(parser: argparse.ArgumentParser) -> None:
+    """Add the options shared by `analyze` and `run`."""
+    parser.add_argument(
+        "--prompt",
+        "-p",
+        default=None,
+        metavar="TEXT",
+        help="custom analysis prompt (overrides default)",
+    )
+    parser.add_argument(
+        "--prompt-file",
+        default=None,
+        metavar="PATH",
+        help="read custom prompt from file",
+    )
+    parser.add_argument(
+        "--format",
+        choices=FORMAT_CHOICES,
+        default="markdown",
+        help="output format (default: markdown)",
+    )
+
+
 def _build_parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="protor",
@@ -321,6 +361,11 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="automatically adjust concurrency based on success rates",
     )
+    sp.add_argument(
+        "--cache",
+        action="store_true",
+        help="reuse cached responses (ETag/Last-Modified) across runs",
+    )
     sp.set_defaults(func=_cmd_scrape)
 
     # ── analyze ─────────────────────────────────────────────────────────────
@@ -328,9 +373,9 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--file",
         "-f",
-        default="data/sites_index.json",
+        default=str(get_default_output_dir() / "sites_index.json"),
         metavar="PATH",
-        help="scraped index JSON (default: data/sites_index.json)",
+        help=(f"scraped index JSON (default: {get_default_output_dir() / 'sites_index.json'})"),
     )
     ap.add_argument(
         "--model",
@@ -352,24 +397,7 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="DIR",
         help="output directory (default: ~/Downloads/protor/analysis)",
     )
-    ap.add_argument(
-        "--prompt",
-        "-p",
-        default=None,
-        metavar="TEXT",
-        help="custom analysis prompt (overrides default)",
-    )
-    ap.add_argument(
-        "--prompt-file",
-        default=None,
-        metavar="PATH",
-        help="read custom prompt from file",
-    )
-    ap.add_argument(
-        "--format",
-        choices=("markdown", "csv", "html", "text"),
-        help="output format (default: markdown)",
-    )
+    _add_analysis_flags(ap)
     ap.set_defaults(func=_cmd_analyze)
 
     # ── run (scrape + analyze) ───────────────────────────────────────────────
@@ -381,6 +409,13 @@ def _build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--no-js", action="store_true")
     rp.add_argument("--concurrency", "-c", type=int, default=6, metavar="N")
     rp.add_argument(
+        "--timeout",
+        type=int,
+        default=30,
+        metavar="SEC",
+        help="per-request timeout in seconds (default: 30)",
+    )
+    rp.add_argument(
         "--schema",
         "-s",
         metavar="SCHEMA.json",
@@ -388,6 +423,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     rp.add_argument("--block-ads", action="store_true")
     rp.add_argument("--auto-scale", action="store_true")
+    rp.add_argument("--cache", action="store_true", help="reuse cached responses across runs")
+    _add_analysis_flags(rp)
     rp.set_defaults(func=_cmd_run)
 
     # ── crawl ────────────────────────────────────────────────────────────────

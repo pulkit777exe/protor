@@ -4,6 +4,12 @@ from __future__ import annotations
 
 import os
 from abc import ABC, abstractmethod
+from typing import TYPE_CHECKING
+
+from .config import ANALYSIS_TIMEOUT, OLLAMA_CHECK_TIMEOUT
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 __all__ = [
     "BACKEND_CHOICES",
@@ -21,8 +27,8 @@ class LLMBackend(ABC):
     """Abstract base class for LLM backends."""
 
     @abstractmethod
-    def stream(self, prompt: str) -> str:
-        """Stream a response for the given prompt."""
+    def stream(self, prompt: str) -> Iterator[str]:
+        """Yield response chunks for the given prompt as they arrive."""
         ...
 
     @abstractmethod
@@ -52,26 +58,23 @@ class OllamaBackend(LLMBackend):
         import requests as _requests
 
         try:
-            resp = _requests.get(f"{self._base_url}/api/tags", timeout=5)
+            resp = _requests.get(f"{self._base_url}/api/tags", timeout=OLLAMA_CHECK_TIMEOUT)
             status: int = resp.status_code
             return status == 200
         except Exception:
             return False
 
-    def stream(self, prompt: str) -> str:
+    def stream(self, prompt: str) -> Iterator[str]:
+        """Yield Ollama response chunks; raise RuntimeError if the model is missing."""
         import json
 
         import requests as _requests
-        from rich.console import Console
-
-        console = Console()
-        full: list[str] = []
 
         resp = _requests.post(
             f"{self._base_url}/api/generate",
             json={"model": self._model, "prompt": prompt, "stream": True},
             stream=True,
-            timeout=300,
+            timeout=ANALYSIS_TIMEOUT,
         )
 
         if resp.status_code == 404:
@@ -89,14 +92,9 @@ class OllamaBackend(LLMBackend):
                 continue
             text = chunk.get("response", "")
             if text:
-                console.print(text, end="", style="grey85")
-                full.append(text)
+                yield text
             if chunk.get("done"):
                 break
-
-        console.print()
-        console.print()
-        return "".join(full)
 
 
 class OpenAIBackend(LLMBackend):
@@ -122,13 +120,11 @@ class OpenAIBackend(LLMBackend):
         except Exception:
             return False
 
-    def stream(self, prompt: str) -> str:
+    def stream(self, prompt: str) -> Iterator[str]:
+        """Yield OpenAI response chunks; wrap auth/model errors as RuntimeError."""
         import openai
-        from rich.console import Console
 
-        console = Console()
         client = openai.OpenAI(api_key=self._api_key)
-        full: list[str] = []
 
         try:
             stream = client.chat.completions.create(
@@ -139,16 +135,11 @@ class OpenAIBackend(LLMBackend):
             for chunk in stream:
                 delta = chunk.choices[0].delta
                 if delta.content:
-                    console.print(delta.content, end="", style="grey85")
-                    full.append(delta.content)
+                    yield delta.content
         except openai.AuthenticationError as exc:
             raise RuntimeError("Invalid OpenAI API key") from exc
         except openai.NotFoundError as exc:
             raise RuntimeError(f"Model '{self._model}' not available") from exc
-
-        console.print()
-        console.print()
-        return "".join(full)
 
 
 class AnthropicBackend(LLMBackend):
@@ -180,13 +171,11 @@ class AnthropicBackend(LLMBackend):
         except Exception:
             return False
 
-    def stream(self, prompt: str) -> str:
+    def stream(self, prompt: str) -> Iterator[str]:
+        """Yield Anthropic response chunks; wrap auth/model errors as RuntimeError."""
         import anthropic
-        from rich.console import Console
 
-        console = Console()
         client = anthropic.Anthropic(api_key=self._api_key)
-        full: list[str] = []
 
         try:
             with client.messages.stream(
@@ -194,17 +183,11 @@ class AnthropicBackend(LLMBackend):
                 max_tokens=4096,
                 messages=[{"role": "user", "content": prompt}],
             ) as stream:
-                for text in stream.text_stream:
-                    console.print(text, end="", style="grey85")
-                    full.append(text)
+                yield from stream.text_stream
         except anthropic.AuthenticationError as exc:
             raise RuntimeError("Invalid Anthropic API key") from exc
         except anthropic.NotFoundError as exc:
             raise RuntimeError(f"Model '{self._model}' not available") from exc
-
-        console.print()
-        console.print()
-        return "".join(full)
 
 
 def create_backend(backend: str, model: str, **kwargs: object) -> LLMBackend:

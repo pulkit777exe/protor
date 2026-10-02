@@ -1,12 +1,13 @@
 """Unit tests for protor.crawler module"""
 
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from protor.crawler import Crawler, _CrawlLog, _CrawlQueue, _render, _State
+from protor.fetcher import FetchResult
 
-ROBOTS_PATCH = patch("protor.crawler.check_robots", new_callable=AsyncMock, return_value=True)
+ROBOTS_PATCH = patch("protor.engine.check_robots", new_callable=AsyncMock, return_value=True)
 
 
 class TestCrawlLog:
@@ -82,33 +83,41 @@ class TestRender:
 class TestCrawlQueue:
     def test_enqueue_and_dequeue(self, tmp_path):
         q = _CrawlQueue(tmp_path / "test.db")
-        q.enqueue("https://example.com")
+        q.enqueue("https://example.com/")
         url = q.dequeue()
-        assert url == "https://example.com"
+        assert url == "https://example.com/"
         assert q.dequeue() is None
         q.close()
 
     def test_deduplication(self, tmp_path):
         q = _CrawlQueue(tmp_path / "test.db")
-        assert q.enqueue("https://example.com") is True
-        assert q.enqueue("https://example.com") is False
+        assert q.enqueue("https://example.com/") is True
+        assert q.enqueue("https://example.com/") is False
+        q.close()
+
+    def test_canonical_variants_dedup(self, tmp_path):
+        q = _CrawlQueue(tmp_path / "test.db")
+        assert q.enqueue("https://example.com/index.html") is True
+        assert q.enqueue("https://example.com/") is False
+        assert q.enqueue("https://example.com/about#top") is True
+        assert q.enqueue("https://example.com/about") is False
         q.close()
 
     def test_visited_tracking(self, tmp_path):
         q = _CrawlQueue(tmp_path / "test.db")
-        q.enqueue("https://example.com")
+        q.enqueue("https://example.com/")
         q.dequeue()
-        q.mark_visited("https://example.com", success=True)
-        assert q.is_visited("https://example.com")
+        q.mark_visited("https://example.com/", success=True)
+        assert q.is_visited("https://example.com/")
         assert q.visited_count == 1
         assert q.success_count == 1
         q.close()
 
     def test_queue_size(self, tmp_path):
         q = _CrawlQueue(tmp_path / "test.db")
-        q.enqueue("https://a.com")
-        q.enqueue("https://b.com")
-        q.enqueue("https://c.com")
+        q.enqueue("https://a.com/")
+        q.enqueue("https://b.com/")
+        q.enqueue("https://c.com/")
         assert q.queue_size == 3
         q.dequeue()
         assert q.queue_size == 2
@@ -116,13 +125,13 @@ class TestCrawlQueue:
 
     def test_checkpoint_roundtrip(self, tmp_path):
         q = _CrawlQueue(tmp_path / "test.db")
-        q.enqueue("https://example.com")
+        q.enqueue("https://example.com/")
         q.enqueue("https://example.com/about")
         q.dequeue()
-        q.mark_visited("https://example.com", success=True)
+        q.mark_visited("https://example.com/", success=True)
 
         cp = q.to_checkpoint()
-        assert "https://example.com" in cp["visited"]
+        assert "https://example.com/" in cp["visited"]
         assert "https://example.com/about" in cp["queued"]
 
         q2 = _CrawlQueue.from_checkpoint(cp, tmp_path / "test2.db")
@@ -170,15 +179,14 @@ class TestCrawlerCrawl:
         c = Crawler("https://example.com", max_pages=1, output_dir=str(tmp_path))
 
         with (
-            patch("protor.crawler.aiohttp.ClientSession"),
-            patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch,
-            patch("protor.crawler.extract_links", return_value=[]),
-            patch("protor.crawler.scrape_site_async", new_callable=AsyncMock) as mock_scrape,
-            patch("protor.crawler.Live"),
+            patch("protor.engine.aiohttp.ClientSession"),
+            patch("protor.engine.fetch", new_callable=AsyncMock) as mock_fetch,
+            patch("protor.engine.Live"),
             ROBOTS_PATCH,
         ):
-            mock_fetch.return_value = ("<html><body>Hello</body></html>", 100)
-            mock_scrape.return_value = MagicMock()
+            mock_fetch.return_value = FetchResult(
+                text="<html><body>Hello</body></html>", nbytes=100
+            )
 
             await c._run()
 
@@ -191,9 +199,9 @@ class TestCrawlerCrawl:
         c = Crawler("https://example.com", max_pages=1, output_dir=str(tmp_path))
 
         with (
-            patch("protor.crawler.aiohttp.ClientSession"),
-            patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch,
-            patch("protor.crawler.Live"),
+            patch("protor.engine.aiohttp.ClientSession"),
+            patch("protor.engine.fetch", new_callable=AsyncMock) as mock_fetch,
+            patch("protor.engine.Live"),
             ROBOTS_PATCH,
         ):
             mock_fetch.side_effect = Exception("Connection refused")
@@ -215,15 +223,14 @@ class TestCrawlerCrawl:
         c._queue.enqueue("https://example.com/3")
 
         with (
-            patch("protor.crawler.aiohttp.ClientSession"),
-            patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch,
-            patch("protor.crawler.extract_links", return_value=[]),
-            patch("protor.crawler.scrape_site_async", new_callable=AsyncMock) as mock_scrape,
-            patch("protor.crawler.Live"),
+            patch("protor.engine.aiohttp.ClientSession"),
+            patch("protor.engine.fetch", new_callable=AsyncMock) as mock_fetch,
+            patch("protor.engine.Live"),
             ROBOTS_PATCH,
         ):
-            mock_fetch.return_value = ("<html><body>Hello</body></html>", 100)
-            mock_scrape.return_value = MagicMock()
+            mock_fetch.return_value = FetchResult(
+                text="<html><body>Hello</body></html>", nbytes=100
+            )
 
             await c._run()
 
@@ -235,18 +242,15 @@ class TestCrawlerCrawl:
         c = Crawler("https://example.com", max_pages=3, output_dir=str(tmp_path))
 
         with (
-            patch("protor.crawler.aiohttp.ClientSession"),
-            patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch,
-            patch(
-                "protor.crawler.extract_links",
-                return_value=["https://example.com/about", "https://example.com/contact"],
-            ),
-            patch("protor.crawler.scrape_site_async", new_callable=AsyncMock) as mock_scrape,
-            patch("protor.crawler.Live"),
+            patch("protor.engine.aiohttp.ClientSession"),
+            patch("protor.engine.fetch", new_callable=AsyncMock) as mock_fetch,
+            patch("protor.engine.Live"),
             ROBOTS_PATCH,
         ):
-            mock_fetch.return_value = ("<html><body>Hello</body></html>", 100)
-            mock_scrape.return_value = MagicMock()
+            mock_fetch.return_value = FetchResult(
+                text=('<html><body><a href="/about">A</a><a href="/contact">B</a></body></html>'),
+                nbytes=200,
+            )
 
             await c._run()
 
@@ -263,15 +267,14 @@ class TestCrawlerCrawl:
         c = Crawler("https://example.com", max_pages=5, output_dir=str(tmp_path))
 
         with (
-            patch("protor.crawler.aiohttp.ClientSession"),
-            patch("protor.crawler._fetch", new_callable=AsyncMock) as mock_fetch,
-            patch("protor.crawler.extract_links", return_value=[]),
-            patch("protor.crawler.scrape_site_async", new_callable=AsyncMock) as mock_scrape,
-            patch("protor.crawler.Live"),
+            patch("protor.engine.aiohttp.ClientSession"),
+            patch("protor.engine.fetch", new_callable=AsyncMock) as mock_fetch,
+            patch("protor.engine.Live"),
             ROBOTS_PATCH,
         ):
-            mock_fetch.return_value = ("<html><body>Hello</body></html>", 100)
-            mock_scrape.return_value = MagicMock()
+            mock_fetch.return_value = FetchResult(
+                text="<html><body>Hello</body></html>", nbytes=100
+            )
 
             await c._run()
 
@@ -285,4 +288,7 @@ class TestCrawlerCrawl:
         with patch("protor.crawler.asyncio.run") as mock_run:
             c.crawl()
             assert mock_run.called
+            # Close the coroutine the mock discarded, so it does not resurface
+            # later as an "coroutine was never awaited" RuntimeWarning.
+            mock_run.call_args.args[0].close()
         c._queue.close()

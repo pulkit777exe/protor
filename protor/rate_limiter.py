@@ -1,4 +1,4 @@
-"""Per-domain rate limiter for polite scraping."""
+"""Per-domain rate limiting for polite scraping."""
 
 from __future__ import annotations
 
@@ -8,15 +8,33 @@ from collections import defaultdict
 
 
 class DomainRateLimiter:
-    """Enforce minimum delay between requests to the same domain."""
+    """
+    Enforce a minimum delay between requests to the same domain.
+
+    Concurrency-safe: each waiter reserves its own slot under a per-domain
+    lock. The naive read-then-sleep version let every concurrent task read the
+    same stale timestamp, sleep the same amount, and then fire simultaneously,
+    so ``concurrency=8`` against one domain produced 8 simultaneous requests
+    instead of 8 spaced ones. Requests to *different* domains never block
+    each other.
+    """
 
     def __init__(self, delay: float = 0.5) -> None:
         self._delay = delay
-        self._last_request: dict[str, float] = defaultdict(float)
+        self._next_allowed: dict[str, float] = defaultdict(float)
+        self._locks: dict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
 
     async def wait(self, domain: str) -> None:
-        """Sleep if the last request to *domain* was too recent."""
-        elapsed = time.monotonic() - self._last_request[domain]
-        if elapsed < self._delay:
-            await asyncio.sleep(self._delay - elapsed)
-        self._last_request[domain] = time.monotonic()
+        """Block until *domain* has been idle for the configured delay."""
+        if self._delay <= 0:
+            return
+
+        async with self._locks[domain]:
+            now = time.monotonic()
+            start = max(now, self._next_allowed[domain])
+            # Reserve this slot before releasing the lock, so the next waiter
+            # queues behind us instead of racing to the same timestamp.
+            self._next_allowed[domain] = start + self._delay
+            delay = start - now
+            if delay > 0:
+                await asyncio.sleep(delay)

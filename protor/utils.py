@@ -7,12 +7,68 @@ import re
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse, urlunparse
 
 
 def safe_filename(name: str) -> str:
     """Return a filesystem-safe version of *name*."""
     return re.sub(r"[^a-zA-Z0-9_.-]", "_", name).strip("_") or "unnamed"
+
+
+def canonicalize_url(url: str) -> str:
+    """Return a stable deduplication key for *url*.
+
+    Lowercases the scheme and host, drops the fragment, and normalises
+    ``index.html`` page paths to their directory, so ``/index.html`` and ``/``
+    collapse into a single crawl target. Querystrings are preserved.
+    """
+    parsed = urlparse(url)
+    path = parsed.path or "/"
+    if not path.startswith("/"):
+        path = "/" + path
+    lowered = path.lower()
+    if lowered == "/index.html":
+        path = "/"
+    elif lowered.endswith("/index.html"):
+        path = path[: -len("index.html")]
+    netloc = parsed.netloc.lower()
+    query = parsed.query
+    return urlunparse((parsed.scheme.lower(), netloc, path, "", query, ""))
+
+
+def page_filename(url: str, fallback: str = "index.html") -> str:
+    """Return a stable, filesystem-safe page filename for *url*.
+
+    The root path (and any path ending in ``/``) maps to *fallback* so the
+    site's homepage is always ``index.html``.
+
+    Deeper paths keep their full path, flattened with ``-``, rather than just
+    the final segment: ``/docs/a.html`` and ``/blog/a.html`` share the leaf
+    ``a.html``, and using the leaf alone made one crawl page silently
+    overwrite the other's saved HTML.
+    """
+    path = unquote(urlparse(url).path).rstrip("/")
+    if not path:
+        return fallback
+    parts = [p for p in path.split("/") if p not in ("", ".", "..")]
+    if not parts or parts == ["index.html"] or parts == ["index.htm"]:
+        return fallback
+    # Strip leading dots so ".." can never survive into a filename.
+    flattened = "-".join(p.lstrip(".") for p in parts)
+    return safe_filename(flattened) or fallback
+
+
+def manifest_filename(url: str) -> str:
+    """Return the on-disk manifest name for the page at *url*.
+
+    The site root keeps the conventional ``manifest.json`` (the batch-scrape
+    contract); other pages get ``<page-name>.manifest.json`` so a multi-page
+    crawl never overwrites earlier manifests.
+    """
+    page = page_filename(url)
+    if page == "index.html":
+        return "manifest.json"
+    return f"{Path(page).stem}.manifest.json"
 
 
 def save_json(data: Any, path: str | Path) -> None:

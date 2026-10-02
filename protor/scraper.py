@@ -1,248 +1,45 @@
 """
 protor.scraper
 ~~~~~~~~~~~~~~
-Async HTML + JS scraper built on aiohttp.
+Thin orchestrator on top of the fetch, parser, and crawl engine modules.
+Scraping a single site or a batch of URLs both route through
+:class:`protor.engine.CrawlEngine`; this module only builds inputs and renders
+the terminal output.
 
 Public API
 ----------
-    scrape_multiple(urls, output_dir, *, download_js, timeout, concurrency, cache, headers, on_progress, ...)
-      → str   path to the generated sites_index.json
-
-    scrape_site_async(session, url, output_dir, download_js, row_state, cache, ...)
-      → SiteManifest | None   (None on failure)
-
-Features inspired by:
-    - Firecrawl: clean Markdown output
-    - Crawl4AI: content filtering, hooks
-    - Scrapling: domain blocking, UA rotation
-    - Crawlee: auto-scaling concurrency
-    - AutoScraper: schema-based extraction
+    scrape_site_async(session, url, output_dir, download_js, row_state, cache) → SiteManifest | None
+    scrape_multiple(urls, output_dir, *, ...) → path to sites_index.json
+    extract_links(html, base_url) → list[str]   (re-exported from parser)
 """
 
 from __future__ import annotations
 
-import asyncio
-import contextlib
-import random
-import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
-import aiohttp
-from bs4 import BeautifulSoup
 from rich import box
-from rich.live import Live
 from rich.table import Table
 from rich.text import Text
 
 from .blocklist import Blocklist
-from .config import (
-    DEFAULT_CONCURRENCY,
-    DEFAULT_TIMEOUT,
-    HEADERS,
-    JS_DOWNLOAD_TIMEOUT,
-    MAX_JS_FILES,
-    MAX_RETRIES,
-    MAX_TEXT_CHARS,
-    NOISE_TAGS,
-    RATE_LIMIT_DELAY,
-    RETRY_BACKOFF_BASE,
-    RETRYABLE_STATUS,
-    USER_AGENTS,
-)
-from .exceptions import FetchError
-from .extractor import ExtractionSchema, Extractor
-from .http_cache import CacheEntry, HTTPCache
-from .markdown import extract_clean_markdown
-from .models import SiteManifest, SiteMetadata
+from .config import DEFAULT_CONCURRENCY, DEFAULT_TIMEOUT, RATE_LIMIT_DELAY
+from .engine import CrawlEngine, StaticQueue, StaticSource
+from .http_cache import HTTPCache
+from .parser import extract_links
 from .rate_limiter import DomainRateLimiter
-from .robots import check_robots
 from .scaler import AutoScaler
 from .theme import ERR, OK, SPIN, bright, console, header_rule, label, muted
-from .utils import human_bytes, safe_filename, save_json, timestamp
+from .utils import human_bytes, save_json
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
+    from .extractor import ExtractionSchema
+    from .models import SiteManifest
+
 __all__ = ["extract_links", "scrape_multiple", "scrape_site_async"]
-
-
-# ── User-Agent rotation ──────────────────────────────────────────────────────
-
-
-def _random_ua() -> str:
-    """Return a random User-Agent from the rotation pool."""
-    return random.choice(USER_AGENTS)
-
-
-# ── HTML parsing helpers ──────────────────────────────────────────────────────
-
-
-def _extract_metadata(soup: BeautifulSoup) -> SiteMetadata:
-    meta = SiteMetadata()
-    if soup.title and soup.title.string:
-        meta.title = soup.title.string.strip()
-    for tag in soup.find_all("meta"):
-        name = str(tag.get("name", "") or "").lower()
-        prop = str(tag.get("property", "") or "").lower()
-        content = str(tag.get("content", "") or "")
-        if name == "description":
-            meta.description = content
-        elif name == "keywords":
-            meta.keywords = [k.strip() for k in content.split(",") if k.strip()]
-        elif name == "author":
-            meta.author = content
-        elif prop.startswith("og:"):
-            meta.og_tags[prop] = content
-    return meta
-
-
-def _extract_js_links_from_soup(soup: BeautifulSoup, base_url: str) -> list[str]:
-    """Extract JS script src URLs from an existing BeautifulSoup object."""
-    seen: set[str] = set()
-    links: list[str] = []
-    for tag in soup.find_all("script", src=True):
-        full = urljoin(base_url, str(tag["src"]))
-        if full not in seen and full.startswith("http"):
-            seen.add(full)
-            links.append(full)
-    return links
-
-
-def extract_links(html: str, base_url: str) -> list[str]:
-    """Return de-duplicated internal links from *html*, same domain as *base_url*."""
-    soup = BeautifulSoup(html, "lxml")
-    base_domain = urlparse(base_url).netloc
-    seen: set[str] = set()
-    links: list[str] = []
-    for tag in soup.find_all("a", href=True):
-        full = urljoin(base_url, str(tag["href"])).split("#")[0]
-        p = urlparse(full)
-        if p.netloc == base_domain and p.scheme in ("http", "https") and full not in seen:
-            seen.add(full)
-            links.append(full)
-    return links
-
-
-def _extract_text_from_soup(soup: BeautifulSoup) -> str:
-    """Extract visible text from an existing BeautifulSoup object, filtering noise."""
-    for tag in soup.find_all(list(NOISE_TAGS)):
-        tag.decompose()
-    lines = (ln.strip() for ln in soup.get_text("\n").splitlines())
-    return "\n".join(ln for ln in lines if ln)[:MAX_TEXT_CHARS]
-
-
-# ── Hook system ──────────────────────────────────────────────────────────────
-# Inspired by Crawl4AI's hook system for customization
-
-HookFunc = "Callable[[str, dict], None] | None"
-
-
-def _default_hooks() -> dict[str, list[Callable[..., Any]]]:
-    return {
-        "before_fetch": [],
-        "after_fetch": [],
-        "before_parse": [],
-        "after_parse": [],
-    }
-
-
-# ── async fetch primitives ────────────────────────────────────────────────────
-
-
-async def _fetch(
-    session: aiohttp.ClientSession,
-    url: str,
-    timeout: int = DEFAULT_TIMEOUT,
-    max_retries: int = MAX_RETRIES,
-    cache: HTTPCache | None = None,
-    hooks: dict[str, list[Callable[..., Any]]] | None = None,
-) -> tuple[str, int]:
-    """
-    Fetch *url* with retry logic and return (text, bytes_received).
-    Raises FetchError on HTTP >= 400 or connection problems.
-    """
-    if cache:
-        cached = cache.get(url)
-        if cached:
-            return cached.body, 0
-
-    # Run before_fetch hooks
-    hook_ctx = {"url": url, "headers": {}}
-    for hook in (hooks or {}).get("before_fetch", []):
-        with contextlib.suppress(Exception):
-            hook(url, hook_ctx)
-
-    conditional = cache.conditional_headers(url) if cache else {}
-    last_exc: Exception | None = None
-    for attempt in range(max_retries):
-        try:
-            async with session.get(
-                url, headers=conditional or None, timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as r:
-                if r.status == 304 and cache:
-                    cached = cache.get(url)
-                    if cached:
-                        return cached.body, 0
-                    raise FetchError(url, "304 Not Modified with no cache entry")
-                if r.status >= 400:
-                    if r.status in RETRYABLE_STATUS and attempt < max_retries - 1:
-                        delay = RETRY_BACKOFF_BASE * (2**attempt) + random.uniform(0, 0.5)
-                        await asyncio.sleep(delay)
-                        continue
-                    raise FetchError(url, f"HTTP {r.status}")
-                data = await r.read()
-                text = data.decode("utf-8", errors="replace")
-                if cache:
-                    cache.put(
-                        url,
-                        CacheEntry(
-                            etag=r.headers.get("ETag"),
-                            last_modified=r.headers.get("Last-Modified"),
-                            body=text,
-                            status=r.status,
-                        ),
-                    )
-
-                # Run after_fetch hooks
-                for hook in (hooks or {}).get("after_fetch", []):
-                    with contextlib.suppress(Exception):
-                        hook(url, {"status": r.status, "body": text})
-
-                return text, len(data)
-        except TimeoutError as exc:
-            last_exc = exc
-            if attempt < max_retries - 1:
-                delay = RETRY_BACKOFF_BASE * (2**attempt) + random.uniform(0, 0.5)
-                await asyncio.sleep(delay)
-                continue
-            raise FetchError(url, "timeout") from exc
-        except aiohttp.ClientError as exc:
-            last_exc = exc
-            if attempt < max_retries - 1:
-                delay = RETRY_BACKOFF_BASE * (2**attempt) + random.uniform(0, 0.5)
-                await asyncio.sleep(delay)
-                continue
-            raise FetchError(url, str(exc)) from exc
-
-    raise FetchError(url, f"failed after {max_retries} retries") from last_exc
-
-
-async def _download_file(
-    session: aiohttp.ClientSession,
-    url: str,
-    dest: Path,
-) -> bool:
-    dest.parent.mkdir(parents=True, exist_ok=True)
-    try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=JS_DOWNLOAD_TIMEOUT)) as r:
-            if r.status == 200:
-                dest.write_bytes(await r.read())
-                return True
-    except Exception:
-        pass
-    return False
 
 
 # ── live-table helpers ────────────────────────────────────────────────────────
@@ -296,228 +93,63 @@ def _build_table(rows: list[dict]) -> Table:
 
 
 async def scrape_site_async(
-    session: aiohttp.ClientSession,
+    session: Any,
     url: str,
-    output_dir: Path,
-    download_js: bool,
-    row_state: dict,
+    output_dir: str | Path,
+    download_js: bool = False,
+    row_state: dict | None = None,
     cache: HTTPCache | None = None,
     *,
     extraction_schema: ExtractionSchema | None = None,
     hooks: dict[str, list[Callable[..., Any]]] | None = None,
-    block_ads: bool = False,
+    blocklist: Blocklist | None = None,
+    check_robots: bool = True,
+    timeout: int = DEFAULT_TIMEOUT,
 ) -> SiteManifest | None:
     """
-    Scrape a single *url*.
+    Scrape a single *url* using the shared crawl engine.
 
-    Mutates *row_state* in-place so the Live table can show progress.
-    Returns None on failure (errors are captured in row_state).
+    A thin wrapper over :class:`~protor.engine.CrawlEngine` with a one-URL
+    queue, so single-site scraping and batch/crawl runs share one
+    implementation. Previously this function carried its own copy of the
+    pipeline, which had already drifted from the engine: it ignored
+    ``block_ads``, skipped the robots check, wrote a hard-coded
+    ``manifest.json`` that later pages overwrote, and dropped *timeout*.
+
+    Mutates *row_state* in-place so a Live table can show progress.
+    Returns None on failure (errors are recorded in row_state).
+
+    If *session* is given it is reused and left open; otherwise the engine
+    opens and closes its own.
     """
-    parsed = urlparse(url)
-    site_dir = output_dir / safe_filename(parsed.netloc)
-    site_dir.mkdir(parents=True, exist_ok=True)
+    row = {} if row_state is None else row_state
+    row["status"] = "fetching"
 
-    row_state["status"] = "fetching"
-    t0 = time.perf_counter()
-
-    try:
-        html, nbytes = await _fetch(session, url, cache=cache, hooks=hooks)
-    except FetchError as exc:
-        row_state["status"] = "error"
-        row_state["note"] = str(exc)
-        return None
-
-    elapsed = time.perf_counter() - t0
-
-    (site_dir / "index.html").write_text(html, encoding="utf-8")
-
-    soup = BeautifulSoup(html, "lxml")
-    metadata = _extract_metadata(soup)
-    text = _extract_text_from_soup(soup)
-
-    # Run before_parse hooks
-    for hook in (hooks or {}).get("before_parse", []):
-        with contextlib.suppress(Exception):
-            hook(url, {"soup": soup, "html": html})
-
-    # Generate clean Markdown output (Feature #1)
-    markdown_content = extract_clean_markdown(html, base_url=url)
-
-    # Run after_parse hooks
-    for hook in (hooks or {}).get("after_parse", []):
-        with contextlib.suppress(Exception):
-            hook(url, {"soup": soup, "markdown": markdown_content})
-
-    js_downloaded: list[str] = []
-    if download_js:
-        js_links = _extract_js_links_from_soup(soup, url)[:MAX_JS_FILES]
-        if js_links:
-            row_state["status"] = f"js:{len(js_links)}"
-            js_dir = site_dir / "js"
-            tasks = [
-                _download_file(
-                    session,
-                    jurl,
-                    js_dir / (safe_filename(Path(urlparse(jurl).path).name) or f"s{i}.js"),
-                )
-                for i, jurl in enumerate(js_links)
-            ]
-            results = await asyncio.gather(*tasks)
-            js_downloaded = [u for u, ok in zip(js_links, results, strict=False) if ok]
-
-    # Schema-based extraction (Feature #6)
-    extracted_data = None
-    if extraction_schema:
-        extractor = Extractor(extraction_schema, base_url=url)
-        extracted_data = extractor.extract(html)
-
-    manifest = SiteManifest(
-        url=url,
-        domain=parsed.netloc,
-        html_file=str(site_dir / "index.html"),
-        metadata=metadata,
-        text_content=text,
-        js_files=js_downloaded,
-        js_count=len(js_downloaded),
-        bytes_received=nbytes,
-        elapsed_ms=round(elapsed * 1000),
-        timestamp=timestamp(),
-        success=True,
-        markdown_content=markdown_content,
-        extracted_data=extracted_data,
+    engine = CrawlEngine(
+        queue=StaticQueue([url]),
+        link_source=StaticSource(),
+        output_dir=output_dir,
+        max_targets=1,
+        timeout=timeout,
+        download_js=download_js,
+        cache=cache,
+        hooks=hooks,
+        extraction_schema=extraction_schema,
+        blocklist=blocklist,
+        rate_limiter=DomainRateLimiter(delay=RATE_LIMIT_DELAY),
+        check_robots=check_robots,
+        session=session,
+        # Hand the engine our dict so its in-place row updates land in
+        # *row_state*, which is what a Live table renders from.
+        rows=[row],
     )
-    save_json(manifest.to_dict(), site_dir / "manifest.json")
+    await engine.arun()
 
-    row_state.update(status="done", ms=manifest.elapsed_ms, bytes=nbytes, js=len(js_downloaded))
-    return manifest
+    manifests = engine.manifests
+    return manifests[0] if manifests else None
 
 
 # ── orchestrator ──────────────────────────────────────────────────────────────
-
-
-async def _run_all(
-    urls: list[str],
-    output_dir: Path,
-    download_js: bool,
-    timeout: int,
-    concurrency: int,
-    cache: HTTPCache | None = None,
-    headers: dict[str, str] | None = None,
-    on_progress: Callable[[str, str, dict], None] | None = None,
-    *,
-    extraction_schema: ExtractionSchema | None = None,
-    hooks: dict[str, list[Callable[..., Any]]] | None = None,
-    block_ads: bool = False,
-    blocklist: Blocklist | None = None,
-    auto_scale: bool = False,
-) -> tuple[list[SiteManifest], int]:
-    session_headers = {**HEADERS, **(headers or {})}
-
-    # Apply UA rotation (Feature #5)
-    if blocklist is None and block_ads:
-        blocklist = Blocklist(block_ads=True)
-
-    rows = [
-        {
-            "idx": i + 1,
-            "domain": urlparse(u).netloc or u,
-            "status": "waiting",
-            "bytes": None,
-            "ms": None,
-            "js": None,
-            "error": False,
-        }
-        for i, u in enumerate(urls)
-    ]
-
-    sem = asyncio.Semaphore(concurrency)
-    limiter = DomainRateLimiter(delay=RATE_LIMIT_DELAY)
-    scaler: AutoScaler | None = None
-    if auto_scale:
-        scaler = AutoScaler(
-            initial=concurrency,
-            min_c=2,
-            max_c=min(concurrency * 3, 20),
-        )
-
-    async def _bounded(
-        session: aiohttp.ClientSession,
-        url: str,
-        row: dict,
-    ) -> SiteManifest | None:
-        async with sem:
-            domain = urlparse(url).netloc
-            await limiter.wait(domain)
-
-            # Domain/ad blocking (Feature #7)
-            if blocklist and blocklist.is_url_blocked(url):
-                row["status"] = "blocked"
-                row["error"] = True
-                if on_progress:
-                    on_progress(url, "blocked", row)
-                if scaler:
-                    scaler.record(False)
-                return None
-
-            if not await check_robots(url, session):
-                row["status"] = "blocked"
-                row["error"] = True
-                if on_progress:
-                    on_progress(url, "blocked", row)
-                if scaler:
-                    scaler.record(False)
-                return None
-
-            # Rotate User-Agent per request (Feature #5)
-            session.headers["User-Agent"] = _random_ua()
-
-            result = await scrape_site_async(
-                session,
-                url,
-                output_dir,
-                download_js,
-                row,
-                cache=cache,
-                extraction_schema=extraction_schema,
-                hooks=hooks,
-                block_ads=block_ads,
-            )
-            success = result is not None
-            if on_progress:
-                on_progress(url, row.get("status", "done"), row)
-            if scaler:
-                scaler.record(success)
-            return result
-
-    connector = aiohttp.TCPConnector(limit=concurrency)
-    cookie_jar = aiohttp.CookieJar()
-    async with aiohttp.ClientSession(
-        headers=session_headers, connector=connector, cookie_jar=cookie_jar
-    ) as session:
-        with Live(console=console, refresh_per_second=10) as live:
-            task_group = asyncio.gather(
-                *[_bounded(session, u, rows[i]) for i, u in enumerate(urls)],
-                return_exceptions=True,
-            )
-            while not task_group.done():
-                live.update(_build_table(rows))
-                # Auto-scaling (Feature #9)
-                if scaler:
-                    scaler.maybe_scale()
-                await asyncio.sleep(0.08)
-            live.update(_build_table(rows))
-
-        results = await task_group
-
-    manifests: list[SiteManifest] = []
-    error_count = 0
-    for result in results:
-        if isinstance(result, SiteManifest):
-            manifests.append(result)
-        else:
-            error_count += 1
-
-    return manifests, error_count
 
 
 def scrape_multiple(
@@ -528,6 +160,7 @@ def scrape_multiple(
     timeout: int = DEFAULT_TIMEOUT,
     concurrency: int = DEFAULT_CONCURRENCY,
     cache: HTTPCache | None = None,
+    use_cache: bool = False,
     headers: dict[str, str] | None = None,
     on_progress: Callable[[str, str, dict], None] | None = None,
     extraction_schema: ExtractionSchema | None = None,
@@ -538,38 +171,16 @@ def scrape_multiple(
     """
     Scrape *urls* concurrently and write a ``sites_index.json`` index file.
 
-    Parameters
-    ----------
-    urls:
-        List of URLs to scrape.
-    output_dir:
-        Root directory for scraped artefacts (created if absent).
-    download_js:
-        Whether to download linked ``<script src>`` files.
-    timeout:
-        Per-request timeout in seconds.
-    concurrency:
-        Maximum simultaneous requests.
-    cache:
-        Optional HTTP cache for conditional requests (ETag/Last-Modified).
-    extraction_schema:
-        Optional schema for structured data extraction.
-    hooks:
-        Optional hook functions for before/after fetch/parse.
-    block_ads:
-        If True, block requests to known ad/tracker domains.
-    auto_scale:
-        If True, automatically adjust concurrency based on success rates.
-
-    Returns
-    -------
-    str
-        Absolute path to ``{output_dir}/sites_index.json``.
+    Returns the absolute path to ``{output_dir}/sites_index.json``.
     """
     out = Path(output_dir)
     out.mkdir(parents=True, exist_ok=True)
 
-    if cache is None:
+    # Caching was previously always on, so every batch run paid to build and
+    # populate a cache the user never asked for. Opt in via --cache.
+    if cache is None and not use_cache:
+        cache = None
+    elif cache is None:
         cache = HTTPCache()
 
     console.print()
@@ -579,6 +190,8 @@ def scrape_multiple(
         features.append("ad-blocking")
     if auto_scale:
         features.append("auto-scaling")
+    if cache is not None:
+        features.append("http-cache")
     if extraction_schema:
         features.append(f"extract:{extraction_schema.name}")
     if hooks:
@@ -593,25 +206,57 @@ def scrape_multiple(
         console.print(f"  {label('features')} {bright(', '.join(features))}")
     console.print()
 
-    manifests, error_count = asyncio.run(
-        _run_all(
-            urls,
-            out,
-            download_js,
-            timeout,
-            concurrency,
-            cache=cache,
-            headers=headers,
-            on_progress=on_progress,
-            extraction_schema=extraction_schema,
-            hooks=hooks,
-            block_ads=block_ads,
-            auto_scale=auto_scale,
-        )
-    )
+    rows = [
+        {
+            "idx": i + 1,
+            "domain": urlparse(u).netloc or u,
+            "status": "waiting",
+            "bytes": None,
+            "ms": None,
+            "js": None,
+            "error": False,
+        }
+        for i, u in enumerate(urls)
+    ]
 
+    engine = CrawlEngine(
+        queue=StaticQueue(urls),
+        link_source=StaticSource(),
+        output_dir=out,
+        max_targets=len(urls),
+        concurrency=concurrency,
+        rows=rows,
+        timeout=timeout,
+        download_js=download_js,
+        cache=cache,
+        headers=headers,
+        hooks=hooks,
+        extraction_schema=extraction_schema,
+        blocklist=Blocklist(block_ads=True) if block_ads else None,
+        rate_limiter=DomainRateLimiter(delay=RATE_LIMIT_DELAY),
+        auto_scaler=(
+            AutoScaler(
+                initial=concurrency,
+                min_c=2,
+                max_c=min(concurrency * 3, 20),
+            )
+            if auto_scale
+            else None
+        ),
+        check_robots=True,
+        on_status=on_progress,
+        live_render=lambda: _build_table(rows),
+    )
+    if cache is not None:
+        stats = engine.run()
+        cache.flush()
+    else:
+        stats = engine.run()
+
+    manifests = engine.manifests
     ok_n = sum(1 for m in manifests if m.success)
-    total = sum(m.bytes_received for m in manifests)
+    error_count = stats.errors + stats.blocked
+    total = stats.bytes_total
     avg_ms = round(sum(m.elapsed_ms for m in manifests) / max(ok_n, 1)) if ok_n else 0
 
     console.print()

@@ -70,12 +70,8 @@ class TestOllamaBackendCheckAvailable:
 
 
 class TestOllamaBackendStream:
-    @patch("rich.console.Console")
     @patch("requests.post")
-    def test_stream_success(self, mock_post, mock_console_cls):
-        mock_console = MagicMock()
-        mock_console_cls.return_value = mock_console
-
+    def test_stream_success(self, mock_post):
         lines = [
             b'{"response": "Hello", "done": false}',
             b'{"response": " world", "done": true}',
@@ -87,7 +83,7 @@ class TestOllamaBackendStream:
         mock_post.return_value = mock_response
 
         backend = OllamaBackend("llama3")
-        result = backend.stream("Test prompt")
+        result = "".join(backend.stream("Test prompt"))
 
         assert result == "Hello world"
         mock_post.assert_called_once_with(
@@ -97,23 +93,18 @@ class TestOllamaBackendStream:
             timeout=300,
         )
 
-    @patch("rich.console.Console")
     @patch("requests.post")
-    def test_stream_model_not_found(self, mock_post, mock_console_cls):
+    def test_stream_model_not_found(self, mock_post):
         mock_response = MagicMock()
         mock_response.status_code = 404
         mock_post.return_value = mock_response
 
         backend = OllamaBackend("nonexistent")
         with pytest.raises(RuntimeError, match="not found"):
-            backend.stream("Test prompt")
+            list(backend.stream("Test prompt"))
 
-    @patch("rich.console.Console")
     @patch("requests.post")
-    def test_stream_handles_empty_lines(self, mock_post, mock_console_cls):
-        mock_console = MagicMock()
-        mock_console_cls.return_value = mock_console
-
+    def test_stream_handles_empty_lines(self, mock_post):
         lines = [
             b"",
             b'{"response": "Hi", "done": true}',
@@ -126,7 +117,7 @@ class TestOllamaBackendStream:
         mock_post.return_value = mock_response
 
         backend = OllamaBackend("llama3")
-        result = backend.stream("Test")
+        result = "".join(backend.stream("Test"))
 
         assert result == "Hi"
 

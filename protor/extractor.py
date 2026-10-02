@@ -19,7 +19,13 @@ from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, Tag
 
-__all__ = ["ExtractionSchema", "Extractor", "FieldSchema", "extract_from_html"]
+__all__ = [
+    "ExtractionSchema",
+    "Extractor",
+    "FieldSchema",
+    "extract_from_html",
+    "extract_from_soup",
+]
 
 
 @dataclass
@@ -176,13 +182,19 @@ class Extractor:
         self.base_url = base_url
 
     def extract(self, html: str) -> list[dict[str, Any]]:
+        """Extract structured data from an HTML string."""
+        return self.extract_from_soup(BeautifulSoup(html, "lxml"))
+
+    def extract_from_soup(self, soup: BeautifulSoup) -> list[dict[str, Any]]:
         """
-        Extract structured data from HTML.
+        Extract structured data from an already-parsed tree.
+
+        Callers that have parsed the page (e.g. the crawl engine) should use
+        this to avoid paying for a second lxml parse.
 
         Returns a list of dicts, one per matched base element.
         If no base_selector is set, extracts one record from the whole page.
         """
-        soup = BeautifulSoup(html, "lxml")
         results: list[dict[str, Any]] = []
 
         containers = soup.select(self.schema.base_selector) if self.schema.base_selector else [soup]
@@ -225,3 +237,17 @@ def extract_from_html(
     """
     extractor = Extractor(schema, base_url)
     return extractor.extract(html)
+
+
+def extract_from_soup(
+    soup: BeautifulSoup,
+    schema: ExtractionSchema,
+    base_url: str = "",
+) -> list[dict[str, Any]]:
+    """
+    Extract structured data from an already-parsed tree.
+
+    Use this when the HTML has already been parsed, so the page is not parsed
+    twice.
+    """
+    return Extractor(schema, base_url).extract_from_soup(soup)

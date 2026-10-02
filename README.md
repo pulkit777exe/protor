@@ -138,7 +138,7 @@ protor update -y
 ### after scraping
 
 ```
-data/
+<output>/
 ├── example_com/
 │   ├── index.html        # the actual html
 │   ├── manifest.json     # metadata and stuff
@@ -146,11 +146,20 @@ data/
 └── sites_index.json      # summary of everything
 ```
 
+The default output directory is `~/Downloads/protor`, and `protor analyze`
+looks there by default — so `protor scrape <url>` followed by `protor analyze`
+just works. Pass `-o DIR` to both to change it.
+
+When you `crawl` a multi-page site, each page gets a collision-free name
+derived from its full path (`docs/guide.html` → `docs-guide.html`), so pages
+with the same leaf name never overwrite each other. Downloaded scripts are
+disambiguated the same way when two origins serve the same basename.
+
 ### after analysis
 
 ```
 analysis/
-├── README.md            # readable report
+├── analysis.md          # readable report (or .txt/.csv/.html per --format)
 └── analysis.json        # raw data
 ```
 
@@ -238,8 +247,11 @@ protor scrape https://example.com --concurrency 2
 ```
 protor/
 ├── cli.py          # command interface
-├── scraper.py      # async html + js scraper with hooks, UA rotation, auto-scaling
-├── crawler.py      # bfs site crawler with checkpoint/resume
+├── engine.py       # the crawl loop shared by scrape + crawl (queue, links, limits)
+├── fetcher.py      # http: retries, ua rotation, hooks, conditional requests
+├── parser.py       # one html parse -> text, markdown, links, js refs
+├── scraper.py      # batch scraping orchestrator + live table
+├── crawler.py      # bfs site crawler with sqlite queue, checkpoint/resume
 ├── analyzer.py     # ollama/openai/anthropic integration
 ├── extractor.py    # schema-based structured data extraction
 ├── markdown.py     # html to clean markdown converter
@@ -249,9 +261,9 @@ protor/
 ├── config.py       # centralized constants
 ├── llm_backends.py # multi-backend llm abstraction
 ├── theme.py        # rich console theming
-├── http_cache.py   # conditional http caching
-├── robots.py       # robots.txt support
-├── rate_limiter.py # per-domain rate limiting
+├── http_cache.py   # conditional http caching (opt-in via --cache)
+├── robots.py       # robots.txt support (single-flight, cached)
+├── rate_limiter.py # concurrency-safe per-domain rate limiting
 ├── updater.py      # pypi update checker
 ├── formatters.py   # output formatting
 └── utils.py        # helper stuff

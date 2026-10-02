@@ -96,7 +96,7 @@ def test_example(temp_dir, sample_html):
 ### Mocking External Dependencies
 
 ```python
-@patch('protor.scraper.fetch_with_curl')
+@patch("protor.scraper.fetch_with_curl")
 def test_with_mock(mock_fetch):
     mock_fetch.return_value = ("<html></html>", True)
     # Test code here

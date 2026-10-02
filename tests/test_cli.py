@@ -7,6 +7,7 @@ import pytest
 
 from protor.cli import _abort, _build_parser, _load_index
 from protor.exceptions import DataFileNotFoundError
+from protor.utils import get_default_output_dir
 
 
 class TestBuildParser:
@@ -49,7 +50,7 @@ class TestBuildParser:
         assert args.command == "analyze"
         assert args.model == "llama3"
         assert args.focus == "general"
-        assert args.file == "data/sites_index.json"
+        assert args.file == str(get_default_output_dir() / "sites_index.json")
 
     def test_analyze_with_options(self):
         parser = _build_parser()

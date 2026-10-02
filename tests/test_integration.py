@@ -5,7 +5,7 @@ import json
 import os
 import shutil
 import tempfile
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -89,43 +89,45 @@ class TestEndToEnd:
         """Cleanup test environment"""
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
-    def test_scrape_and_save(self):
-        """Test complete scrape and save workflow"""
-        import asyncio
+    @pytest.mark.asyncio
+    async def test_scrape_and_save(self, fake_session):
+        """End-to-end: fetch -> parse -> write HTML + manifest."""
         from pathlib import Path
-        from unittest.mock import AsyncMock
 
         from protor.models import SiteManifest
         from protor.scraper import scrape_site_async
+        from tests.conftest import FakeResponse
 
-        sample_html = """
-        <html>
-            <head><title>Test</title></head>
-            <body><p>Content</p></body>
-        </html>
-        """
+        sample_html = (
+            "<html><head><title>Test</title></head>"
+            "<body><p>Content</p><nav>skip me</nav></body></html>"
+        )
+        session = fake_session(
+            routes={"https://example.com": FakeResponse(status=200, body=sample_html)}
+        )
 
-        async def run_test():
-            mock_session = AsyncMock()
-            mock_response = AsyncMock()
-            mock_response.status = 200
-            mock_response.read = AsyncMock(return_value=sample_html.encode("utf-8"))
-            mock_response.__aenter__ = AsyncMock(return_value=mock_response)
-            mock_response.__aexit__ = AsyncMock(return_value=False)
-            mock_session.get = MagicMock(return_value=mock_response)
+        row_state: dict = {}
+        result = await scrape_site_async(
+            session,
+            "https://example.com",
+            Path(self.temp_dir),
+            download_js=False,
+            row_state=row_state,
+            check_robots=False,
+        )
 
-            row_state = {}
-            result = await scrape_site_async(
-                mock_session,
-                "https://example.com",
-                Path(self.temp_dir),
-                download_js=False,
-                row_state=row_state,
-            )
+        assert isinstance(result, SiteManifest)
+        assert result.success is True
+        assert result.domain == "example.com"
+        assert result.metadata.title == "Test"
+        assert "Content" in result.text_content
+        # The noise pass must have removed the nav, in both artefacts.
+        assert "skip me" not in result.text_content
+        assert "skip me" not in result.markdown_content
+        # row_state is what a Live table renders from.
+        assert row_state["status"] == "done"
 
-            assert result is not None
-            assert isinstance(result, SiteManifest)
-            assert result.success is True
-            assert result.domain == "example.com"
-
-        asyncio.run(run_test())
+        site_dir = Path(self.temp_dir) / "example.com"
+        assert (site_dir / "index.html").exists()
+        assert (site_dir / "manifest.json").exists()
+        assert "Content" in (site_dir / "index.html").read_text(encoding="utf-8")

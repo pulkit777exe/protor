@@ -2,7 +2,9 @@
 protor.crawler
 ~~~~~~~~~~~~~~
 Async recursive site crawler with SQLite-backed queue,
-checkpoint/resume, and auto-scaling concurrency.
+checkpoint/resume, and auto-scaling concurrency. The crawl loop itself lives in
+:mod:`protor.engine`; this module supplies the persistent queue, the live render,
+and the crawl state observer.
 
 Inspired by:
     - Crawl4AI: crash recovery with resume_state
@@ -25,10 +27,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urlparse
 
-import aiohttp
 from rich import box
 from rich.console import Group
-from rich.live import Live
 from rich.rule import Rule
 from rich.table import Table
 from rich.text import Text
@@ -38,13 +38,12 @@ from .config import (
     CRAWLER_CONCURRENCY,
     CRAWLER_DELAY,
     DEFAULT_MAX_PAGES,
-    HEADERS,
 )
-from .robots import check_robots
+from .engine import CrawlEngine, RecursiveSource
+from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
-from .scraper import _fetch, extract_links, scrape_site_async
-from .theme import ERR, OK, SPIN, bright, console, header_rule, label, muted
-from .utils import get_default_output_dir, save_json
+from .theme import ERR, OK, SKIP, SPIN, bright, console, header_rule, label, muted
+from .utils import canonicalize_url, get_default_output_dir, save_json
 
 __all__ = ["Crawler"]
 
@@ -58,44 +57,74 @@ class _CrawlQueue:
     Persistent SQLite-backed URL queue with deduplication.
 
     Supports BFS ordering, visited tracking, and checkpoint serialization.
+
+    Writes are deferred: mutating calls mark the connection dirty and the
+    transaction is committed in batches (and on close). The previous version
+    committed per operation, fsyncing three times per page on the event loop —
+    ~765 us per page of pure blocking I/O, all of it serialized against fetches.
+    In-memory counters answer the ``empty``/``queue_size`` questions that used
+    to run ``COUNT(*)`` on every admission check.
     """
+
+    #: Mutations between automatic commits.
+    COMMIT_EVERY = 64
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
-        self._conn = sqlite3.connect(str(db_path))
+        conn = sqlite3.connect(str(db_path))
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn = conn
+        self._closed = False
+        self._dirty = 0
+        self._queued = 0
+        self._visited = 0
         self._init_db()
 
+    def _commit(self, force: bool = False) -> None:
+        """Commit once enough mutations have accumulated (or when forced)."""
+        if self._closed:
+            return
+        self._dirty += 1
+        if force or self._dirty >= self.COMMIT_EVERY:
+            self._conn.commit()
+            self._dirty = 0
+
     def _init_db(self) -> None:
-        self._conn.execute("""
+        self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS queue (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 url TEXT UNIQUE NOT NULL,
                 priority INTEGER DEFAULT 0,
                 added_at REAL NOT NULL
-            )
-        """)
-        self._conn.execute("""
+            );
             CREATE TABLE IF NOT EXISTS visited (
                 url TEXT UNIQUE NOT NULL,
                 scraped_at REAL,
                 success INTEGER DEFAULT 0
-            )
-        """)
-        self._conn.execute("""
+            );
             CREATE INDEX IF NOT EXISTS idx_queue_priority
-            ON queue(priority DESC, added_at ASC)
+            ON queue(priority DESC, added_at ASC);
         """)
         self._conn.commit()
+        self._queued = self._count("queue")
+        self._visited = self._count("visited")
+
+    def _count(self, table: str) -> int:
+        row = self._conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()
+        return int(row[0]) if row else 0
 
     def enqueue(self, url: str, priority: int = 0) -> bool:
         """Add URL to queue if not already queued or visited. Returns True if added."""
+        url = canonicalize_url(url)
         if self.is_visited(url) or self.is_queued(url):
             return False
         self._conn.execute(
             "INSERT INTO queue (url, priority, added_at) VALUES (?, ?, ?)",
             (url, priority, time.time()),
         )
-        self._conn.commit()
+        self._queued += 1
+        self._commit()
         return True
 
     def dequeue(self) -> str | None:
@@ -107,33 +136,42 @@ class _CrawlQueue:
             return None
         url: str = row[0]
         self._conn.execute("DELETE FROM queue WHERE url = ?", (url,))
-        self._conn.commit()
+        self._queued = max(0, self._queued - 1)
+        self._commit()
         return url
 
     def is_visited(self, url: str) -> bool:
-        row = self._conn.execute("SELECT 1 FROM visited WHERE url = ?", (url,)).fetchone()
+        row = self._conn.execute(
+            "SELECT 1 FROM visited WHERE url = ?", (canonicalize_url(url),)
+        ).fetchone()
         return row is not None
 
     def is_queued(self, url: str) -> bool:
-        row = self._conn.execute("SELECT 1 FROM queue WHERE url = ?", (url,)).fetchone()
+        row = self._conn.execute(
+            "SELECT 1 FROM queue WHERE url = ?", (canonicalize_url(url),)
+        ).fetchone()
         return row is not None
 
     def mark_visited(self, url: str, success: bool = True) -> None:
+        url = canonicalize_url(url)
         self._conn.execute(
             "INSERT OR REPLACE INTO visited (url, scraped_at, success) VALUES (?, ?, ?)",
             (url, time.time(), int(success)),
         )
-        self._conn.commit()
+        self._visited += 1
+        self._commit()
+
+    @property
+    def empty(self) -> bool:
+        return self._queued == 0
 
     @property
     def queue_size(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) FROM queue").fetchone()
-        return row[0] if row else 0
+        return self._queued
 
     @property
     def visited_count(self) -> int:
-        row = self._conn.execute("SELECT COUNT(*) FROM visited").fetchone()
-        return row[0] if row else 0
+        return self._visited
 
     @property
     def success_count(self) -> int:
@@ -142,6 +180,7 @@ class _CrawlQueue:
 
     def to_checkpoint(self) -> dict:
         """Serialize queue state for checkpoint/resume."""
+        self._commit(force=True)
         queued = [
             row[0]
             for row in self._conn.execute("SELECT url FROM queue ORDER BY added_at ASC").fetchall()
@@ -160,9 +199,15 @@ class _CrawlQueue:
             q.mark_visited(url, success=True)
         for url in checkpoint.get("queued", []):
             q.enqueue(url)
+        q._commit(force=True)
         return q
 
     def close(self) -> None:
+        """Flush and close. Idempotent, so repeated teardown is safe."""
+        if self._closed:
+            return
+        self._commit(force=True)
+        self._closed = True
         self._conn.close()
 
 
@@ -171,7 +216,7 @@ class _CrawlQueue:
 
 @dataclass
 class _CrawlLog:
-    status: str  # "ok" | "err" | "active" | "blocked"
+    status: str  # "ok" | "err" | "active" | "blocked" | "skip"
     domain: str
     note: str = ""
 
@@ -187,17 +232,27 @@ class _State:
     log: list[_CrawlLog] = field(default_factory=list)
 
 
+_BAR_WIDTH = 32
+
+
 def _render(state: _State, output_dir: str) -> Group:
-    filled = "█" * state.scraped
-    empty = "░" * (state.max_pages - state.scraped)
-    pct = int(state.scraped / state.max_pages * 100) if state.max_pages else 0
+    # The bar is scaled to a fixed width. One cell per page made --max-pages
+    # 500 render a 500-character bar that wrapped and wrecked the layout.
+    if state.max_pages:
+        filled = round(_BAR_WIDTH * min(state.scraped / state.max_pages, 1.0))
+        pct = int(state.scraped / state.max_pages * 100)
+    else:
+        filled = 0
+        pct = 0
+    filled = max(0, min(filled, _BAR_WIDTH))
+    bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
 
     stat = Table(box=box.SIMPLE, show_header=False, show_edge=False, padding=(0, 1))
     stat.add_column(width=10, style="grey74")
     stat.add_column(style="white")
     stat.add_row(
         "progress",
-        f"[grey50]{filled}[/grey50][grey23]{empty}[/grey23]  [white]{pct}%[/white]  [grey50]{state.scraped}/{state.max_pages}[/grey50]",
+        f"[grey50]{bar}[/grey50]  [white]{pct}%[/white]  [grey50]{state.scraped}/{state.max_pages}[/grey50]",
     )
     stat.add_row("current", muted(state.current[:72]) if state.current else "[grey23]—[/grey23]")
     stat.add_row("queue", bright(str(state.queue_n)))
@@ -220,6 +275,8 @@ def _render(state: _State, output_dir: str) -> Group:
             s = Text(f"{ERR} error", style="red")
         elif entry.status == "blocked":
             s = Text(f"{ERR} blocked", style="red")
+        elif entry.status == "skip":
+            s = Text(f"{SKIP} skipped", style="grey50")
         else:
             s = Text(f"{SPIN} ...", style="yellow")
         log_t.add_row(str(i), entry.domain, s)
@@ -262,6 +319,7 @@ class Crawler:
 
         self._base_domain = urlparse(start_url).netloc
         self._state = _State(max_pages=max_pages)
+        self._log_index: dict[str, int] = {}
 
         # SQLite queue
         db_path = self.output_dir / "crawl_queue.db"
@@ -324,87 +382,55 @@ class Crawler:
     # ── internal ──────────────────────────────────────────────────────────────
 
     async def _run(self) -> None:
-        connector = aiohttp.TCPConnector(limit=CRAWLER_CONCURRENCY)
-        async with aiohttp.ClientSession(headers=HEADERS, connector=connector) as session:
-            scaler: AutoScaler | None = None
-            if self.auto_scale:
-                scaler = AutoScaler(initial=CRAWLER_CONCURRENCY)
+        scaler: AutoScaler | None = None
+        if self.auto_scale:
+            scaler = AutoScaler(initial=CRAWLER_CONCURRENCY)
 
-            with Live(console=console, refresh_per_second=6) as live:
-                while self._state.scraped < self.max_pages:
-                    url = self._queue.dequeue()
-                    if url is None:
-                        break
+        engine = CrawlEngine(
+            queue=self._queue,
+            link_source=RecursiveSource(),
+            output_dir=self.output_dir,
+            max_targets=self.max_pages,
+            concurrency=CRAWLER_CONCURRENCY,
+            auto_scaler=scaler,
+            allowed_domain=self._base_domain,
+            check_robots=True,
+            rate_limiter=DomainRateLimiter(delay=CRAWLER_DELAY),
+            checkpoint_interval=5,
+            on_checkpoint=self._save_checkpoint,
+            on_status=self._on_status,
+            live_render=lambda: _render(self._state, str(self.output_dir)),
+        )
+        await engine.arun()
 
-                    domain = urlparse(url).netloc
+    def _on_status(self, status: str, url: str, row: dict) -> None:
+        """Keep crawl state in sync with engine events for the live render."""
+        domain = urlparse(url).netloc
+        self._state.queue_n = self._queue.queue_size
 
-                    # Only follow same-domain links
-                    if urlparse(url).netloc != self._base_domain:
-                        self._queue.mark_visited(url, success=False)
-                        continue
+        if status == "fetching":
+            self._state.current = url
+            self._log_index[url] = len(self._state.log)
+            self._state.log.append(_CrawlLog("active", domain))
+        elif status.startswith("js:"):
+            # Status is "js:N"; comparing against the bare "js:" never matched.
+            self._update_log(url, "active", domain)
+        elif status == "done":
+            self._state.scraped += 1
+            self._update_log(url, "ok", domain)
+        elif status == "error":
+            self._state.errors += 1
+            self._update_log(url, "err", domain, str(row.get("note", "")))
+        elif status == "blocked":
+            self._state.blocked += 1
+            self._state.log.append(_CrawlLog("blocked", domain, note=str(row.get("note", ""))))
+        elif status == "skipped":
+            self._update_log(url, "skip", domain, str(row.get("note", "")))
 
-                    self._state.current = url
-                    self._state.queue_n = self._queue.queue_size
-                    self._state.log.append(_CrawlLog("active", domain))
-                    live.update(_render(self._state, str(self.output_dir)))
-
-                    try:
-                        if not await check_robots(url, session):
-                            self._state.log[-1].status = "blocked"
-                            self._state.log[-1].note = "blocked by robots.txt"
-                            self._state.blocked += 1
-                            self._queue.mark_visited(url, success=False)
-                            if scaler:
-                                scaler.record(False)
-                            continue
-
-                        html, _ = await _fetch(session, url)
-
-                        # Extract and enqueue new links
-                        new_links = 0
-                        for link in extract_links(html, url):
-                            if self._queue.enqueue(link):
-                                new_links += 1
-
-                        row: dict = {}
-                        result = await scrape_site_async(
-                            session,
-                            url,
-                            self.output_dir,
-                            False,
-                            row,
-                        )
-                        if result:
-                            self._state.scraped += 1
-                            self._state.log[-1].status = "ok"
-                            self._queue.mark_visited(url, success=True)
-                        else:
-                            self._state.errors += 1
-                            self._state.log[-1].status = "err"
-                            self._queue.mark_visited(url, success=False)
-
-                        if scaler:
-                            scaler.record(result is not None)
-
-                    except Exception as exc:
-                        self._state.errors += 1
-                        self._state.log[-1].status = "err"
-                        self._state.log[-1].note = str(exc)
-                        self._queue.mark_visited(url, success=False)
-                        if scaler:
-                            scaler.record(False)
-
-                    self._state.queue_n = self._queue.queue_size
-                    live.update(_render(self._state, str(self.output_dir)))
-
-                    # Auto-scaling
-                    if scaler:
-                        scaler.maybe_scale()
-
-                    # Checkpoint periodically
-                    if self._state.scraped % 5 == 0:
-                        self._save_checkpoint()
-
-                    await asyncio.sleep(CRAWLER_DELAY)
-
-                live.update(_render(self._state, str(self.output_dir)))
+    def _update_log(self, url: str, status: str, domain: str, note: str = "") -> None:
+        idx = self._log_index.get(url)
+        if idx is not None and idx < len(self._state.log):
+            self._state.log[idx].status = status
+            self._state.log[idx].note = note
+        else:
+            self._state.log.append(_CrawlLog(status, domain, note))
