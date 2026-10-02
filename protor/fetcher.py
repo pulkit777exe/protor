@@ -59,6 +59,24 @@ def _backoff(attempt: int) -> float:
     return delay
 
 
+def _conditional_headers(entry: CacheEntry | None) -> dict[str, str]:
+    """
+    Build revalidation headers from an entry's validators.
+
+    Only ETag/Last-Modified survive serialisation, so those are the only
+    validators available to revalidate with. No entry means no headers, which
+    leaves the request an ordinary one.
+    """
+    if entry is None:
+        return {}
+    headers: dict[str, str] = {}
+    if entry.etag:
+        headers["If-None-Match"] = entry.etag
+    if entry.last_modified:
+        headers["If-Modified-Since"] = entry.last_modified
+    return headers
+
+
 def _from_cache(entry: CacheEntry) -> FetchResult:
     """
     Build a result from a cache hit.
@@ -91,18 +109,18 @@ async def fetch(
 
     Raises FetchError on HTTP >= 400 or connection problems.
     """
-    if cache:
-        cached = cache.get(url)
-        if cached:
-            return _from_cache(cached)
+    # Read the entry without discarding it: an expired one still carries the
+    # validators that make a conditional request — and a 304 — possible at all.
+    entry = cache.entry_for(url) if cache is not None else None
+    if entry is not None and not entry.is_expired:
+        return _from_cache(entry)
 
     hook_ctx: dict[str, Any] = {"url": url, "headers": {}}
     for hook in (hooks or {}).get("before_fetch", []):
         with contextlib.suppress(Exception):
             hook(url, hook_ctx)
 
-    conditional = cache.conditional_headers(url) if cache else {}
-    headers = {**(conditional or {}), "User-Agent": random_user_agent()}
+    headers = {**_conditional_headers(entry), "User-Agent": random_user_agent()}
     last_exc: Exception | None = None
 
     for attempt in range(max_retries):
@@ -110,11 +128,22 @@ async def fetch(
             async with session.get(
                 url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)
             ) as r:
-                if r.status == 304 and cache:
-                    cached = cache.get(url)
-                    if cached:
-                        return _from_cache(cached)
-                    raise FetchError(url, "304 Not Modified with no cache entry")
+                if r.status == 304:
+                    # 304 means "what you already have is current". Serving it
+                    # needs a cache; without one there is nothing to serve, and
+                    # passing the empty body off as a page would report a blank
+                    # site as successfully scraped.
+                    if cache is None:
+                        raise FetchError(url, "304 Not Modified with no cache entry")
+                    # The entry a 304 refers to is, by definition, the one that
+                    # was stale — which get() will not return.
+                    served = cache.entry_for(url)
+                    if served is None:
+                        raise FetchError(url, "304 Not Modified with no cache entry")
+                    # Refresh it so the next visit is a disk hit, not another
+                    # round trip to re-validate the same unchanged page.
+                    cache.touch(url)
+                    return _from_cache(served)
                 if r.status >= 400:
                     if r.status in RETRYABLE_STATUS and attempt < max_retries - 1:
                         await asyncio.sleep(_backoff(attempt))

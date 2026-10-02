@@ -446,30 +446,59 @@ class TestCacheHygiene:
         # ...but the body is still available on demand.
         assert reopened.get("https://s3.com/").body == "x" * 50_000
 
-    def test_expired_body_files_are_deleted(self, tmp_path):
-        """get() dropped the index entry but left the bytes on disk forever."""
+    def test_expired_bodies_are_deleted(self, tmp_path):
+        """Bytes must not outlive the retention window, validators or not."""
         from protor.http_cache import CacheEntry, HTTPCache
 
-        cache = HTTPCache(cache_dir=tmp_path / "c", ttl=1)
+        cache = HTTPCache(cache_dir=tmp_path / "c", ttl=1, stale_ttl=1)
         cache.put("https://a.com/", CacheEntry(body="payload"))
         cache.flush()
         assert list((tmp_path / "c" / "bodies").glob("*.body"))
 
+        # Past ttl + stale_ttl the entry has nothing left to offer, so reopening
+        # reclaims it and its body. The aged timestamp has to reach disk first,
+        # otherwise the reopened cache re-reads a fresh entry.
         cache._index["https://a.com/"].timestamp -= 10_000
-        assert cache.get("https://a.com/") is None
+        cache._dirty = True  # age the stored entry; flush() is a no-op when clean
+        cache.flush()
+        reopened = HTTPCache(cache_dir=tmp_path / "c", ttl=1, stale_ttl=1)
+        assert reopened._index == {}
         assert list((tmp_path / "c" / "bodies").glob("*.body")) == []
+
+    def test_stale_entry_is_retained_so_it_can_be_revalidated(self, tmp_path):
+        """
+        A stale entry must keep its validators and body.
+
+        Deleting it on read meant the ETag was already gone before a conditional
+        request could be made, so expiry silently degraded into a full
+        re-download every time.
+        """
+        from protor.http_cache import CacheEntry, HTTPCache
+
+        cache = HTTPCache(cache_dir=tmp_path / "c", ttl=1, stale_ttl=3600)
+        cache.put("https://a.com/", CacheEntry(body="payload", etag='W/"1"'))
+        cache.flush()
+
+        cache._index["https://a.com/"].timestamp -= 10
+
+        assert cache.get("https://a.com/") is None, "stale entries are not served"
+        entry = cache.entry_for("https://a.com/")
+        assert entry is not None and entry.body == "payload", "but retained for revalidation"
+        assert cache.conditional_headers("https://a.com/") == {"If-None-Match": 'W/"1"'}
+        assert list((tmp_path / "c" / "bodies").glob("*.body")), "body kept"
+        assert cache.prune() == 0, "still inside the retention window"
 
     def test_prune_reclaims_an_abandoned_cache(self, tmp_path):
         from protor.http_cache import CacheEntry, HTTPCache
 
-        # ttl=0 makes every entry expired on write, so the on-disk state is
-        # genuinely stale rather than mutated behind the cache's back.
-        cache = HTTPCache(cache_dir=tmp_path / "c", ttl=0)
+        # A zero retention window makes every entry reclaimable on open, so an
+        # abandoned cache cannot keep growing between runs.
+        cache = HTTPCache(cache_dir=tmp_path / "c", ttl=0, stale_ttl=0)
         for i in range(10):
             cache.put(f"https://s{i}.com/", CacheEntry(body="y" * 10_000))
         cache.flush()
 
-        reopened = HTTPCache(cache_dir=tmp_path / "c", ttl=0)
+        reopened = HTTPCache(cache_dir=tmp_path / "c", ttl=0, stale_ttl=0)
         assert reopened._index == {}
         assert list((tmp_path / "c" / "bodies").glob("*.body")) == []
 

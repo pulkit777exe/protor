@@ -29,12 +29,28 @@ class CacheEntry:
     last_modified: str | None = None
     status: int = 200
     timestamp: float = 0.0
+    #: Seconds the entry may be served without revalidating.
     ttl: int = 3600
+    #: Extra seconds the entry is *retained* after it goes stale, so its
+    #: ETag/Last-Modified can still be sent. Without this window, expiry deletes
+    #: the validators and every "conditional" request silently degrades into a
+    #: full re-download.
+    stale_ttl: int = 86_400
     body: str = field(default="", repr=False)
 
     @property
+    def age(self) -> float:
+        return time.time() - self.timestamp
+
+    @property
     def is_expired(self) -> bool:
-        return time.time() - self.timestamp > self.ttl
+        """True once too old to serve without revalidating."""
+        return self.age > self.ttl
+
+    @property
+    def is_retained(self) -> bool:
+        """True while still worth keeping for revalidation."""
+        return self.age <= self.ttl + self.stale_ttl
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -43,11 +59,14 @@ class CacheEntry:
             "status": self.status,
             "timestamp": self.timestamp,
             "ttl": self.ttl,
+            "stale_ttl": self.stale_ttl,
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> CacheEntry:
-        return cls(**data)
+        # Tolerate indexes written before stale_ttl existed.
+        known = {k: v for k, v in data.items() if k in cls.__dataclass_fields__}
+        return cls(**known)
 
 
 class HTTPCache:
@@ -58,13 +77,19 @@ class HTTPCache:
     index, or rely on the context manager, which flushes on exit.
     """
 
-    def __init__(self, cache_dir: str | Path | None = None, ttl: int = 3600) -> None:
+    def __init__(
+        self,
+        cache_dir: str | Path | None = None,
+        ttl: int = 3600,
+        stale_ttl: int = 86_400,
+    ) -> None:
         self._cache_dir = (
             Path(cache_dir) if cache_dir else Path.home() / ".cache" / "protor" / "http"
         )
         self._bodies_dir = self._cache_dir / "bodies"
         self._bodies_dir.mkdir(parents=True, exist_ok=True)
         self._ttl = ttl
+        self._stale_ttl = stale_ttl
         self._index: dict[str, CacheEntry] = self._load_index()
         self._dirty = False
         # An abandoned cache would otherwise keep its bytes forever.
@@ -123,27 +148,27 @@ class HTTPCache:
 
     def prune(self) -> int:
         """
-        Delete expired entries and their body files. Returns the number removed.
+        Discard entries past their retention window, plus their body files.
 
-        Without this the body files were never deleted: ``get`` dropped the
-        index entry but left the bytes on disk, so the cache grew forever.
-        Called on open, so an abandoned cache still shrinks.
+        Stale-but-retained entries are kept so conditional requests still work;
+        only entries older than ``ttl + stale_ttl`` go. Also sweeps body files
+        whose index entry no longer exists, which is what previously let the
+        cache grow without bound. Returns the number of entries removed.
         """
-        stale = [url for url, entry in self._index.items() if entry.is_expired]
-        for url in stale:
+        doomed = [url for url, entry in self._index.items() if not entry.is_retained]
+        for url in doomed:
             del self._index[url]
             self._drop_body(url)
 
-        # Sweep orphaned bodies whose index entry no longer exists.
         live = {self._body_path(url).name for url in self._index}
         for body in self._bodies_dir.glob("*.body"):
             if body.name not in live:
                 with contextlib.suppress(OSError):
                     body.unlink()
 
-        if stale:
+        if doomed:
             self._dirty = True
-        return len(stale)
+        return len(doomed)
 
     def flush(self) -> None:
         """Persist the index. Cheap and idempotent; safe to call repeatedly."""
@@ -176,35 +201,59 @@ class HTTPCache:
 
     def get(self, url: str) -> CacheEntry | None:
         """
-        Return a cached entry for *url* if not expired, or None.
+        Return a *fresh* cached entry for *url*, or None.
 
-        The body is read from disk here and attached to the returned entry, so
-        only the pages actually requested occupy memory.
+        An expired entry is deliberately kept, not discarded: its ETag and
+        Last-Modified are still needed to revalidate, and deleting it here meant
+        the conditional request could never be made — expiry silently degraded
+        into a full re-download every time. Retention is bounded by
+        :meth:`prune`, which discards entries past ``ttl + stale_ttl``.
+
+        The body is read from disk on demand, so only requested pages are
+        resident in memory.
         """
         entry = self._index.get(url)
-        if entry is None:
-            return None
-        if entry.is_expired:
-            del self._index[url]
-            self._drop_body(url)
-            self._dirty = True
+        if entry is None or entry.is_expired:
             return None
         if not entry.body:
             entry.body = self._read_body(url)
         return entry
 
+    def entry_for(self, url: str) -> CacheEntry | None:
+        """
+        Return the entry for *url*, fresh or expired, without discarding it.
+
+        This is what a caller needs to choose between serving and revalidating:
+        :meth:`get` returns None once stale, which is exactly the state a 304
+        refers to.
+        """
+        entry = self._index.get(url)
+        if entry is not None and not entry.body:
+            entry.body = self._read_body(url)
+        return entry
+
+    #: Retained as an alias for :meth:`entry_for`.
+    lookup = entry_for
+
+    def touch(self, url: str) -> None:
+        """Mark an entry fresh again, e.g. after the server confirms it with a 304."""
+        entry = self._index.get(url)
+        if entry is not None:
+            entry.timestamp = time.time()
+            self._dirty = True
+
     def put(self, url: str, entry: CacheEntry) -> None:
         """Store a cache entry for *url* (body written once, index marked dirty)."""
         entry.timestamp = time.time()
         entry.ttl = self._ttl
+        entry.stale_ttl = self._stale_ttl
         self._bodies_dir.mkdir(parents=True, exist_ok=True)
         self._body_path(url).write_text(entry.body, encoding="utf-8")
-        # Keep the body out of the in-memory index copy that gets serialised.
         self._index[url] = entry
         self._dirty = True
 
     def conditional_headers(self, url: str) -> dict[str, str]:
-        """Return headers for a conditional request."""
+        """Return headers for a conditional request, including for expired entries."""
         entry = self._index.get(url)
         if not entry:
             return {}
