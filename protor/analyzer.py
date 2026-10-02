@@ -14,19 +14,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import requests
 from rich import box
 from rich.table import Table
+from rich.text import Text
 
-from .config import ANALYSIS_MAX_DATA_CHARS, OLLAMA_BASE, OLLAMA_CHECK_TIMEOUT
-from .exceptions import OllamaUnavailableError
+from .config import ANALYSIS_MAX_DATA_CHARS, OLLAMA_BASE
+from .exceptions import RuntimeUnavailableError
 from .formatters import write_output
-from .llm_backends import LLMBackend, create_backend
+from .llm_backends import LLMBackend, ModelInfo, OllamaBackend, create_backend
 from .models import AnalysisResult, SiteManifest
+from .runtimes import RUNTIMES, detect_runtimes, get_runtime, resolve_base_url
 from .theme import OK, bright, console, err, header_rule, info, label, muted, section_rule, warn
 from .utils import save_json, timestamp
 
-__all__ = ["analyze", "analyze_with_ollama", "check_ollama", "list_ollama_models"]
+__all__ = [
+    "analyze",
+    "analyze_with_ollama",
+    "analyze_with_runtime",
+    "check_ollama",
+    "list_models",
+    "list_ollama_models",
+    "list_runtime_models",
+    "list_runtimes",
+]
 
 # ── prompts ───────────────────────────────────────────────────────────────────
 
@@ -68,46 +78,79 @@ Be specific. Use Markdown.""",
 FOCUS_CHOICES = list(_PROMPTS.keys())
 
 
-# ── Ollama helpers ────────────────────────────────────────────────────────────
+# ── runtime helpers ───────────────────────────────────────────────────────────
 
 
 def check_ollama(base: str = OLLAMA_BASE) -> bool:
     """Return True if Ollama is reachable."""
-    try:
-        resp = requests.get(f"{base}/api/tags", timeout=OLLAMA_CHECK_TIMEOUT)
-        status: int = resp.status_code
-        return status == 200
-    except Exception:
-        return False
+    return OllamaBackend("unused", base_url=base).check_available()
 
 
-def _list_models(base: str = OLLAMA_BASE) -> list[dict]:
-    r = requests.get(f"{base}/api/tags", timeout=5)
-    r.raise_for_status()
-    data = r.json()
-    return list(data.get("models", []))
-
-
-def _model_exists(model: str, base: str = OLLAMA_BASE) -> bool:
-    """Return True if *model* is installed locally."""
-    return any(m.get("name") == model for m in _list_models(base))
+def list_models(
+    backend: str = "ollama",
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+) -> list[ModelInfo]:
+    """Return the models a runtime currently has available."""
+    return create_backend(backend, "unused", base_url=base_url, api_key=api_key).list_models()
 
 
 def list_ollama_models(base: str = OLLAMA_BASE) -> None:
+    """Backwards-compatible Ollama-only model listing."""
+    list_runtime_models("ollama", base_url=base)
+
+
+def list_runtime_models(
+    backend: str = "ollama",
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+) -> None:
+    """
+    Print the models a runtime has available.
+
+    Works for every registered runtime, not just Ollama, and explains how to
+    start the runtime when it is not running.
+    """
     console.print()
-    console.print(header_rule("Available Models"))
+    console.print(header_rule(f"Available Models · {backend}"))
     console.print()
 
-    if not check_ollama(base):
-        console.print(f"  {err('Ollama not running.')}")
-        console.print(f"  {info('Start with: ollama serve')}")
+    try:
+        llm = create_backend(backend, "unused", base_url=base_url, api_key=api_key)
+    except ValueError as exc:
+        console.print(f"  {err(str(exc))}")
         console.print()
         return
 
-    models = _list_models(base)
+    url = getattr(llm, "base_url", "")
+    console.print(f"  {label('url')} {muted(str(url))}")
+    console.print()
+
+    if not llm.check_available():
+        console.print(f"  {err(f'{llm.display_name} is not reachable.')}")
+        hint = llm.start_hint()
+        if hint:
+            console.print(f"  {info('Start it with: ' + hint)}")
+        else:
+            console.print(f"  {info('Pass --base-url if it listens somewhere else')}")
+        console.print()
+        return
+
+    try:
+        models = llm.list_models()
+    except Exception as exc:
+        console.print(f"  {err(f'Could not list models: {exc}')}")
+        console.print()
+        return
+
     if not models:
-        console.print("  ! No models installed.")
-        console.print(f"  {info('Pull one with: ollama pull llama3')}")
+        console.print(f"  {warn('No models available.')}")
+        if backend == "ollama":
+            console.print(f"  {info('Pull one with: ollama pull llama3')}")
+        else:
+            console.print(f"  {info('Load a model in the runtime, then retry')}")
         console.print()
         return
 
@@ -119,11 +162,49 @@ def list_ollama_models(base: str = OLLAMA_BASE) -> None:
     t.add_column("Modified", style="grey50", width=12)
 
     for m in models:
-        gb = m.get("size", 0) / (1024**3)
-        mod = m.get("modified_at", "")[:10]
-        t.add_row(m.get("name", "?"), f"{gb:.1f} GB", mod)
+        size = "—" if not m.size_bytes else f"{m.size_bytes / (1024**3):.1f} GB"
+        t.add_row(m.name, size, m.modified or "—")
 
     console.print(t)
+    console.print()
+    console.print(f"  {muted('Use it with:')} protor analyze --backend {backend} --model <name>")
+    console.print()
+
+
+def list_runtimes() -> None:
+    """Print which local runtimes are running, and how to start the rest."""
+    console.print()
+    console.print(header_rule("Local Runtimes"))
+    console.print()
+
+    detected = {r.key for r in detect_runtimes()}
+
+    t = Table(
+        box=box.SIMPLE, show_header=True, header_style="bold white", show_edge=False, padding=(0, 1)
+    )
+    t.add_column("Runtime", style="white", min_width=10, no_wrap=True)
+    t.add_column("Status", width=12, no_wrap=True)
+    t.add_column("URL", style="grey74", min_width=24, overflow="fold")
+    t.add_column("Start with", style="grey50", min_width=30, overflow="fold")
+
+    for runtime in RUNTIMES.values():
+        up = runtime.key in detected
+        status = (
+            Text(f"  {OK} running", style="green") if up else Text("  — stopped", style="grey35")
+        )
+        t.add_row(runtime.label, status, muted(runtime.url), muted(runtime.start_hint))
+
+    console.print(t)
+    console.print()
+
+    if detected:
+        first = next(r for r in RUNTIMES.values() if r.key in detected)
+        console.print(
+            f"  {info('Analyse with it:')} protor analyze --backend {first.key} --model <name>"
+        )
+    else:
+        console.print(f"  {warn('No local runtime detected.')}")
+        console.print(f"  {info('Start one of the above, or use --backend openai / anthropic')}")
     console.print()
 
 
@@ -220,6 +301,25 @@ def _stream_backend(backend: LLMBackend, prompt: str) -> str:
     return "".join(chunks)
 
 
+def _unavailable_error(backend: str, base_url: str | None) -> Exception:
+    """
+    Build the right "backend is down" error for *backend*.
+
+    Local runtimes get their URL and start hint; hosted ones get a generic
+    auth/connectivity message, since there is nothing to start locally.
+    """
+    name = backend.strip().lower()
+    try:
+        runtime = get_runtime(name)
+    except ValueError:
+        return RuntimeError(
+            f"{backend.capitalize()} backend unavailable. Check your API key and connection."
+        )
+    return RuntimeUnavailableError(
+        runtime.label, resolve_base_url(runtime.key, base_url), runtime.start_hint
+    )
+
+
 # ── public entry point ────────────────────────────────────────────────────────
 
 
@@ -231,6 +331,7 @@ def analyze(
     *,
     backend: str = "ollama",
     base_url: str | None = None,
+    api_key: str | None = None,
     prompt: str | None = None,
     fmt: str = "markdown",
 ) -> AnalysisResult:
@@ -242,15 +343,20 @@ def analyze(
     data:
         List of SiteManifest dicts (output of scrape_multiple).
     model:
-        Model name, e.g. ``"llama3"``, ``"gpt-4o"``, ``"claude-3-5-sonnet-20241022"``.
+        Model name. For Ollama this is a tag such as ``"llama3"``; for the
+        OpenAI-compatible runtimes it is whatever ``/v1/models`` reports.
     focus:
         One of ``"general"``, ``"technical"``, ``"content"``, ``"seo"``.
     output_dir:
         Directory to write the analysis report.
     backend:
-        LLM backend: ``"ollama"``, ``"openai"``, or ``"anthropic"``.
+        Local runtime (``"ollama"``, ``"llamacpp"``, ``"lmstudio"``,
+        ``"vllm"``, ``"localai"``, ``"jan"``), or ``"openai"`` /
+        ``"anthropic"``.
     base_url:
-        Ollama base URL (only used when backend is ``"ollama"``).
+        Override the runtime's default URL.
+    api_key:
+        Token for runtimes started with authentication enabled.
     prompt:
         Custom analysis prompt (overrides the built-in focus-based prompt).
     fmt:
@@ -263,22 +369,20 @@ def analyze(
     Raises
     ------
     OllamaUnavailableError
-        If Ollama backend is selected and is not running.
-    OllamaModelNotFoundError
-        If the requested model is not installed (Ollama only).
+        If Ollama is selected and is not running.
+    RuntimeUnavailableError
+        If another local runtime is selected and is not running.
+    RuntimeError
+        If a hosted backend is unreachable or misconfigured.
     """
     console.print()
     console.print(header_rule("Protor — Analyzer"))
     console.print()
 
-    llm = create_backend(backend, model, base_url=base_url)
+    llm = create_backend(backend, model, base_url=base_url, api_key=api_key)
 
     if not llm.check_available():
-        if backend == "ollama":
-            raise OllamaUnavailableError(base_url or OLLAMA_BASE)
-        raise RuntimeError(
-            f"{backend.capitalize()} backend unavailable. Check your API key and connection."
-        )
+        raise _unavailable_error(backend, base_url)
 
     context = _prepare_context(data)
     # Report what was actually sent, not what was scraped. A batch large enough
@@ -287,7 +391,7 @@ def analyze(
     sites_sent = _sites_included(context)
 
     console.print(
-        f"  {label('backend')} {bright(backend)}   "
+        f"  {label('backend')} {bright(llm.display_name)}   "
         f"{label('model')} {bright(model)}   "
         f"{label('focus')} {bright(focus)}   "
         f"{label('sites')} {bright(f'{sites_sent} of {len(data)}' if sites_sent != len(data) else str(len(data)))}"
@@ -354,6 +458,37 @@ def analyze_with_ollama(
         output_dir,
         backend="ollama",
         base_url=base_url,
+        prompt=prompt,
+        fmt=fmt,
+    )
+
+
+def analyze_with_runtime(
+    data: list[dict | SiteManifest],
+    backend: str = "ollama",
+    model: str = "llama3",
+    focus: str = "general",
+    output_dir: str | Path = "analysis",
+    *,
+    base_url: str | None = None,
+    api_key: str | None = None,
+    prompt: str | None = None,
+    fmt: str = "markdown",
+) -> AnalysisResult:
+    """
+    Analyse scraped *data* with any registered runtime.
+
+    Thin wrapper over :func:`analyze` that takes the runtime name first, for
+    callers that think in terms of "which runtime" rather than "which backend".
+    """
+    return analyze(
+        data,
+        model,
+        focus,
+        output_dir,
+        backend=backend,
+        base_url=base_url,
+        api_key=api_key,
         prompt=prompt,
         fmt=fmt,
     )

@@ -24,7 +24,12 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
-from .analyzer import FOCUS_CHOICES, analyze_with_ollama, list_ollama_models
+from .analyzer import (
+    FOCUS_CHOICES,
+    analyze_with_runtime,
+    list_runtime_models,
+    list_runtimes,
+)
 from .crawler import Crawler
 from .exceptions import (
     DataFileNotFoundError,
@@ -34,6 +39,8 @@ from .exceptions import (
 )
 from .extractor import ExtractionSchema
 from .formatters import FORMAT_CHOICES
+from .llm_backends import BACKEND_CHOICES
+from .runtimes import get_runtime, runtime_names
 from .scraper import scrape_multiple
 from .theme import ERR, console, err, info
 from .updater import check_for_update, perform_update
@@ -115,25 +122,26 @@ def _resolve_prompt(args: argparse.Namespace) -> str | None:
 def _cmd_analyze(args: argparse.Namespace) -> None:
     data = _load_index(args.file)
     out = get_default_output_dir() / "analysis" if args.output == "analysis" else Path(args.output)
-    analyze_with_ollama(
-        data,
-        args.model,
-        args.focus,
-        out,
-        prompt=_resolve_prompt(args),
-        fmt=args.format,
-    )
+    _analyze(args, data, out)
 
 
 def _cmd_run(args: argparse.Namespace) -> None:
     index = _run_scrape(args)
     data = _load_index(index)
     base = Path(args.output) if args.output else get_default_output_dir()
-    analyze_with_ollama(
+    _analyze(args, data, base / "analysis")
+
+
+def _analyze(args: argparse.Namespace, data: list, out: Path) -> None:
+    """Shared analysis step for the `analyze` and `run` subcommands."""
+    analyze_with_runtime(
         data,
+        args.backend,
         args.model,
         args.focus,
-        base / "analysis",
+        out,
+        base_url=args.base_url,
+        api_key=args.api_key,
         prompt=_resolve_prompt(args),
         fmt=args.format,
     )
@@ -213,8 +221,12 @@ def _cmd_extract(args: argparse.Namespace) -> None:
         console.print(f"  ... and {len(results) - 3} more")
 
 
-def _cmd_models(_args: argparse.Namespace) -> None:
-    list_ollama_models()
+def _cmd_models(args: argparse.Namespace) -> None:
+    list_runtime_models(args.backend, base_url=args.base_url, api_key=args.api_key)
+
+
+def _cmd_runtimes(_args: argparse.Namespace) -> None:
+    list_runtimes()
 
 
 def _cmd_version(_args: argparse.Namespace) -> None:
@@ -274,8 +286,48 @@ def _cmd_update(args: argparse.Namespace) -> None:
 # ── parser ────────────────────────────────────────────────────────────────────
 
 
+def _normalize_backend(value: str) -> str:
+    """
+    Canonicalise a ``--backend`` value before argparse validates it.
+
+    Friendly spellings like ``llama.cpp`` and ``lm-studio`` are accepted by the
+    backend factory, but argparse's ``choices`` only knows the canonical keys —
+    so resolve aliases first, otherwise the CLI would reject names the API
+    happily accepts.
+    """
+    try:
+        return get_runtime(value).key
+    except ValueError:
+        return value.strip().lower()
+
+
 def _add_analysis_flags(parser: argparse.ArgumentParser) -> None:
     """Add the options shared by `analyze` and `run`."""
+    parser.add_argument(
+        "--backend",
+        "-b",
+        choices=BACKEND_CHOICES,
+        default="ollama",
+        type=_normalize_backend,
+        metavar="RUNTIME",
+        help=(
+            "model runtime: "
+            f"{', '.join(runtime_names())}, openai-compatible, openai, anthropic "
+            "(default: ollama). Aliases like llama.cpp and lm-studio also work."
+        ),
+    )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        metavar="URL",
+        help="override the runtime's URL (e.g. http://localhost:8080)",
+    )
+    parser.add_argument(
+        "--api-key",
+        default=None,
+        metavar="TOKEN",
+        help="token for runtimes started with authentication enabled",
+    )
     parser.add_argument(
         "--prompt",
         "-p",
@@ -300,7 +352,7 @@ def _add_analysis_flags(parser: argparse.ArgumentParser) -> None:
 def _build_parser() -> argparse.ArgumentParser:
     root = argparse.ArgumentParser(
         prog="protor",
-        description="AI-powered web scraper and analyzer — powered by Ollama",
+        description="AI-powered web scraper and analyzer — works with any local LLM runtime",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
@@ -310,10 +362,18 @@ def _build_parser() -> argparse.ArgumentParser:
             "  protor run https://example.com --model llama3\n"
             "  protor crawl https://example.com --max-pages 20 --resume\n"
             "  protor extract https://example.com products.json\n"
-            "  protor models\n"
+            "  protor runtimes\n"
+            "  protor models --backend lmstudio\n"
+            "  protor analyze --backend vllm --model Qwen/Qwen3-8B\n"
             "\n"
             "Environment:\n"
-            "  OLLAMA_HOST   Ollama base URL (default: http://localhost:11434)\n"
+            "  OLLAMA_HOST    Ollama base URL (default: http://localhost:11434)\n"
+            "  LLAMA_CPP_URL  llama-server URL (default: http://localhost:8080)\n"
+            "  LMSTUDIO_URL   LM Studio URL (default: http://localhost:1234)\n"
+            "  VLLM_URL       vLLM URL (default: http://localhost:8000)\n"
+            "  LOCALAI_URL    LocalAI URL (default: http://localhost:8081)\n"
+            "  JAN_URL        Jan URL (default: http://localhost:1337)\n"
+            "  *_API_KEY      token for runtimes started with authentication\n"
         ),
     )
     sub = root.add_subparsers(dest="command", metavar="<command>")
@@ -369,7 +429,7 @@ def _build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=_cmd_scrape)
 
     # ── analyze ─────────────────────────────────────────────────────────────
-    ap = sub.add_parser("analyze", help="analyze scraped data with Ollama")
+    ap = sub.add_parser("analyze", help="analyze scraped data with a local or hosted LLM")
     ap.add_argument(
         "--file",
         "-f",
@@ -459,8 +519,23 @@ def _build_parser() -> argparse.ArgumentParser:
     ep.set_defaults(func=_cmd_extract)
 
     # ── models ───────────────────────────────────────────────────────────────
-    mp = sub.add_parser("models", help="list available Ollama models")
+    mp = sub.add_parser("models", help="list models available from a runtime")
+    mp.add_argument(
+        "--backend",
+        "-b",
+        choices=BACKEND_CHOICES,
+        default="ollama",
+        type=_normalize_backend,
+        metavar="RUNTIME",
+        help=f"runtime to query (default: ollama). Try: {', '.join(runtime_names())}",
+    )
+    mp.add_argument("--base-url", default=None, metavar="URL", help="override the runtime's URL")
+    mp.add_argument("--api-key", default=None, metavar="TOKEN", help="runtime API token")
     mp.set_defaults(func=_cmd_models)
+
+    # ── runtimes ──────────────────────────────────────────────────────────────
+    rt = sub.add_parser("runtimes", help="show which local model runtimes are running")
+    rt.set_defaults(func=_cmd_runtimes)
 
     # ── version ──────────────────────────────────────────────────────────────
     vp = sub.add_parser("version", help="print version and exit")

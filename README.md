@@ -2,7 +2,7 @@
 
 > scrape websites. analyze with ai. no bs.
 
-a cli tool that actually works. scrapes web content with async aiohttp, feeds it to your local ollama models, gets insights. that's it.
+a cli tool that actually works. scrapes web content with async aiohttp, feeds it to a local llm, gets insights. works with **ollama, llama.cpp, LM Studio, vLLM, LocalAI, Jan**, or the OpenAI/Anthropic APIs. that's it.
 
 ## why this exists
 
@@ -11,9 +11,39 @@ because paying for web scraping apis is kinda mid when you can just use aiohttp 
 ## what you need
 
 - python 3.11+
-- [ollama](https://ollama.ai) running locally {with model of your choice}
+- a local model runtime (any of the ones below), or an OpenAI/Anthropic key
 
-### get ollama set up
+### pick your runtime
+
+protor talks to any local runtime. llama.cpp, LM Studio, vLLM, LocalAI and Jan
+all speak the same OpenAI-compatible API, so they work out of the box; ollama
+has its own native API and is supported directly.
+
+```bash
+# see what's running right now
+protor runtimes
+
+# then list the models it has loaded
+protor models --backend <runtime>
+```
+
+| `--backend` | Default URL | Start it with |
+|---|---|---|
+| `ollama` (default) | `http://localhost:11434` | `ollama serve` |
+| `llamacpp` (alias `llama.cpp`) | `http://localhost:8080` | `llama-server -m model.gguf` |
+| `lmstudio` (alias `lm-studio`) | `http://localhost:1234` | `lms server start` |
+| `vllm` | `http://localhost:8000` | `vllm serve <model>` |
+| `localai` | `http://localhost:8081` | `localai run` |
+| `jan` | `http://localhost:1337` | enable the local server in Jan |
+| `openai-compatible` | — | any OpenAI-compatible server |
+| `openai` / `anthropic` | — | set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` |
+
+override the URL with `--base-url`, or set a per-runtime environment variable
+(`OLLAMA_HOST`, `LLAMA_CPP_URL`, `LMSTUDIO_URL`, `VLLM_URL`, `LOCALAI_URL`,
+`JAN_URL`). If a runtime was started with authentication on, pass `--api-key` or
+set the matching `*_API_KEY` variable — no header is sent when there's no token.
+
+### get ollama set up (the easy default)
 
 ```bash
 # grab some models
@@ -46,7 +76,16 @@ pip install -e .
 ### see what models you have
 
 ```bash
+# what's running locally?
+protor runtimes
+
+# models from the default runtime (ollama)
 protor models
+
+# models from a different runtime
+protor models --backend lmstudio
+protor models --backend vllm
+protor models --backend llama.cpp
 ```
 
 ### scrape stuff
@@ -89,6 +128,17 @@ protor analyze --focus seo --model mistral
 
 # content analysis
 protor analyze --focus content
+
+# use a different local runtime
+protor analyze --backend lmstudio --model granite-4-micro
+protor analyze --backend llamacpp --model ./qwen3-8b-q4.gguf
+protor analyze --backend vllm --model Qwen/Qwen3-8B
+
+# or a hosted API
+protor analyze --backend openai --model gpt-4o
+
+# runtime listening somewhere unusual
+protor analyze --backend vllm --base-url http://gpu-box:8000
 ```
 
 ### do both at once (recommended)
@@ -105,6 +155,9 @@ protor run https://site1.com https://site2.com https://site3.com \
   --model mistral \
   --focus seo \
   --no-js
+
+# scrape with ollama and it just works; or pick a runtime
+protor run https://example.com --backend lmstudio --model granite-4-micro
 ```
 
 ### check your version
@@ -203,6 +256,22 @@ protor run \
 
 ## when stuff breaks
 
+### runtime not detected
+
+```bash
+# what's actually running?
+protor runtimes
+
+# list models from a specific runtime
+protor models --backend <runtime>
+
+# if it listens somewhere unusual
+protor models --backend vllm --base-url http://gpu-box:8000
+```
+
+`protor runtimes` prints the exact command to start each runtime, so a
+"Cannot reach vLLM at http://localhost:8000" error tells you what to run.
+
 ### ollama issues
 
 ```bash
@@ -252,14 +321,15 @@ protor/
 ├── parser.py       # one html parse -> text, markdown, links, js refs
 ├── scraper.py      # batch scraping orchestrator + live table
 ├── crawler.py      # bfs site crawler with sqlite queue, checkpoint/resume
-├── analyzer.py     # ollama/openai/anthropic integration
+├── analyzer.py     # runtime-agnostic analysis + model listing
 ├── extractor.py    # schema-based structured data extraction
 ├── markdown.py     # html to clean markdown converter
 ├── blocklist.py    # ad/tracker domain blocking (100+ domains)
 ├── models.py       # typed dataclasses
 ├── exceptions.py   # error hierarchy
 ├── config.py       # centralized constants
-├── llm_backends.py # multi-backend llm abstraction
+├── llm_backends.py # ollama native + openai-compatible backends
+├── runtimes.py     # local runtime registry + auto-detection
 ├── theme.py        # rich console theming
 ├── http_cache.py   # conditional http caching (opt-in via --cache)
 ├── robots.py       # robots.txt support (single-flight, cached)
@@ -291,7 +361,7 @@ just don't be weird and scrape sites that explicitly say no. respect robots.txt.
 
 ## tech stack
 
-- ollama (local llm inference)
+- ollama / llama.cpp / LM Studio / vLLM / LocalAI / Jan (local llm inference)
 - beautifulsoup4 + lxml (html parsing)
 - aiohttp (async http)
 - rich (cli output)

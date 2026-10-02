@@ -30,7 +30,7 @@ class TestLoadIndex:
 
 
 class TestCmdAnalyze:
-    @patch("protor.cli.analyze_with_ollama")
+    @patch("protor.cli.analyze_with_runtime")
     def test_analyze_with_default_output(self, mock_analyze, tmp_path):
         index_file = tmp_path / "sites_index.json"
         index_file.write_text(json.dumps([]))
@@ -38,6 +38,9 @@ class TestCmdAnalyze:
         args = MagicMock()
         args.file = str(index_file)
         args.output = "analysis"
+        args.backend = "ollama"
+        args.base_url = None
+        args.api_key = None
         args.model = "llama3"
         args.focus = "general"
         args.prompt = None
@@ -47,7 +50,30 @@ class TestCmdAnalyze:
         _cmd_analyze(args)
         mock_analyze.assert_called_once()
 
-    @patch("protor.cli.analyze_with_ollama")
+    @patch("protor.cli.analyze_with_runtime")
+    def test_analyze_passes_the_selected_runtime(self, mock_analyze, tmp_path):
+        index_file = tmp_path / "sites_index.json"
+        index_file.write_text(json.dumps([]))
+
+        args = MagicMock()
+        args.file = str(index_file)
+        args.output = "analysis"
+        args.backend = "lmstudio"
+        args.base_url = "http://gpu:1234"
+        args.api_key = "tok"
+        args.model = "granite"
+        args.focus = "general"
+        args.prompt = None
+        args.prompt_file = None
+        args.format = "markdown"
+
+        _cmd_analyze(args)
+
+        assert mock_analyze.call_args.args[1] == "lmstudio"
+        assert mock_analyze.call_args.kwargs["base_url"] == "http://gpu:1234"
+        assert mock_analyze.call_args.kwargs["api_key"] == "tok"
+
+    @patch("protor.cli.analyze_with_runtime")
     def test_analyze_with_custom_output(self, mock_analyze, tmp_path):
         index_file = tmp_path / "sites_index.json"
         index_file.write_text(json.dumps([]))
@@ -56,6 +82,9 @@ class TestCmdAnalyze:
         args = MagicMock()
         args.file = str(index_file)
         args.output = str(out_dir)
+        args.backend = "ollama"
+        args.base_url = None
+        args.api_key = None
         args.model = "mistral"
         args.focus = "technical"
         args.prompt = "Custom prompt"
@@ -65,7 +94,7 @@ class TestCmdAnalyze:
         _cmd_analyze(args)
         mock_analyze.assert_called_once()
 
-    @patch("protor.cli.analyze_with_ollama")
+    @patch("protor.cli.analyze_with_runtime")
     def test_analyze_with_prompt_file(self, mock_analyze, tmp_path):
         index_file = tmp_path / "sites_index.json"
         index_file.write_text(json.dumps([]))
@@ -76,6 +105,9 @@ class TestCmdAnalyze:
         args = MagicMock()
         args.file = str(index_file)
         args.output = "analysis"
+        args.backend = "ollama"
+        args.base_url = None
+        args.api_key = None
         args.model = "llama3"
         args.focus = "general"
         args.prompt = None

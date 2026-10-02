@@ -14,12 +14,33 @@ class FetchError(ProtorError):
         super().__init__(f"Fetch failed for {url!r}: {reason}")
 
 
-class OllamaUnavailableError(ProtorError):
+class RuntimeUnavailableError(ProtorError):
+    """
+    Raised when a selected local model runtime cannot be reached.
+
+    Carries the URL and a start hint so the CLI can tell the user exactly what
+    to run, instead of a generic "connection failed".
+    """
+
+    def __init__(
+        self,
+        runtime: str,
+        base_url: str = "",
+        start_hint: str = "",
+    ) -> None:
+        self.runtime = runtime
+        self.base_url = base_url
+        self.start_hint = start_hint
+        where = f" at {base_url}" if base_url else ""
+        hint = f" Start it with: {start_hint}" if start_hint else ""
+        super().__init__(f"Cannot reach {runtime}{where}.{hint}")
+
+
+class OllamaUnavailableError(RuntimeUnavailableError):
     """Raised when the Ollama service cannot be reached."""
 
     def __init__(self, base_url: str = "http://localhost:11434") -> None:
-        self.base_url = base_url
-        super().__init__(f"Cannot reach Ollama at {base_url}. Start it with: ollama serve")
+        super().__init__("Ollama", base_url, "ollama serve")
 
 
 class OllamaModelNotFoundError(ProtorError):

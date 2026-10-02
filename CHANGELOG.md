@@ -1,5 +1,72 @@
 # Changelog
 
+## [v2.8.0] — 2026-10-02
+
+### New Features
+
+- **Support for any local model runtime.** protor was Ollama-only in practice —
+  the CLI hardcoded `analyze_with_ollama` and had no `--backend` flag at all,
+  even though `analyze()` already accepted a backend. Now:
+  - `--backend` on `analyze`, `run` and `models`, accepting `ollama`,
+    `llamacpp`, `lmstudio`, `vllm`, `localai`, `jan`, `openai-compatible`,
+    `openai` and `anthropic`, plus friendly aliases (`llama.cpp`, `llama-cpp`,
+    `LM-Studio`, `vLLM`, `local-ai`).
+  - `--base-url` and `--api-key` to point at a runtime anywhere, or one started
+    with authentication enabled.
+  - New `protor runtimes` command: probes each runtime's port and prints a
+    table of what is running, with the command to start the ones that are not.
+  - `protor models --backend <runtime>` lists models from any runtime and
+    explains how to start it when it is down.
+- New `protor.runtimes` module: one `Runtime` record per runtime (default URL,
+  health path, env vars, start hint, docs link), shared by the backends, the
+  CLI and the error messages so a runtime is described in exactly one place.
+- Per-runtime environment overrides: `OLLAMA_HOST`, `LLAMA_CPP_URL`,
+  `LMSTUDIO_URL`, `VLLM_URL`, `LOCALAI_URL`, `JAN_URL`, with matching
+  `*_API_KEY` variables for authenticated servers.
+
+### Design
+
+- **One OpenAI-compatible backend, not five.** llama.cpp, LM Studio, vLLM,
+  LocalAI and Jan all implement the same `POST /v1/chat/completions` SSE
+  contract, so they share a single `OpenAICompatBackend` and differ only by URL.
+  Ollama keeps its native newline-delimited backend.
+- Backends now use `requests` instead of vendor SDKs, so pointing protor at a
+  local runtime no longer implies installing an optional cloud dependency.
+  `openai` and `anthropic` remain optional extras.
+- Streaming moved into one tested `_iter_sse_text`, which handles SSE framing,
+  bare JSON lines, byte chunks, `data: [DONE]`, comment lines, usage-only final
+  chunks, and skips `reasoning_content` so thinking traces are not shown as the
+  answer.
+
+### Changed
+
+- `analyze` accepts `api_key`, and reports the backend's friendly display name
+  ("LM Studio") rather than the raw flag value.
+- Unavailable runtimes raise `RuntimeUnavailableError`, carrying the URL and the
+  exact command to start it. `OllamaUnavailableError` is now a subclass of it,
+  so existing handling keeps working.
+- `protor models` and `analyze` normalise `--backend` aliases before argparse
+  validates them; previously the factory accepted `llama.cpp` but the CLI
+  rejected it.
+- Every `LLMBackend` implements `list_models`, so model listing is no longer
+  Ollama-specific.
+
+### Fixed
+
+- `ModelInfo.modified` truncated the OpenAI-compatible `created` field to 10
+  characters, rendering the raw epoch (`1750000000`) as a date. Epoch values are
+  now converted; ISO strings still work.
+- Model listings showed an em dash for runtimes that don't report a size, rather
+  than a bogus number.
+- Auto-detection probes each distinct URL once, so llama.cpp and LocalAI
+  sharing a port does not double-probe.
+
+### Tests
+
+- 353 → 441 tests. New `tests/test_runtimes.py` (30) and
+  `tests/test_llm_backends.py` (61), including SSE edge cases, alias handling,
+  probe semantics and per-runtime error messages. Coverage 86%.
+
 ## [v2.7.0] — 2026-10-02
 
 A review pass over the whole pipeline, driven by measurements rather than

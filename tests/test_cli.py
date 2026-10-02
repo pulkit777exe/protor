@@ -146,6 +146,61 @@ class TestLoadIndex:
             _load_index("/nonexistent/path.json")
 
 
+class TestRuntimeFlags:
+    """The runtime selection flags on `analyze`, `run`, and `models`."""
+
+    def test_backend_defaults_to_ollama(self):
+        for cmd in ("analyze", "models"):
+            args = _build_parser().parse_args([cmd])
+            assert args.backend == "ollama"
+
+    @pytest.mark.parametrize("key", ["ollama", "llamacpp", "lmstudio", "vllm", "localai", "jan"])
+    def test_every_runtime_is_selectable(self, key):
+        args = _build_parser().parse_args(["analyze", "--backend", key])
+        assert args.backend == key
+
+    @pytest.mark.parametrize(
+        ("alias", "canonical"),
+        [
+            ("llama.cpp", "llamacpp"),
+            ("llama-cpp", "llamacpp"),
+            ("LM-Studio", "lmstudio"),
+            ("vLLM", "vllm"),
+            ("local-ai", "localai"),
+        ],
+    )
+    def test_friendly_aliases_are_normalised(self, alias, canonical):
+        """The factory accepts these, so argparse must not reject them."""
+        args = _build_parser().parse_args(["analyze", "--backend", alias])
+        assert args.backend == canonical
+
+    def test_hosted_backends_are_selectable(self):
+        for key in ("openai", "anthropic", "openai-compatible"):
+            assert _build_parser().parse_args(["analyze", "-b", key]).backend == key
+
+    def test_base_url_and_api_key_pass_through(self):
+        args = _build_parser().parse_args(
+            ["analyze", "--base-url", "http://gpu:8080", "--api-key", "tok"]
+        )
+        assert args.base_url == "http://gpu:8080"
+        assert args.api_key == "tok"
+
+    def test_run_accepts_runtime_flags(self):
+        args = _build_parser().parse_args(
+            ["run", "https://example.com", "--backend", "lmstudio", "--model", "granite"]
+        )
+        assert args.backend == "lmstudio"
+        assert args.model == "granite"
+
+    def test_models_accepts_runtime_flags(self):
+        args = _build_parser().parse_args(["models", "-b", "vllm", "--base-url", "http://x:1"])
+        assert args.backend == "vllm"
+        assert args.base_url == "http://x:1"
+
+    def test_runtimes_subcommand_exists(self):
+        assert _build_parser().parse_args(["runtimes"]).command == "runtimes"
+
+
 class TestAbort:
     def test_abort_exits(self):
         with patch("protor.cli.sys.exit") as mock_exit:

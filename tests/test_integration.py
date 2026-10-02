@@ -40,7 +40,7 @@ class TestCLIIntegration:
 
         mock_scrape.assert_called_once()
 
-    @patch("protor.cli.list_ollama_models")
+    @patch("protor.cli.list_runtime_models")
     def test_list_models_command(self, mock_list):
         """Test list-models command"""
         mock_list.return_value = None
@@ -48,9 +48,18 @@ class TestCLIIntegration:
         with patch("sys.argv", ["protor", "models"]), contextlib.suppress(SystemExit):
             cli()
 
-        mock_list.assert_called_once()
+        mock_list.assert_called_once_with("ollama", base_url=None, api_key=None)
 
-    @patch("protor.cli.analyze_with_ollama")
+    @patch("protor.cli.list_runtimes")
+    def test_runtimes_command(self, mock_runtimes):
+        mock_runtimes.return_value = None
+
+        with patch("sys.argv", ["protor", "runtimes"]), contextlib.suppress(SystemExit):
+            cli()
+
+        mock_runtimes.assert_called_once()
+
+    @patch("protor.cli.analyze_with_runtime")
     @patch("protor.cli.scrape_multiple")
     def test_run_command(self, mock_scrape_multiple, mock_analyze):
         """Test run command (scrape + analyze)"""
