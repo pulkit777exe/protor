@@ -24,6 +24,7 @@ handle the same problems:
 
 from __future__ import annotations
 
+import contextlib
 import os
 import time
 from contextlib import contextmanager
@@ -67,19 +68,33 @@ class RunState(StrEnum):
     CANCELLED = "cancelled"
 
 
+#: Values read as "off" for the two environment switches below. Bare truthiness
+#: made ``PROTOR_NO_LIVE=0`` *disable* live rendering while ``CI=0`` did not
+#: disable anything — the same question answered two ways, three lines apart,
+#: and the first answer is never what someone setting the variable to 0 meant.
+_FALSY = {"", "0", "false", "no", "off"}
+
+
+def _env_flag(name: str) -> bool:
+    """True when *name* is set to anything that is not an explicit "off"."""
+    return os.environ.get(name, "").strip().lower() not in _FALSY
+
+
 def live_enabled(con: Console | None = None) -> bool:
     """
     Whether in-place rendering can work here.
 
-    False for pipes, files, CI logs and ``TERM=dumb``: writing cursor-up
-    sequences there produces an unreadable transcript of escape codes. Rich
-    already honours ``NO_COLOR`` and ``TERM``; this adds the "is anyone
-    watching" half of the question.
+    False for pipes, files and CI logs: writing cursor-up sequences there
+    produces an unreadable transcript of escape codes. Rich already honours
+    ``TERM`` (including ``dumb``) and ``NO_COLOR`` for the terminal's own
+    capabilities; this adds the "is anyone watching" half of the question, which
+    Rich cannot see. An ascii-capable terminal is refused too — the glyphs would
+    be replaced on every repaint.
     """
     con = con or _console
-    if os.environ.get("PROTOR_NO_LIVE"):
+    if _env_flag("PROTOR_NO_LIVE"):
         return False
-    if os.environ.get("CI", "").lower() in ("1", "true", "yes"):
+    if _env_flag("CI"):
         return False
     return bool(con.is_terminal) and con.encoding != "ascii"
 
@@ -197,9 +212,22 @@ def live_display(
 
     if not enabled:
         # Nothing to animate: callers keep calling update() and pay nothing.
-        yield LiveDisplay(
+        display = LiveDisplay(
             _render=render, _live=None, _throttle=Throttle(0), _enabled=False, _console=con
         )
+        yield display
+        # Print the final state once, so a pipe still gets the per-result detail
+        # rather than only the summary line the caller prints afterwards. The
+        # README promises "one clean line per result" for a pipe or a CI log, and
+        # this used to deliver the header, one aggregate, and the output path:
+        # which URLs failed was visible nowhere.
+        #
+        # Regardless of `transient`: with animation off there is no Live holding
+        # a frame, so erasing one is not a concern — and the callers that pass
+        # `transient=False` (the engine does, so its summary survives) are exactly
+        # the ones whose aggregate line says nothing about individual results.
+        with contextlib.suppress(Exception):
+            con.print(render())
         return
 
     display = LiveDisplay(

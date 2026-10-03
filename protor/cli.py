@@ -141,7 +141,7 @@ def _resolve_prompt(args: argparse.Namespace) -> str | None:
 
 def _cmd_analyze(args: argparse.Namespace) -> None:
     data = _load_index(args.file)
-    out = get_default_output_dir() / "analysis" if args.output == "analysis" else Path(args.output)
+    out = Path(args.output) if args.output else get_default_output_dir() / "analysis"
     _analyze(args, data, out)
 
 
@@ -468,8 +468,8 @@ def _build_parser() -> argparse.ArgumentParser:
             # listed six of the seventeen runtimes, so the other eleven were
             # documented only in the README. `_runtime_env_help` is what
             # tests/test_docs.py checks against the registry.
-            "{env}"
-        ).format(env=_runtime_env_help()),
+            f"{_runtime_env_help()}"
+        ),
     )
     sub = root.add_subparsers(dest="command", metavar="<command>", parser_class=_Parser)
     root.set_defaults(func=lambda _: root.print_help())
@@ -549,7 +549,11 @@ def _build_parser() -> argparse.ArgumentParser:
     ap.add_argument(
         "--output",
         "-o",
-        default="analysis",
+        # None, not the string "analysis": the handler used to treat that literal
+        # as "not supplied" and redirect it to the default directory, so an
+        # explicit `-o analysis` — a perfectly ordinary relative path — landed in
+        # ~/Downloads/protor/analysis instead of the working directory.
+        default=None,
         metavar="DIR",
         help="output directory (default: ~/Downloads/protor/analysis)",
     )

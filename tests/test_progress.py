@@ -24,6 +24,11 @@ def _console() -> Console:
     return Console(file=io.StringIO(), width=80, force_terminal=False, legacy_windows=False)
 
 
+def _terminal_console() -> Console:
+    """A console that looks like a real utf-8 terminal, for the env-flag tests."""
+    return Console(file=io.StringIO(), width=80, force_terminal=True, legacy_windows=False)
+
+
 # ── throttle ──────────────────────────────────────────────────────────────────
 
 
@@ -78,13 +83,25 @@ class TestLiveEnabled:
 
 class TestLiveDisplay:
     def test_update_is_a_no_op_when_disabled(self):
-        """Piped output must not receive cursor-up escapes."""
+        """
+        Updates cost nothing when live is disabled; only the exit render runs.
+
+        Piped output must not receive cursor-up escapes, and it must not be
+        re-rendered per event either — the single render on exit is what prints
+        the per-result detail a pipe is promised, not each update.
+        """
         calls: list[int] = []
-        with live_display(lambda: calls.append(1), console=_console()) as display:
+
+        def render():
+            calls.append(1)
+            return "frame"
+
+        with live_display(render, console=_console()) as display:
             display.update()
             display.update()
             display.update()
-        assert calls == [], "nothing should render when live is disabled"
+            assert calls == [], "no per-event rendering when disabled"
+        assert calls == [1], "exactly one render, on exit"
 
     def test_renders_the_final_state_on_exit(self):
         """Whatever the rate limit did, the last frame is on screen."""
@@ -96,8 +113,11 @@ class TestLiveDisplay:
 
         with live_display(render, console=_console(), enabled=False) as display:
             assert display.state is RunState.IDLE
-        # Disabled mode renders nothing at all, and must not raise doing so.
-        assert renders["n"] == 0
+            assert renders["n"] == 0, "nothing is rendered while the block runs"
+        # Disabled mode renders once, on exit, and prints it: the README promises
+        # a pipe "one clean line per result", and a header plus an aggregate left
+        # the user no record of which URLs failed.
+        assert renders["n"] == 1
 
     def test_state_transitions_are_tracked(self):
         with live_display(lambda: "", console=_console()) as display:
@@ -207,3 +227,80 @@ class TestStatusLine:
         """Values reach the CLI and saved output, so they are part of the API."""
         assert RunState.WORKING == "working"
         assert RunState.DONE == "done"
+
+
+class TestEnvironmentFlags:
+    """
+    Both switches answer "is it set to off?" the same way.
+
+    Bare truthiness made ``PROTOR_NO_LIVE=0`` disable live rendering while
+    ``CI=0`` did not — the same question answered two ways, three lines apart,
+    and the first is never what someone setting a variable to 0 meant.
+    """
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "on", "anything"])
+    def test_an_explicit_on_disables_live(self, value, monkeypatch):
+        monkeypatch.setenv("PROTOR_NO_LIVE", value)
+        monkeypatch.delenv("CI", raising=False)
+        assert live_enabled(_terminal_console()) is False
+
+    @pytest.mark.parametrize("value", ["0", "false", "no", "off", ""])
+    def test_an_explicit_off_leaves_live_enabled(self, value, monkeypatch):
+        monkeypatch.setenv("PROTOR_NO_LIVE", value)
+        monkeypatch.delenv("CI", raising=False)
+        assert live_enabled(_terminal_console()) is True
+
+    @pytest.mark.parametrize("value", ["0", "false", ""])
+    def test_ci_off_does_not_disable_live(self, value, monkeypatch):
+        monkeypatch.delenv("PROTOR_NO_LIVE", raising=False)
+        monkeypatch.setenv("CI", value)
+        assert live_enabled(_terminal_console()) is True
+
+    @pytest.mark.parametrize("value", ["1", "true", "yes", "on"])
+    def test_ci_on_disables_live(self, value, monkeypatch):
+        monkeypatch.delenv("PROTOR_NO_LIVE", raising=False)
+        monkeypatch.setenv("CI", value)
+        assert live_enabled(_terminal_console()) is False
+
+
+class TestDisabledDisplayStillPrintsTheResult:
+    """
+    A pipe gets the detail, not only the caller's summary line.
+
+    The README promises `protor scrape ... | tee log` writes "one clean line per
+    result". It did not: with animation off, ``render()`` was never called, so a
+    piped run printed the header, one aggregate, and the index path — which URLs
+    failed appeared nowhere.
+    """
+
+    def test_the_final_state_is_printed_once(self, capsys):
+        console = Console(file=None, width=80, force_terminal=False, legacy_windows=False)
+        console.file = io.StringIO()
+        with live_display(lambda: "row for https://a.example", console=console, enabled=False):
+            pass
+        assert console.file.getvalue().count("row for https://a.example") == 1
+
+    def test_transient_false_still_prints_when_disabled(self):
+        """
+        The engine passes transient=False, so its summary survives.
+
+        With animation off there is no Live holding a frame to erase, and that
+        caller's aggregate line is exactly the one that says nothing about which
+        individual URLs failed — so the detail is printed either way.
+        """
+        console = Console(file=None, width=80, force_terminal=False, legacy_windows=False)
+        console.file = io.StringIO()
+        with live_display(lambda: "row", console=console, enabled=False, transient=False):
+            pass
+        assert console.file.getvalue().count("row") == 1
+
+    def test_a_failing_render_does_not_break_the_command(self):
+        """The work is already done; a render error must not lose the summary."""
+
+        def boom():
+            raise RuntimeError("render exploded")
+
+        console = Console(file=None, width=80, force_terminal=False, legacy_windows=False)
+        console.file = io.StringIO()
+        with live_display(boom, console=console, enabled=False):
+            pass  # must not raise
