@@ -118,7 +118,11 @@ indent-style = "space"
 # ── mypy ─────────────────────────────────────────────────────────────────────
 [tool.mypy]
 python_version = "3.11"
-strict = false
+# Strict, deliberately. It was false while the codebase carried bare `dict`/`list`
+# annotations that said nothing; turning it on surfaced a variance bug in the CLI
+# (a helper returning manifests-or-dicts annotated to accept only dicts) that the
+# loose mode could not see. Keep it strict — `mypy protor` is the gate.
+strict = true
 warn_return_any = true
 warn_unused_configs = true
 ignore_missing_imports = true

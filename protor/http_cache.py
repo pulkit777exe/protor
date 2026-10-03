@@ -22,10 +22,11 @@ from typing import Any
 
 #: Seconds a sweep of the bodies directory stays good for. The sweep is one
 #: readdir plus one stat per body file, so its cost tracks the size of a cache
-#: that only ever grows: 2.2 ms for 200 files, 21 ms for 2,000 — and it used to
-#: be paid by *every* construction, before any work was done. An orphan can only
-#: appear when a run died between writing a body and flushing the index, so
-#: nothing is lost by looking for them on a timer rather than on every open.
+#: that only ever grows: 0.5 ms for 200 files, 4.8 ms for 2,000, 20 ms for
+#: 8,000 — and it used to be paid by *every* construction, before any work was
+#: done. An orphan can only appear when a run died between writing a body and
+#: flushing the index, so nothing is lost by looking for them on a timer rather
+#: than on every open.
 DEFAULT_SWEEP_INTERVAL_S = 300.0
 
 #: Zero-byte marker recording when the bodies directory was last swept. Its mtime
@@ -130,8 +131,8 @@ class HTTPCache:
         self._dirty = False
         # An abandoned cache would otherwise keep its bytes forever. Entry expiry
         # is a walk of the in-memory index plus one unlink per dead entry, so it
-        # still happens on every open; only the O(files) orphan sweep is on a timer.
-        self.prune()
+        # still happens on every open; only the O(files) orphan sweep is deferred.
+        self.prune(sweep_orphans=self._sweep_is_due())
 
     # ── paths ────────────────────────────────────────────────────────────────
 
@@ -203,11 +204,8 @@ class HTTPCache:
         """Delete a URL's body file so the cache cannot grow without bound."""
         with contextlib.suppress(OSError):
             self._body_path(url).unlink()
-        # The index is about to be rewritten without this entry, so a body file
-        # left here by a half-finished put is exactly what the sweep looks for.
-        self._mark_swept()
 
-    def prune(self, *, sweep_orphans: bool | None = None) -> int:
+    def prune(self, *, sweep_orphans: bool = True) -> int:
         """
         Discard entries past their retention window, plus their body files.
 
@@ -221,9 +219,9 @@ class HTTPCache:
         against it deleted every cached body on disk. Returns the number of
         entries removed.
 
-        *sweep_orphans* defaults to the ``sweep_interval`` schedule: pass True to
-        force the sweep (an explicit call means the caller wants it now) or False
-        to skip it entirely.
+        *sweep_orphans* defaults to True, so calling this does a full prune. The
+        constructor is the caller that passes False, and the reason the sweep is
+        rate-limited at all; see :meth:`_sweep_is_due`.
         """
         doomed = [url for url, entry in self._index.items() if not entry.is_retained]
         for url in doomed:
@@ -233,30 +231,34 @@ class HTTPCache:
         if doomed:
             self._dirty = True
 
-        if self._sweep_orphans(sweep_orphans):
+        if sweep_orphans and self._index_readable:
             self._sweep_orphan_bodies()
         return len(doomed)
 
-    def _sweep_orphans(self, forced: bool | None = None) -> bool:
+    def _sweep_is_due(self) -> bool:
         """
-        Decide whether the O(files) orphan sweep is due.
+        Whether this construction should sweep orphan bodies, or trust the last sweep.
 
-        Forced unless a sweep has already happened inside this cache's interval.
-        An empty index with bodies still on disk is swept regardless: every one
-        of those files is unreachable, so nothing is at risk and the bytes are
-        pure garbage.
+        The sweep is one readdir plus one stat per body file, and it was being
+        paid by every construction before any work happened — 0.5 ms at 200
+        files, 4.8 ms at 2,000, 20 ms at 8,000, growing forever because the
+        cache only grows. An orphan can only appear when a run died between
+        writing a body and flushing the index, so deferring the search to once
+        per ``sweep_interval`` bounds the leaked bytes just as tightly.
+
+        A marker file carries the last sweep time because each run is a fresh
+        process with no memory of the last.
         """
+        # Nothing to reconcile against: an unreadable index is indistinguishable
+        # from an empty one, so a sweep could not tell a live body from a ghost.
         if not self._index_readable:
-            # An unreadable index is indistinguishable from an empty one, so a
-            # sweep cannot tell a live body from an orphan. Do nothing.
             return False
-        if forced is not None:
-            return forced
-        if not self._index and _dir_has_entries(self._bodies_dir):
-            return True
         if self._sweep_interval <= 0:
             return True
-
+        if not self._index and _dir_has_entries(self._bodies_dir):
+            # Every body is unreachable — a lost index. Swept regardless of the
+            # interval, since there is nothing here worth keeping.
+            return True
         try:
             last = (self._cache_dir / _SWEEP_MARKER).stat().st_mtime
         except OSError:
@@ -391,6 +393,9 @@ class HTTPCache:
         for body in self._bodies_dir.glob("*.body"):
             with contextlib.suppress(OSError):
                 body.unlink()
+        # Nothing is left to reconcile, so the next open must not inherit a
+        # "already swept" verdict from a marker describing a fuller directory.
+        self._mark_swept()
 
     def size_bytes(self) -> int:
         """Total bytes currently held on disk (index plus body files)."""

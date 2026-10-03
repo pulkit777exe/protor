@@ -53,7 +53,7 @@ MAX_REASONS_SHOWN = 6
 _FAILED_STATES = ("error", "blocked", "skipped")
 
 
-def _print_failure_reasons(rows: list[dict]) -> None:
+def _print_failure_reasons(rows: list[dict[str, Any]]) -> None:
     """
     Summarise why pages failed.
 
@@ -87,7 +87,7 @@ def _print_failure_reasons(rows: list[dict]) -> None:
         console.print(f"  {muted(f'+ {hidden} more distinct reason(s)')}")
 
 
-def _build_table(rows: list[dict]) -> Table:
+def _build_table(rows: list[dict[str, Any]]) -> Table:
     t = Table(
         box=box.SIMPLE,
         show_header=True,
@@ -139,7 +139,7 @@ async def scrape_site_async(
     url: str,
     output_dir: str | Path,
     download_js: bool = False,
-    row_state: dict | None = None,
+    row_state: dict[str, Any] | None = None,
     cache: HTTPCache | None = None,
     *,
     extraction_schema: ExtractionSchema | None = None,
@@ -236,7 +236,7 @@ def scrape_multiple(
     cache: HTTPCache | None = None,
     use_cache: bool = False,
     headers: dict[str, str] | None = None,
-    on_progress: Callable[[str, str, dict], None] | None = None,
+    on_progress: Callable[[str, str, dict[str, Any]], None] | None = None,
     extraction_schema: ExtractionSchema | None = None,
     hooks: dict[str, list[Callable[..., Any]]] | None = None,
     block_ads: bool = False,
