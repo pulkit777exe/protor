@@ -114,7 +114,11 @@ class _CrawlQueue:
 
     This database is the crawl's state of record: queue membership, which pages
     are done, and the counters the live render reports all live here, so a run
-    that dies mid-flight loses nothing beyond the pages that were in flight.
+    that dies mid-flight loses nothing beyond the pages that were in flight —
+    plus, for a kill rather than an exception, up to one batch of writes, since
+    commits are deferred (see ``COMMIT_EVERY``). That window is safe in the
+    direction that matters: a page whose row did not make it is re-fetched, not
+    skipped.
 
     Supports BFS ordering and visited tracking.
 
@@ -260,9 +264,14 @@ class _CrawlQueue:
         ).fetchone()
         return row is not None
 
-    def mark_visited(self, url: str, success: bool = True) -> None:
+    def mark_visited(self, url: str, success: bool = True, *, attempted: bool = True) -> None:
         """
         Record *url* as processed, counting it only if the row is genuinely new.
+
+        *attempted* says whether the URL was actually requested. False records a
+        filtered URL — off-domain, blocked by robots, blocked by the ad list —
+        as distinct from one that was fetched and failed, so :meth:`requeue_failed`
+        retries only the latter.
 
         ``INSERT OR REPLACE`` always reports a change, so incrementing on its
         result counted a repeated mark as another page: ``visited_count`` drifted
@@ -273,16 +282,24 @@ class _CrawlQueue:
         """
         url = canonicalize_url(url)
         now = time.time()
+        # -1 is "not attempted": the URL was filtered out (off-domain, blocked
+        # by robots or the ad list) rather than requested and refused. It has to
+        # be distinguishable from 0, because a resume retries the pages that
+        # failed — and re-queueing a URL that was never requested puts the whole
+        # filtered set at the front of the queue, where it is dispatched, skipped
+        # and re-skipped on every run instead of fetching anything. Only `success
+        # = 1` counts as scraped, so the other two read alike everywhere else.
+        outcome = 1 if success else (0 if attempted else -1)
         inserted = self._conn.execute(
             "INSERT OR IGNORE INTO visited (url, scraped_at, success) VALUES (?, ?, ?)",
-            (url, now, int(success)),
+            (url, now, outcome),
         ).rowcount
         if inserted:
             self._visited += 1
         else:
             self._conn.execute(
                 "UPDATE visited SET scraped_at = ?, success = ? WHERE url = ?",
-                (now, int(success), url),
+                (now, outcome, url),
             )
         self._commit()
 
@@ -307,6 +324,13 @@ class _CrawlQueue:
     def requeue_failed(self) -> int:
         """
         Put every previously failed page back on the queue, returning how many.
+
+        Only pages that were *requested* and failed. A URL that was filtered out
+        — off-domain, refused by robots.txt, blocked by the ad list — was never
+        asked for and would be refused identically, so re-queueing it would put
+        the whole filtered set at the head of every resumed crawl, to be
+        dispatched and skipped again while the budget it should have been
+        fetching with went unspent.
 
         :meth:`enqueue` refuses a URL whose last attempt was during *this* run,
         which is what keeps a failing page from being rediscovered in a loop — so

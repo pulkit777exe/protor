@@ -76,7 +76,16 @@ class TestRedirectTargets:
         assert describe_block("http://169.254.1.1/") is not None, "but still link-local"
 
     def test_malformed_url_is_refused_rather_than_crashing(self):
-        assert is_blocked_redirect("http://[not-an-ip]/x") in (True, False)
+        """
+        Blocked, not merely handled.
+
+        ``in (True, False)`` cannot fail, so this asserted nothing while reading
+        as though it pinned the answer. A malformed ``Location`` must resolve to
+        a refusal: it is what a broken or hostile redirect looks like, and
+        defaulting either way would be a decision rather than an accident.
+        """
+        assert is_blocked_redirect("http://[not-an-ip]/x") is True
+        assert describe_block("http://[not-an-ip]/x") is not None
         assert describe_block("") is not None
 
     def test_a_host_that_looks_like_a_metadata_name_is_not_matched_by_suffix(self):

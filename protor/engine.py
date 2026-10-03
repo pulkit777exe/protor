@@ -85,8 +85,14 @@ class WorkQueue(Protocol):
         """Schedule *url* (deduplicated). Returns True if newly added."""
         raise NotImplementedError
 
-    def mark_visited(self, url: str, success: bool = True) -> None:
-        """Record *url* as processed."""
+    def mark_visited(self, url: str, success: bool = True, *, attempted: bool = True) -> None:
+        """
+        Record *url* as processed.
+
+        *attempted* distinguishes a URL that was requested and refused from one
+        that was filtered out before any request — see ``_CrawlQueue`` for why the
+        distinction has to survive into the database.
+        """
         raise NotImplementedError
 
     @property
@@ -107,7 +113,7 @@ class StaticQueue:
     def enqueue(self, url: str, priority: int = 0) -> bool:
         return False
 
-    def mark_visited(self, url: str, success: bool = True) -> None:
+    def mark_visited(self, url: str, success: bool = True, *, attempted: bool = True) -> None:
         pass
 
     @property
@@ -598,16 +604,22 @@ class CrawlEngine:
 
         Not counted as an error: the URL was never requested, so it must not
         consume the request budget beyond the dispatch accounting above.
+
+        Recorded as *not attempted* rather than failed, so a later resume does
+        not put the whole filtered set back at the front of the queue, where it
+        would be dispatched and skipped again on every run.
         """
         row.update(status=status, error=False, note=note)
         self._emit(status, url, row)
-        self._queue.mark_visited(url, success=False)
+        self._queue.mark_visited(url, success=False, attempted=False)
 
     def _block(self, stats: CrawlStats, row: dict[str, Any], url: str, note: str) -> None:
         stats.blocked += 1
         row.update(status="blocked", error=True, note=note)
         self._emit("blocked", url, row)
-        self._queue.mark_visited(url, success=False)
+        # Attempted=false: robots and the ad list answer without a fetch, so a
+        # retry would be refused identically.
+        self._queue.mark_visited(url, success=False, attempted=False)
         self._record_scaler(False)
 
     def _fail(self, stats: CrawlStats, row: dict[str, Any], url: str, note: str) -> None:

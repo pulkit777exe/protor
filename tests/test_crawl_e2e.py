@@ -608,9 +608,13 @@ class TestFailingPages:
         """
         The other half of "recorded as an error row": a page the host forbids is
         blocked *before* the request, so the server log is the proof — the URL
-        never appears in it. It is still recorded, with ``success = 0``, so the
+        never appears in it. It is still recorded, and not as a success, so the
         crawl's own accounting agrees with the host's rules rather than quietly
         counting the URL as done.
+
+        Recorded as "not attempted" rather than "failed" (``-1`` rather than
+        ``0``): nothing was asked for, so a resume retrying the failures must not
+        put it back at the head of the queue to be refused identically.
         """
         site.forbid("/private.html")
         site.add("/", "Index", ["/public.html", "/private.html"])
@@ -624,7 +628,7 @@ class TestFailingPages:
         assert site.count("/public.html") == 1
 
         rows = _visited(out)
-        assert rows[site.url("/private.html")] == 0, "blocked is recorded, not scraped"
+        assert rows[site.url("/private.html")] == -1, "blocked is recorded, not scraped"
         assert rows[site.url("/public.html")] == 1
 
         site_dir = _site_dir(out, site)
@@ -812,3 +816,46 @@ class TestDomainFilter:
 
         summary = _summary(tmp_path)
         assert summary["scraped"] == 2, f"the seed skipped itself: {summary}"
+
+
+class TestResumeDoesNotRequeueFilteredUrls:
+    """
+    A resume retries what was *asked for* and failed.
+
+    Off-domain links, robots-refusals and ad-blocked URLs were never requested,
+    so a retry is refused identically. Re-queueing them put the whole filtered
+    set at the head of the queue on every resumed run — dispatched, skipped, and
+    re-skipped — while the budget they should have been fetching with went
+    unspent. They are recorded distinctly, as not attempted.
+    """
+
+    async def test_a_blocked_page_is_not_retried(self, site, tmp_path):
+        site.forbid("/private.html")
+        site.add("/", "Index", ["/public.html", "/private.html"])
+        site.add("/public.html", "Public", ["/private.html"])
+        site.add("/private.html", "Private")
+
+        await _crawl(site, max_pages=10, output_dir=tmp_path)
+        assert _visited(tmp_path)[site.url("/private.html")] == -1
+
+        site.forget()
+        clear_cache()
+        await _crawl(site, max_pages=10, output_dir=tmp_path, resume=True)
+
+        assert "/private.html" not in site.page_requests, (
+            f"the filtered URL was re-queued: {site.page_requests}"
+        )
+
+    async def test_a_fetch_failure_is_still_retried(self, site, tmp_path):
+        """The counterpart: a real failure must not lose its retry."""
+        _tree(site)
+        site.fail("/about.html", 502)
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path)
+        assert _visited(tmp_path)[site.url("/about.html")] == 0, "a fetch failure is 0"
+
+        site.heal("/about.html")
+        site.forget()
+        clear_cache()
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path, resume=True)
+
+        assert "/about.html" in site.page_requests, "the fetch failure lost its retry"

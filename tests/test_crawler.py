@@ -787,3 +787,56 @@ class TestCrawlerCrawl:
             mock_run.call_args.args[0].close()
         assert (tmp_path / CHECKPOINT_FILENAME).exists()
         c._queue.close()
+
+
+class TestRequeueOnlyAttempts:
+    """
+    `requeue_failed` retries what was asked for and failed — nothing else.
+
+    A URL the crawl filtered out (robots.txt, the ad list, the domain filter) was
+    never requested, so a retry is refused identically. Re-queueing it puts the
+    whole filtered set at the head of every resumed run: dispatched, skipped,
+    re-skipped, while the budget it should have fetched with goes unspent.
+    """
+
+    def test_a_filtered_url_is_not_requeued(self, tmp_path):
+        from protor.crawler import _CrawlQueue
+
+        q = _CrawlQueue(tmp_path / "q.db")
+        q.mark_visited("https://example.com/scraped", success=True)
+        q.mark_visited("https://example.com/failed", success=False)  # attempted
+        q.mark_visited("https://example.com/blocked", success=False, attempted=False)
+        q.close()
+
+        again = _CrawlQueue(tmp_path / "q.db")
+        assert again.requeue_failed() == 1, "only the attempted failure is retried"
+        assert again.dequeue() == "https://example.com/failed"
+        assert again.dequeue() is None, "the filtered URL was re-queued"
+        again.close()
+
+    def test_a_filtered_url_is_still_deduplicated(self, tmp_path):
+        """
+        Recording it as "not attempted" must not make it re-discoverable.
+
+        The row is still there and still recent, so ``_SEEN_SQL`` refuses the URL
+        for the rest of the run. If it were admitted again, one off-domain link
+        in a nav footer would be re-fetched by every page that links to it.
+        """
+        from protor.crawler import _CrawlQueue
+
+        q = _CrawlQueue(tmp_path / "q.db")
+        q.mark_visited("https://example.com/blocked", success=False, attempted=False)
+        assert q.enqueue("https://example.com/blocked") is False
+        q.close()
+
+    def test_only_success_counts_as_scraped(self, tmp_path):
+        """The sentinel must not be mistaken for a page that worked."""
+        from protor.crawler import _CrawlQueue
+
+        q = _CrawlQueue(tmp_path / "q.db")
+        q.mark_visited("https://example.com/ok", success=True)
+        q.mark_visited("https://example.com/failed", success=False)
+        q.mark_visited("https://example.com/blocked", success=False, attempted=False)
+        assert q.success_count == 1
+        assert q.visited_count == 3, "all three are recorded"
+        q.close()

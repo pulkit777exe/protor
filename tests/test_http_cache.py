@@ -153,7 +153,17 @@ class TestHTTPCache:
         assert entry.etag == "e"
 
     def test_loads_existing_index(self, tmp_path):
-        """An index written by an older protor (body inline) still loads."""
+        """
+        An index whose bodies are on disk loads.
+
+        This used to be documented as "an index written by an older protor (body
+        inline) still loads", which was not true and not what it tested: it also
+        wrote the body file, so it exercised the current format. A genuine
+        legacy index — body inline in the index, no body file — is dropped
+        whole, because bodies moved out of the index to their own files and
+        nothing reads the inline copy. Losing a cache is a refetch, not a
+        correctness problem, but the compatibility was never there to rely on.
+        """
         cache = HTTPCache(cache_dir=tmp_path / "http_cache")
         body_path = cache._body_path("https://example.com")
         body_path.parent.mkdir(parents=True, exist_ok=True)
@@ -185,3 +195,34 @@ class TestHTTPCache:
 
         cache = HTTPCache(cache_dir=cache_dir)
         assert cache._index == {}
+
+    def test_a_legacy_index_with_inline_bodies_is_dropped_not_misread(self, tmp_path):
+        """
+        The truth about the old on-disk format, pinned so it cannot be claimed.
+
+        Bodies used to live inline in the index file. They now live in their own
+        files, and an index entry with no body file beside it is dropped — the
+        alternative would be serving a page the cache does not have. Asserted
+        here so the behaviour is known rather than assumed, and so nobody
+        documents compatibility that does not exist.
+        """
+        cache = HTTPCache(cache_dir=tmp_path / "http_cache")
+        cache._index_path().write_text(
+            json.dumps(
+                {
+                    "https://example.com": {
+                        "body": "<html>legacy</html>",
+                        "etag": "e1",
+                        "last_modified": None,
+                        "status": 200,
+                        "timestamp": time.time(),
+                        "ttl": 3600,
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        reloaded = HTTPCache(cache_dir=tmp_path / "http_cache")
+        assert reloaded.get("https://example.com") is None
+        assert reloaded._load_index() == {}
