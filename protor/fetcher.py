@@ -19,6 +19,7 @@ import random
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urljoin
 
 import aiohttp
 
@@ -32,11 +33,18 @@ from .config import (
 )
 from .exceptions import FetchError
 from .http_cache import CacheEntry, HTTPCache
+from .netguard import describe_block
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
 __all__ = ["FetchResult", "download_file", "fetch", "random_user_agent"]
+
+#: Statuses that mean "the real page is at the Location header".
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+#: Redirect hops allowed before a fetch is called a loop.
+MAX_REDIRECTS = 5
 
 
 @dataclass
@@ -100,6 +108,7 @@ async def fetch(
     max_retries: int = MAX_RETRIES,
     cache: HTTPCache | None = None,
     hooks: dict[str, list[Callable[..., Any]]] | None = None,
+    allow_internal_redirects: bool = False,
 ) -> FetchResult:
     """
     Fetch *url* with retry logic and conditional caching.
@@ -134,9 +143,14 @@ async def fetch(
 
     for attempt in range(max_retries):
         try:
-            async with session.get(
-                url, headers=headers, timeout=aiohttp.ClientTimeout(total=timeout)
-            ) as r:
+            r = await _get_following(
+                session,
+                url,
+                headers=headers,
+                timeout=timeout,
+                allow_internal_redirects=allow_internal_redirects,
+            )
+            try:
                 if r.status == 304:
                     # 304 means "what you already have is current". Serving it
                     # needs a cache; without one there is nothing to serve, and

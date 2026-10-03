@@ -308,6 +308,12 @@ class CrawlEngine:
         # Which page each in-flight task is working on, so a failure that escapes
         # the task can be reported against the right row.
         in_flight: dict[asyncio.Task[Any], tuple[str, dict[str, Any]]] = {}
+        # URLs currently being fetched. A dispatched page leaves the queue, so
+        # without this another page linking to it re-admits it and it is fetched
+        # again — and each duplicate re-discovers the same links, which on a
+        # cyclic site multiplies the frontier until the queue table outgrows the
+        # crawl. Observed: a five-page site producing a 7.8 GB queue database.
+        fetching: set[str] = set()
 
         def spawn() -> None:
             # stats.total counts every dispatched page, so failures and blocked
@@ -324,6 +330,7 @@ class CrawlEngine:
                 stats.dispatched += 1
                 task = asyncio.create_task(self._process_one(session, url, row, stats))
                 in_flight[task] = (url, row)
+                fetching.add(url)
                 pending.add(task)
 
         spawn()
@@ -331,6 +338,10 @@ class CrawlEngine:
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
                 url, row = in_flight.pop(task, ("", {}))
+                # Free the URL before enqueueing its links: they may include the
+                # page that just finished, and that page is now in `visited`, so
+                # the queue rejects it anyway.
+                fetching.discard(url)
                 try:
                     discovered = task.result()
                 except asyncio.CancelledError:
@@ -344,6 +355,12 @@ class CrawlEngine:
                     self._fail(stats, row, url, f"internal error: {exc!r}")
                     continue
                 for link in discovered:
+                    # The queue rejects what it has already seen, but a page
+                    # that is mid-fetch is in neither `queue` nor `visited`
+                    # yet — without this it is re-admitted, fetched twice, and
+                    # charged twice against --max-pages.
+                    if link in fetching:
+                        continue
                     self._queue.enqueue(link)
 
             if self._auto_scaler is not None:
