@@ -480,4 +480,3 @@ def detect_runtimes(timeout: float = 1.0) -> list[Runtime]:
         if results[target]:
             found.append(runtime)
     return found
-

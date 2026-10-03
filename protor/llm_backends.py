@@ -722,4 +722,3 @@ def create_backend(backend: str, model: str, **kwargs: Any) -> LLMBackend:
         return native
     local: LLMBackend = OpenAICompatBackend(model, runtime=runtime.key, **kwargs)
     return local
-
