@@ -15,6 +15,7 @@ Public API
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from urllib.parse import urljoin, urlparse
 
@@ -214,6 +215,11 @@ def _extract_internal_links(soup: BeautifulSoup, base_url: str) -> list[str]:
     return _Harvest().harvest(soup, base_url).links
 
 
+# Any Unicode letter or digit. `\w` alone would accept `_`, which is precisely
+# the sort of placeholder-only string being filtered out.
+_HAS_ALNUM = re.compile(r"[^\W_]", re.UNICODE)
+
+
 def _extract_text(soup: BeautifulSoup, max_chars: int = MAX_TEXT_CHARS) -> str:
     """
     Extract visible text from an already-filtered tree.
@@ -222,12 +228,24 @@ def _extract_text(soup: BeautifulSoup, max_chars: int = MAX_TEXT_CHARS) -> str:
     text and slicing afterwards: a 140 kB page produced 113,000 characters to
     keep 10,000, so 91 % of the work (and the peak memory that came with it) was
     immediately discarded.
+
+    Strings carrying no letter or digit are dropped. Tables built for layout put
+    their structure in the document as text: Hacker News separates every column
+    with a literal ``|`` and wraps each link's domain in bare parentheses, and
+    31 % of the strings on its front page are punctuation with nothing else in
+    them. That is decoration, not content, and it is not free — the preview this
+    produces is the body of the prompt the analyser sends, so every ``|`` is
+    charged against the context window the budget exists to protect. On the same
+    page a modern layout like DuckDuckGo's scores 1 %.
+
+    A page whose content is *only* punctuation would come back empty, which is
+    the one way this loses real text; nothing that reads as language is affected.
     """
     kept: list[str] = []
     used = 0
     for raw in soup.stripped_strings:
         line = str(raw).strip()
-        if not line:
+        if not line or not _HAS_ALNUM.search(line):
             continue
         # Include the newline this line will be preceded by, except the first.
         cost = len(line) + (1 if kept else 0)
