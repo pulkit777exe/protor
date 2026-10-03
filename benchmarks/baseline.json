@@ -1,0 +1,116 @@
+{
+  "results": [
+    {
+      "name": "parse_html",
+      "scale": 200,
+      "seconds": 0.04985919600039779,
+      "items": 200,
+      "scaling_meaningful": true,
+      "median": 0.051198946001022705
+    },
+    {
+      "name": "parse_html",
+      "scale": 800,
+      "seconds": 0.14369327500025975,
+      "items": 800,
+      "scaling_meaningful": true,
+      "median": 0.16218083499916247
+    },
+    {
+      "name": "clean_soup",
+      "scale": 200,
+      "seconds": 0.028577126000527642,
+      "items": 200,
+      "scaling_meaningful": true,
+      "median": 0.03151084999990417
+    },
+    {
+      "name": "clean_soup",
+      "scale": 800,
+      "seconds": 0.11169712000082654,
+      "items": 800,
+      "scaling_meaningful": true,
+      "median": 0.12407135600005859
+    },
+    {
+      "name": "extract_text",
+      "scale": 200,
+      "seconds": 0.027433500999904936,
+      "items": 200,
+      "scaling_meaningful": true,
+      "median": 0.029162422999434057
+    },
+    {
+      "name": "extract_text",
+      "scale": 800,
+      "seconds": 0.10659351899994363,
+      "items": 800,
+      "scaling_meaningful": true,
+      "median": 0.11191280499951972
+    },
+    {
+      "name": "prepare_context",
+      "scale": 100,
+      "seconds": 0.005743372001234093,
+      "items": 8000,
+      "scaling_meaningful": false,
+      "median": 0.00759583999933966
+    },
+    {
+      "name": "prepare_context",
+      "scale": 400,
+      "seconds": 0.02624517399999604,
+      "items": 8000,
+      "scaling_meaningful": false,
+      "median": 0.026593636999677983
+    },
+    {
+      "name": "http_cache_put",
+      "scale": 100,
+      "seconds": 0.002757285001280252,
+      "items": 100,
+      "scaling_meaningful": false,
+      "median": 0.0031920649998937733
+    },
+    {
+      "name": "http_cache_put",
+      "scale": 400,
+      "seconds": 0.011471252000774257,
+      "items": 400,
+      "scaling_meaningful": false,
+      "median": 0.012139694999859785
+    },
+    {
+      "name": "canonicalize_url",
+      "scale": 20000,
+      "seconds": 0.10115680799935944,
+      "items": 20000,
+      "scaling_meaningful": true,
+      "median": 0.10881058700033464
+    },
+    {
+      "name": "canonicalize_url",
+      "scale": 80000,
+      "seconds": 0.38873451000108616,
+      "items": 80000,
+      "scaling_meaningful": true,
+      "median": 0.41775266300101066
+    },
+    {
+      "name": "is_url_blocked",
+      "scale": 20000,
+      "seconds": 0.08436665299996093,
+      "items": 20000,
+      "scaling_meaningful": true,
+      "median": 0.08624211400092463
+    },
+    {
+      "name": "is_url_blocked",
+      "scale": 80000,
+      "seconds": 0.3308143289996224,
+      "items": 80000,
+      "scaling_meaningful": true,
+      "median": 0.3501581820000865
+    }
+  ]
+}

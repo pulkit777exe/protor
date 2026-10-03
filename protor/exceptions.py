@@ -1,8 +1,16 @@
 """Typed exception hierarchy for protor."""
 
 
-class ProtorError(Exception):
-    """Base class for all protor errors."""
+class ProtorError(RuntimeError):
+    """
+    Base class for all protor errors.
+
+    Subclasses ``RuntimeError`` so that code written against the older bare
+    ``RuntimeError`` raises — including every ``except RuntimeError`` and every
+    ``pytest.raises(RuntimeError)`` — keeps working now that the backends raise
+    typed subclasses. Nothing is caught less than before, and callers that want
+    to distinguish an auth failure from an unreachable runtime can now do so.
+    """
 
 
 class FetchError(ProtorError):
@@ -25,6 +33,22 @@ class ConfigurationError(ProtorError):
     configuration error is raised the arguments were valid, the resolved
     settings were not.
     """
+
+
+class URLValidationError(ProtorError):
+    """
+    Raised when a URL the user supplied cannot be scraped.
+
+    Distinct from ConfigurationError because the CLI gives each a different hint.
+    One handler used to serve every ValueError from every layer, so a missing API
+    key was reported with "URLs must include a scheme", sending the user to look
+    at entirely the wrong thing.
+    """
+
+    def __init__(self, url: str, reason: str) -> None:
+        self.url = url
+        self.reason = reason
+        super().__init__(reason)
 
 
 class RuntimeUnavailableError(ProtorError):

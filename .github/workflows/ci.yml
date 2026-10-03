@@ -35,7 +35,10 @@ jobs:
         run: ruff check && ruff format --check
 
       - name: Type check with mypy
-        run: mypy protor/
+        # The benchmark harness is type-checked too: it reads protor's internals
+        # directly, so a signature change breaks it, and a silently mistyped
+        # call would corrupt the very numbers the gate compares.
+        run: mypy protor/ benchmarks/
 
       - name: Run tests
         run: pytest -m "not integration and not ollama" --tb=short
@@ -46,3 +49,38 @@ jobs:
         with:
           name: coverage-report
           path: htmlcov/
+
+  # Timing needs a quiet machine, so it is a separate single-version job
+  # rather than competing with the test matrix for CPU. Uploaded as an
+  # artifact and compared against the recorded baseline, so a change that
+  # quietly reintroduces a per-page full-document scan shows up as a failed
+  # step instead of a number nobody reads.
+  benchmark:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+
+      - name: Measure hot paths
+        run: python -m benchmarks --json bench.json --repeats 5
+
+      - name: Compare against the recorded baseline
+        # Fails the job when any case exceeds 1.5x its baseline. That bound is
+        # loose enough to survive a noisy shared runner -- the runner takes the
+        # best of 5 samples, so noise only ever understates the true cost -- and
+        # tight enough to catch an algorithmic regression, which is orders of
+        # magnitude rather than the ~20% a busy runner can add.
+        run: python -m benchmarks --check benchmarks/baseline.json
+
+      - name: Upload benchmark measurements
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: benchmark-report
+          path: bench.json
