@@ -5,6 +5,7 @@ import json
 import pytest
 import responses as responses_lib
 
+from protor import exceptions
 from protor.exceptions import (
     AuthError,
     ConfigurationError,
@@ -776,9 +777,9 @@ class TestStreamFailuresAreTyped:
     """
     Every stream failure a user can trigger must be a `ProtorError`.
 
-    `cli.cli()` catches `KeyboardInterrupt`, then `OllamaUnavailableError`,
-    `OllamaModelNotFoundError`, `DataFileNotFoundError`, `ProtorError` and
-    `ValueError`. A bare `RuntimeError` matches none of them, so it escaped the
+    `cli.cli()` catches `KeyboardInterrupt`, then `OllamaModelNotFoundError`,
+    `DataFileNotFoundError`, `ConfigurationError`, `URLValidationError`,
+    `ProtorError` and `ValueError`. A bare `RuntimeError` matches none of them, so it escaped the
     entry point and the user saw a traceback — even where the message had been
     carefully written with the remedy in it. These tests are the guard on that
     contract, not a restatement of the messages.
@@ -846,12 +847,10 @@ class TestExceptionHierarchy:
         from protor.cli import cli as _cli  # noqa: F401  (import is the assertion)
         from protor.exceptions import (
             DataFileNotFoundError,
-            OllamaUnavailableError,
             RuntimeUnavailableError,
         )
 
         for handled in (
-            OllamaUnavailableError,
             OllamaModelNotFoundError,
             DataFileNotFoundError,
             RuntimeUnavailableError,
@@ -859,10 +858,15 @@ class TestExceptionHierarchy:
             assert issubclass(handled, ProtorError)
 
     def test_unreachable_variants_all_look_unavailable(self):
-        from protor.exceptions import OllamaUnavailableError
+        """
+        One error type covers every unreachable runtime, Ollama included.
 
-        assert issubclass(OllamaUnavailableError, RuntimeUnavailableError)
+        There used to be an Ollama-only subclass with nothing raising it and a
+        cli handler that could never fire — a documented failure mode that the
+        code did not have.
+        """
         assert issubclass(RuntimeUnavailableError, ProtorError)
+        assert not hasattr(exceptions, "OllamaUnavailableError")
 
 
 class TestCliRendersTheError:

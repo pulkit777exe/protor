@@ -77,21 +77,6 @@ class RuntimeUnavailableError(ProtorError):
         super().__init__(f"Cannot reach {runtime}{where}.{hint}")
 
 
-class OllamaUnavailableError(RuntimeUnavailableError):
-    """
-    Ollama-flavoured :class:`RuntimeUnavailableError`.
-
-    Nothing raises this today: the analyzer builds the general
-    ``RuntimeUnavailableError`` for every local runtime, including Ollama, and
-    the runtime registry already supplies ``ollama serve`` as the start hint.
-    It is kept because ``cli.cli()`` still imports it for a dedicated handler —
-    delete the class and that handler together, or make something raise it.
-    """
-
-    def __init__(self, base_url: str = "http://localhost:11434") -> None:
-        super().__init__("Ollama", base_url, "ollama serve")
-
-
 class ModelNotFoundError(ProtorError):
     """
     Raised when a backend does not have the requested model loaded.

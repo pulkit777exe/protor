@@ -1,5 +1,98 @@
 # Changelog
 
+## Unreleased
+
+Everything below landed after `v2.8.0`. Nothing here is released yet — the
+version number and date are a maintainer's call.
+
+### New Features
+
+- **Eleven more local runtimes.** `protor` now registers 17 instead of 6:
+  GPT4All, KoboldCpp, llamafile, TabbyAPI, Cortex.cpp, SGLang, Xinference,
+  LiteLLM, AnythingLLM, text-generation-webui and Docker Model Runner, with
+  aliases for the spellings people actually type (`gpt-4all`, `kobold`,
+  `model-runner`, `ooba`, `tabby`, …). Two structural fixes were needed to make
+  that work rather than merely list it:
+  - Endpoints are declared per runtime. Docker Model Runner is
+    OpenAI-compatible but serves `/engines/v1`, so a hardcoded `/v1` would have
+    worked for everything except it.
+  - Base URLs are joined with path-prefix overlap handling, because KoboldCpp's
+    docs tell you to use a base ending in `/v1` and appending `/v1/chat/...` to
+    that produced a `/v1/v1/...` 404 that read like a dead server.
+- **`--no-live`** on `scrape`, `run` and `crawl`, for plain output on a real
+  terminal. Pipes and CI already got plain output automatically.
+- **Benchmarks and a CI gate.** Eight hot paths measured at two scales each, so
+  a *ratio* between scales exposes an algorithm that has gone quadratic where a
+  single timing cannot. `python -m benchmarks --gate` fails on superlinear
+  growth; CI runs it.
+- **`protor runtimes` responds to the terminal it is in.** At 60 columns the URL
+  used to truncate mid-value — `http://localhost:11434` rendered as
+  `http://localhost:114`, which reads as a different port — while the actionable
+  start-command column disappeared. Narrow terminals now fold the command and
+  fold the status into the name column instead.
+
+### Fixes
+
+- **Nearly every real page failed to parse.** `clean_soup` raised
+  `AttributeError` on any page whose `<nav>`, `<header>`, `<footer>` or
+  `<aside>` contained elements: `decompose()` clears the `__dict__` of nested
+  tags, so the noise check touched a tag whose `attrs` was `None`. The engine
+  swallowed it into a scrape error, so real pages were recorded as failures.
+  Every test fixture had been flat HTML, which is why it shipped.
+- **A page in flight was fetched twice.** The queue refused only URLs in
+  `queue` or `visited`; a dequeued, mid-fetch page was in neither, so a
+  concurrent page linking to it re-admitted it. Measured 8 requests for a
+  5-page site, duplicates charged against `--max-pages`, and a checkpoint
+  contradicting the state of record. Each duplicate rediscovered the same links,
+  so on a cyclic site the frontier multiplied: a five-page test site produced a
+  7.8 GB queue database.
+- **A missing API key was reported with a URL hint.** Every `ValueError` from
+  every layer funnelled through one handler carrying URL advice.
+- **Terminals that cannot encode the glyphs crashed with a traceback** —
+  `protor --help`, `models` and `crawl` all died on an ASCII or cp1252
+  terminal. Glyphs now degrade to ASCII.
+- **Redirects into cloud metadata endpoints** are refused rather than followed.
+- **A schema matching containers but no fields** wrote all-null records and
+  reported success.
+- **Conditional requests could never fire**, because reading a stale entry
+  deleted the validators that revalidation needs.
+- **`analyze()` refused an empty batch**, instead of spending a model call to
+  report "Sites analyzed: 0" — which is what `protor run <url>` did whenever the
+  fetch failed.
+
+### Performance
+
+Measured before and after; the benchmark suite guards the ratio.
+
+| | before | after |
+|---|---|---|
+| Page referencing one unreachable `<script src>` | 15.53 s | 0.00 s |
+| Site index write, 2 000 pages | 199 MiB peak | 0.58 MiB |
+| Cache open, 2 000 entries | 17.9 ms | 9.6 ms |
+| Crawler checkpoint write, 40 k pages | 29.8 ms × ~8 000 | 0.17 ms × ~20 |
+| `parse_html`, 173 KiB page | 159.5 ms | 75.6 ms |
+| `clean_soup` | 50.5 ms | 5.8 ms |
+| Live progress render | O(n²) | 10 Hz |
+| LLM output | render pass per token | coalesced at ~15 Hz |
+
+Two candidate optimisations were measured and **rejected**: `asyncio.to_thread`
+around parsing (20% slower under the GIL) and `DELETE … RETURNING` for the crawl
+queue (43% slower than the two statements it replaced).
+
+### Internal
+
+- `mypy` runs in **strict** mode and is clean. Turning it on immediately found a
+  variance bug the loose settings could not see: a CLI helper returned
+  manifests-or-dicts while its caller was annotated to accept only dicts.
+- Tests: 505 → 1063. End-to-end coverage added for `--cache`, `--schema`
+  extraction and `crawl --resume` against real HTTP servers, each mutation-checked.
+- Dead code removed: `theme.simple_panel`, `runtimes.detect_runtime`, a
+  byte-identical duplicate `list_models`, and `OllamaUnavailableError` (nothing
+  raised it, yet `cli.py` had a handler for it and `analyze()`'s `Raises`
+  section documented it).
+- `tests/test_docs.py` fails the build if the README and the runtime registry
+  disagree.
+
 ## [v2.8.0] — 2026-10-02
 
 ### New Features

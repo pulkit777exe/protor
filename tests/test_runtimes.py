@@ -310,9 +310,17 @@ class TestUnavailableError:
         assert "http://localhost:8000" in str(err)
         assert "vllm serve m" in str(err)
 
-    def test_ollama_error_is_a_runtime_error(self):
-        from protor.exceptions import OllamaUnavailableError, RuntimeUnavailableError
+    def test_ollama_gets_no_special_case(self):
+        """
+        Ollama is an ordinary entry in the runtime registry, so an unreachable
+        Ollama produces the same error as any other — including the start hint,
+        which the registry already carries. A dedicated Ollama-only error class
+        existed with nothing raising it and a handler that could never fire.
+        """
+        from protor.exceptions import RuntimeUnavailableError
+        from protor.runtimes import get_runtime
 
-        err = OllamaUnavailableError()
-        assert isinstance(err, RuntimeUnavailableError)
+        runtime = get_runtime("ollama")
+        err = RuntimeUnavailableError(runtime.label, runtime.url, runtime.start_hint)
         assert "ollama serve" in str(err)
+        assert isinstance(err, RuntimeUnavailableError)

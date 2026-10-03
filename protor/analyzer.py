@@ -474,12 +474,22 @@ def analyze(
 
     Raises
     ------
-    OllamaUnavailableError
-        If Ollama is selected and is not running.
     RuntimeUnavailableError
-        If another local runtime is selected and is not running.
+        If the selected *local* runtime — Ollama included — is not reachable.
+        Carries the runtime's label, its resolved URL and the command that
+        starts it. This is the only unreachable-runtime error; Ollama has no
+        special case, because the registry supplies its start hint too.
+    ModelNotFoundError
+        If the model is missing when the request is made, after the
+        availability check passed (OllamaModelNotFoundError for Ollama).
+    AuthError
+        If a runtime or hosted API rejected the token.
+    ValueError
+        If there is no scraped content to analyse — every page failed to fetch,
+        so there is nothing to send the model.
     RuntimeError
-        If a hosted backend is unreachable or misconfigured.
+        If a *hosted* backend (openai/anthropic) is unreachable or misconfigured,
+        or for any unexpected runtime failure.
     """
     console.print()
     console.print(header_rule("Protor — Analyzer"))
