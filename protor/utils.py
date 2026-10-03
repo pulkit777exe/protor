@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
 
+from .exceptions import URLValidationError
+
 #: Most filesystems cap a single path component at 255 bytes. Staying well under
 #: that leaves room for a suffix we may need to add.
 MAX_FILENAME_LEN = 200
@@ -130,18 +132,19 @@ def human_bytes(n: int) -> str:
 def validate_url(url: str) -> str:
     """Validate and normalise *url*.
 
-    Raises ValueError if the URL is malformed or missing a scheme.
+    Raises URLValidationError if the URL is malformed or missing a scheme — a
+    typed error so the CLI can offer a URL-shaped hint and nothing else.
     Returns the normalised URL string.
     """
     if not url or not isinstance(url, str):
-        raise ValueError(f"URL must be a non-empty string, got: {url!r}")
+        raise URLValidationError(str(url), f"URL must be a non-empty string, got: {url!r}")
 
     parsed = urlparse(url)
     if not parsed.scheme:
-        raise ValueError(f"URL must include a scheme (http/https): {url!r}")
+        raise URLValidationError(url, f"URL must include a scheme (http/https): {url!r}")
     if parsed.scheme not in ("http", "https"):
-        raise ValueError(f"URL scheme must be http or https, got: {parsed.scheme!r}")
+        raise URLValidationError(url, f"URL scheme must be http or https, got: {parsed.scheme!r}")
     if not parsed.netloc:
-        raise ValueError(f"URL must include a hostname: {url!r}")
+        raise URLValidationError(url, f"URL must include a hostname: {url!r}")
 
     return url

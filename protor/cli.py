@@ -32,17 +32,19 @@ from .analyzer import (
 )
 from .crawler import Crawler
 from .exceptions import (
+    ConfigurationError,
     DataFileNotFoundError,
     OllamaModelNotFoundError,
     OllamaUnavailableError,
     ProtorError,
+    URLValidationError,
 )
 from .extractor import ExtractionSchema
 from .formatters import FORMAT_CHOICES
 from .llm_backends import BACKEND_CHOICES
 from .runtimes import get_runtime, runtime_names
 from .scraper import scrape_multiple
-from .theme import ERR, console, err, info
+from .theme import ERR, console, err, info, safe
 from .updater import check_for_update, perform_update
 from .utils import get_default_output_dir, load_json, validate_url
 
@@ -98,6 +100,7 @@ def _run_scrape(args: argparse.Namespace) -> str:
         block_ads=args.block_ads,
         auto_scale=args.auto_scale,
         use_cache=args.cache,
+        live=not args.no_live,
     )
 
 
@@ -156,6 +159,7 @@ def _cmd_crawl(args: argparse.Namespace) -> None:
         base / "crawler",
         resume=args.resume,
         auto_scale=args.auto_scale,
+        live=not args.no_live,
     ).crawl()
 
 
@@ -301,6 +305,30 @@ def _normalize_backend(value: str) -> str:
         return value.strip().lower()
 
 
+class _Parser(argparse.ArgumentParser):
+    """
+    Argument parser whose output survives a terminal that cannot encode it.
+
+    argparse writes usage, help and error text straight to the file, bypassing
+    both the shared console and its glyph handling, so ``protor --help`` died
+    with a UnicodeEncodeError on an ASCII terminal — the first command anyone
+    runs. The hook belongs on the parser (which owns ``_print_message``), not on
+    the help formatter, which argparse never routes output through.
+    """
+
+    def _print_message(self, message: str, file: Any = None) -> None:
+        super()._print_message(safe(message), file)
+
+
+def _add_output_flags(parser: argparse.ArgumentParser) -> None:
+    """Add the progress-display flag shared by the long-running commands."""
+    parser.add_argument(
+        "--no-live",
+        action="store_true",
+        help="disable in-place progress rendering (plain output for pipes and CI)",
+    )
+
+
 def _add_analysis_flags(parser: argparse.ArgumentParser) -> None:
     """Add the options shared by `analyze` and `run`."""
     parser.add_argument(
@@ -350,7 +378,7 @@ def _add_analysis_flags(parser: argparse.ArgumentParser) -> None:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(
+    root = _Parser(
         prog="protor",
         description="AI-powered web scraper and analyzer — works with any local LLM runtime",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -376,7 +404,7 @@ def _build_parser() -> argparse.ArgumentParser:
             "  *_API_KEY      token for runtimes started with authentication\n"
         ),
     )
-    sub = root.add_subparsers(dest="command", metavar="<command>")
+    sub = root.add_subparsers(dest="command", metavar="<command>", parser_class=_Parser)
     root.set_defaults(func=lambda _: root.print_help())
 
     # ── scrape ──────────────────────────────────────────────────────────────
@@ -426,6 +454,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="reuse cached responses (ETag/Last-Modified) across runs",
     )
+    _add_output_flags(sp)
     sp.set_defaults(func=_cmd_scrape)
 
     # ── analyze ─────────────────────────────────────────────────────────────
@@ -485,6 +514,7 @@ def _build_parser() -> argparse.ArgumentParser:
     rp.add_argument("--auto-scale", action="store_true")
     rp.add_argument("--cache", action="store_true", help="reuse cached responses across runs")
     _add_analysis_flags(rp)
+    _add_output_flags(rp)
     rp.set_defaults(func=_cmd_run)
 
     # ── crawl ────────────────────────────────────────────────────────────────
@@ -508,6 +538,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="automatically adjust concurrency based on success rates",
     )
+    _add_output_flags(cp)
     cp.set_defaults(func=_cmd_crawl)
 
     # ── extract ──────────────────────────────────────────────────────────────
@@ -565,10 +596,16 @@ def cli() -> None:
     except OllamaUnavailableError as exc:
         _abort(str(exc), hint="Start with: ollama serve")
     except OllamaModelNotFoundError as exc:
-        _abort(str(exc), hint=f"Pull with: ollama pull {exc.model}")
+        # The message already names the exact pull command.
+        _abort(str(exc))
     except DataFileNotFoundError as exc:
         _abort(str(exc), hint="Run: protor scrape <urls>")
+    except ConfigurationError as exc:
+        _abort(str(exc), hint="Check the environment variables listed in protor --help")
+    except URLValidationError as exc:
+        _abort(str(exc), hint="URLs must include a scheme, e.g. https://example.com")
     except ProtorError as exc:
         _abort(str(exc))
     except ValueError as exc:
-        _abort(str(exc), hint="URLs must include a scheme (http:// or https://)")
+        # A stray ValueError from library code: report it without guessing.
+        _abort(str(exc))

@@ -18,14 +18,32 @@ from typing import Any
 from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, Tag
+from soupsieve import SelectorSyntaxError
+from soupsieve import compile as compile_selector
+
+from .exceptions import InvalidSelectorError
 
 __all__ = [
     "ExtractionSchema",
     "Extractor",
     "FieldSchema",
+    "InvalidSelectorError",
     "extract_from_html",
     "extract_from_soup",
 ]
+
+
+def _compile_checked(selector: str, *, where: str) -> None:
+    """
+    Compile *selector* now so a typo is reported once, naming its field.
+
+    soupsieve's reason is multi-line (selector echo, caret); keep the first line
+    so the message stays one line when a CLI prints it.
+    """
+    try:
+        compile_selector(selector)
+    except SelectorSyntaxError as exc:
+        raise InvalidSelectorError(selector, where=where, reason=str(exc).splitlines()[0]) from exc
 
 
 @dataclass
@@ -78,7 +96,12 @@ class ExtractionSchema:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> ExtractionSchema:
-        """Create schema from a dictionary (e.g., JSON config)."""
+        """
+        Create schema from a dictionary (e.g., JSON config).
+
+        Selectors are compiled here, so a schema file with a typo is rejected
+        before it is applied to a single page.
+        """
         fields = []
         for f in d.get("fields", []):
             if isinstance(f, dict):
@@ -94,11 +117,13 @@ class ExtractionSchema:
                 )
             elif isinstance(f, FieldSchema):
                 fields.append(f)
-        return cls(
+        schema = cls(
             name=d.get("name", "extraction"),
             base_selector=d.get("base_selector", ""),
             fields=fields,
         )
+        schema.validate()
+        return schema
 
     @classmethod
     def from_json(cls, path: str | Path) -> ExtractionSchema:
@@ -106,6 +131,19 @@ class ExtractionSchema:
         p = Path(path)
         data = json.loads(p.read_text(encoding="utf-8"))
         return cls.from_dict(data)
+
+    def validate(self) -> None:
+        """
+        Compile every selector, raising `InvalidSelectorError` on the first bad one.
+
+        Called once at load time: waiting until extraction would repeat the same
+        diagnostic for every page of every run, and an empty `base_selector`
+        means "whole page" rather than a typo, so it is only checked when set.
+        """
+        if self.base_selector:
+            _compile_checked(self.base_selector, where=f"base_selector in schema {self.name!r}")
+        for f in self.fields:
+            _compile_checked(f.selector, where=f"field {f.name!r} in schema {self.name!r}")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -181,6 +219,21 @@ class Extractor:
         self.schema = schema
         self.base_url = base_url
 
+    def _select(self, container: Tag | BeautifulSoup, selector: str, *, where: str) -> list[Tag]:
+        """
+        Run one selector, re-raising a syntax error as `InvalidSelectorError`.
+
+        Schemas loaded from JSON are validated up front, so this only fires for
+        a schema built in code -- still better than the old blanket `except`,
+        which turned a typo into a field that was quietly ``None`` everywhere.
+        """
+        try:
+            return container.select(selector)
+        except SelectorSyntaxError as exc:
+            raise InvalidSelectorError(
+                selector, where=where, reason=str(exc).splitlines()[0]
+            ) from exc
+
     def extract(self, html: str) -> list[dict[str, Any]]:
         """Extract structured data from an HTML string."""
         return self.extract_from_soup(BeautifulSoup(html, "lxml"))
@@ -197,15 +250,22 @@ class Extractor:
         """
         results: list[dict[str, Any]] = []
 
-        containers = soup.select(self.schema.base_selector) if self.schema.base_selector else [soup]
+        containers: list[Tag | BeautifulSoup]
+        if self.schema.base_selector:
+            containers = self._select(
+                soup,
+                self.schema.base_selector,
+                where=f"base_selector in schema {self.schema.name!r}",
+            )
+        else:
+            containers = [soup]
 
         for container in containers:
             record: dict[str, Any] = {}
             for f in self.schema.fields:
-                try:
-                    elements = container.select(f.selector)
-                except Exception:
-                    elements = []  # type: ignore[assignment]
+                elements = self._select(
+                    container, f.selector, where=f"field {f.name!r} in schema {self.schema.name!r}"
+                )
 
                 if not elements:
                     record[f.name] = f.default

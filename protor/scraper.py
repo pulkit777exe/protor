@@ -31,7 +31,7 @@ from .http_cache import HTTPCache
 from .parser import extract_links
 from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
-from .theme import ERR, OK, SPIN, bright, console, header_rule, label, muted
+from .theme import ERR, OK, SPIN, bright, console, header_rule, label, muted, safe
 from .utils import human_bytes, save_json
 
 if TYPE_CHECKING:
@@ -108,7 +108,7 @@ def _build_table(rows: list[dict]) -> Table:
         elif status == "error":
             s = Text(f"  {ERR} error", style="red")
         elif status == "waiting":
-            s = Text("  · waiting", style="grey35")
+            s = Text(safe("  · waiting"), style="grey35")
         elif status == "fetching":
             s = Text(f"  {SPIN} fetch", style="yellow")
         elif status == "blocked":

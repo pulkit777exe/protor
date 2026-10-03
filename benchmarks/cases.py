@@ -237,6 +237,25 @@ PAGE_BYTES = _page_size()
 BLOCKS_PER_PAGE = 200
 
 
+def _calibration(size: int) -> Any:
+    """
+    A fixed amount of pure-Python work, used to measure the machine.
+
+    This exists because an absolute timing recorded on one machine says nothing
+    about another: the first CI run of this suite reported every case 1.6-1.7x
+    slower than the baseline recorded locally, purely because GitHub's runner is
+    slower than the developer's. A case's cost is therefore divided by this
+    one's cost *from the same run*, which cancels the machine out and leaves the
+    algorithmic difference.
+    """
+    total = 0
+    for i in range(size):
+        acc = [j * j for j in range(200)]
+        total += sum(acc) + len(str(i))
+    assert total > 0
+    return size
+
+
 def _cache_puts(size: int) -> Any:
     import tempfile
     from pathlib import Path
@@ -273,8 +292,14 @@ def _is_url_blocked(size: int) -> Any:
     return size
 
 
-#: Every case the benchmark runner can execute.
+#: The machine-speed reference case. Measured in every run and used as the
+#: divisor for every other case's normalised figure.
+CALIBRATION_CASE = BenchCase("calibration", _calibration, (2_000, 8_000))
+
+#: Every case the benchmark runner can execute. The calibration case runs too,
+#: but is excluded from scaling checks since it is linear by construction.
 BENCH_CASES: tuple[BenchCase, ...] = (
+    CALIBRATION_CASE,
     BenchCase("parse_html", _parse_page, (200, 800)),
     BenchCase("clean_soup", _clean_soup, (200, 800)),
     BenchCase("extract_text", _extract_text, (200, 800)),

@@ -1,4 +1,14 @@
-from protor.extractor import ExtractionSchema, Extractor, FieldSchema
+from pathlib import Path
+
+import pytest
+
+from protor.exceptions import ProtorError
+from protor.extractor import (
+    ExtractionSchema,
+    Extractor,
+    FieldSchema,
+    InvalidSelectorError,
+)
 
 
 def test_extract_text():
@@ -185,3 +195,107 @@ def test_text_all_matches():
     html = "<ul><li>a</li><li>b</li><li>c</li></ul>"
     result = ext.extract(html)
     assert result[0]["items"] == ["a", "b", "c"]
+
+
+# ── bad selectors must fail loudly, not extract nothing ──────────────────────
+
+
+def test_bad_selector_names_the_field():
+    """A typo used to yield `None` for every record and report a good scrape."""
+    schema = ExtractionSchema(
+        name="products",
+        fields=[FieldSchema(name="price", selector="[[[bad")],
+    )
+
+    with pytest.raises(InvalidSelectorError) as excinfo:
+        Extractor(schema).extract("<div>Price: $19.99</div>")
+
+    err = excinfo.value
+    assert err.selector == "[[[bad"
+    assert err.where == "field 'price' in schema 'products'"
+    assert "price" in str(err)
+    assert "[[[bad" in str(err)
+
+
+def test_bad_selector_is_a_protor_error():
+    schema = ExtractionSchema(fields=[FieldSchema(name="price", selector="[[[bad")])
+    with pytest.raises(ProtorError):
+        Extractor(schema).extract("<div>x</div>")
+
+
+def test_bad_selector_on_a_valid_schema_still_raises():
+    """Only the broken field fails; the error must not name a healthy one."""
+    schema = ExtractionSchema(
+        fields=[
+            FieldSchema(name="title", selector="h1"),
+            FieldSchema(name="price", selector="h1 >>>"),
+        ]
+    )
+    with pytest.raises(InvalidSelectorError) as excinfo:
+        Extractor(schema).extract("<h1>Title</h1>")
+    assert "price" in excinfo.value.where
+
+
+def test_bad_base_selector_names_the_schema():
+    schema = ExtractionSchema(
+        name="listing",
+        base_selector=".card >>>",
+        fields=[FieldSchema(name="title", selector="h2")],
+    )
+    with pytest.raises(InvalidSelectorError) as excinfo:
+        Extractor(schema).extract("<div class='card'><h2>T</h2></div>")
+    assert "base_selector" in excinfo.value.where
+    assert "listing" in excinfo.value.where
+
+
+def test_from_dict_rejects_bad_selector_at_load_time(tmp_path):
+    """Loading is the cheap moment to fail; scraping 500 pages is not."""
+    d = {"name": "products", "fields": [{"name": "price", "selector": "[[[bad"}]}
+
+    with pytest.raises(InvalidSelectorError) as excinfo:
+        ExtractionSchema.from_dict(d)
+
+    assert excinfo.value.selector == "[[[bad"
+    assert "price" in str(excinfo.value)
+
+
+def test_from_json_rejects_bad_selector(tmp_path):
+    path = tmp_path / "schema.json"
+    path.write_text(
+        '{"name": "products", "fields": [{"name": "price", "selector": "[[[bad"}]}',
+        encoding="utf-8",
+    )
+
+    with pytest.raises(InvalidSelectorError) as excinfo:
+        ExtractionSchema.from_json(path)
+
+    assert "price" in str(excinfo.value)
+
+
+def test_from_dict_rejects_bad_base_selector():
+    d = {"base_selector": "[[[bad", "fields": [{"name": "title", "selector": "h1"}]}
+    with pytest.raises(InvalidSelectorError) as excinfo:
+        ExtractionSchema.from_dict(d)
+    assert "base_selector" in excinfo.value.where
+
+
+def test_field_without_a_selector_is_rejected():
+    """An omitted selector means an empty one, which matches nothing by design."""
+    with pytest.raises(InvalidSelectorError) as excinfo:
+        ExtractionSchema.from_dict({"fields": [{"name": "title"}]})
+
+    assert excinfo.value.where == "field 'title' in schema 'extraction'"
+
+
+def test_valid_schema_with_no_base_selector_passes_validation():
+    schema = ExtractionSchema.from_dict({"fields": [{"name": "title", "selector": "h1"}]})
+    schema.validate()  # must not raise
+
+
+def test_bundled_schemas_are_valid():
+    """Every schema shipped in schemas/ must compile, or `protor extract` aborts."""
+    schema_dir = Path(__file__).resolve().parent.parent / "schemas"
+    files = sorted(schema_dir.glob("*.json"))
+    assert files, "no bundled schemas found"
+    for path in files:
+        ExtractionSchema.from_json(path).validate()

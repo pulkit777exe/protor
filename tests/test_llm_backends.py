@@ -5,7 +5,15 @@ import json
 import pytest
 import responses as responses_lib
 
-from protor.exceptions import ModelListUnavailableError
+from protor.exceptions import (
+    AuthError,
+    ConfigurationError,
+    ModelListUnavailableError,
+    ModelNotFoundError,
+    OllamaModelNotFoundError,
+    ProtorError,
+    RuntimeUnavailableError,
+)
 from protor.llm_backends import (
     BACKEND_CHOICES,
     ModelInfo,
@@ -252,8 +260,13 @@ class TestOpenAICompatBackend:
                 return iter(())
 
         monkeypatch.setattr("requests.post", lambda *a, **k: Resp404())
-        with pytest.raises(RuntimeError, match="not available"):
+        with pytest.raises(ModelNotFoundError, match="not available") as exc:
             list(backend.stream("hi"))
+        # The CLI prints str(exc) verbatim, so the runtime and the remedy have
+        # to survive as fields, not just as prose baked into the message.
+        assert exc.value.model == "m"
+        assert exc.value.runtime == "llama.cpp"
+        assert "--backend llamacpp" in exc.value.hint
 
     def test_auth_error_is_explained(self, monkeypatch):
         backend = OpenAICompatBackend("m", base_url=OPENAI_URL)
@@ -268,8 +281,21 @@ class TestOpenAICompatBackend:
                 return iter(())
 
         monkeypatch.setattr("requests.post", lambda *a, **k: Resp401())
-        with pytest.raises(RuntimeError, match="API token"):
+        with pytest.raises(AuthError, match="API token") as exc:
             list(backend.stream("hi"))
+        assert exc.value.runtime == "OpenAI-compatible"
+        assert exc.value.status == 401
+
+    def test_no_base_url_is_a_configuration_error(self):
+        """
+        `--backend openai-compatible` with no --base-url is a config mistake.
+
+        As a bare RuntimeError it escaped cli()'s except chain entirely, so a
+        plain typo produced a traceback.
+        """
+        with pytest.raises(ConfigurationError, match="--base-url") as exc:
+            list(OpenAICompatBackend("m").stream("hi"))
+        assert isinstance(exc.value, ProtorError)
 
     @responses_lib.activate
     def test_check_available_survives_a_missing_models_endpoint(self):
@@ -291,8 +317,27 @@ class TestOpenAICompatBackend:
             f"{OPENAI_URL}/v1/models",
             body=ConnectionError("refused"),
         )
-        with pytest.raises(RuntimeError, match="Could not reach"):
+        with pytest.raises(RuntimeUnavailableError, match="Cannot reach") as exc:
             OpenAICompatBackend("m", base_url=OPENAI_URL).list_models()
+        assert exc.value.base_url == OPENAI_URL
+
+    @responses_lib.activate
+    def test_unreachable_model_list_carries_the_start_command(self):
+        """
+        A refused connection to a *named* runtime must say how to start it.
+
+        Same type the analyzer raises for an unreachable backend, so the CLI
+        renders the same "Start it with: ..." hint here as it does there.
+        """
+        responses_lib.add(
+            responses_lib.GET,
+            f"{OPENAI_URL}/v1/models",
+            body=ConnectionError("refused"),
+        )
+        with pytest.raises(RuntimeUnavailableError) as exc:
+            OpenAICompatBackend("m", runtime="llamacpp", base_url=OPENAI_URL).list_models()
+        assert exc.value.runtime == "llama.cpp"
+        assert exc.value.start_hint
 
     @responses_lib.activate
     def test_docker_runtime_uses_the_engines_prefix(self, monkeypatch):
@@ -427,7 +472,7 @@ class TestCreateBackend:
     def test_model_not_found_hint_names_the_selected_runtime(self, key, monkeypatch):
         """The suggested `protor models` command must use the runtime the user typed."""
         monkeypatch.setattr("requests.post", lambda *a, **k: FakeStream([], status_code=404))
-        with pytest.raises(RuntimeError, match=f"--backend {key}"):
+        with pytest.raises(ModelNotFoundError, match=f"--backend {key}"):
             list(create_backend(key, "m").stream("hi"))
 
     @pytest.mark.parametrize(
@@ -525,9 +570,20 @@ class TestOllamaBackend:
 
     @responses_lib.activate
     def test_missing_model_says_how_to_pull(self):
+        """
+        A 404 here used to raise a bare RuntimeError with the same advice in it.
+
+        cli() has an `except OllamaModelNotFoundError` clause that therefore could
+        never fire, so a user who simply had not pulled the model got a traceback
+        instead of the hint below.
+        """
         responses_lib.add(responses_lib.POST, f"{self.OLLAMA}/api/generate", json={}, status=404)
-        with pytest.raises(RuntimeError, match="ollama pull"):
+        with pytest.raises(OllamaModelNotFoundError, match="ollama pull") as exc:
             list(OllamaBackend("nope").stream("hi"))
+        assert exc.value.model == "nope"
+        assert exc.value.hint == "Pull it with: ollama pull nope"
+        assert isinstance(exc.value, ModelNotFoundError)
+        assert isinstance(exc.value, ProtorError)
 
     def test_start_hint_names_the_command(self):
         assert OllamaBackend("m").start_hint() == "ollama serve"
@@ -588,8 +644,10 @@ class TestOpenAIBackend:
                 return iter(())
 
         monkeypatch.setattr("requests.post", lambda *a, **k: Resp())
-        with pytest.raises(RuntimeError, match="Invalid OpenAI API key"):
+        with pytest.raises(AuthError, match="Invalid OpenAI API key") as exc:
             list(self._backend().stream("p"))
+        assert exc.value.runtime == "OpenAI"
+        assert exc.value.status == status
 
     def test_model_not_found_is_explained(self, monkeypatch):
         class Resp:
@@ -602,8 +660,10 @@ class TestOpenAIBackend:
                 return iter(())
 
         monkeypatch.setattr("requests.post", lambda *a, **k: Resp())
-        with pytest.raises(RuntimeError, match="not available"):
+        with pytest.raises(ModelNotFoundError, match="not available") as exc:
             list(self._backend().stream("p"))
+        assert exc.value.model == "gpt-4o"
+        assert exc.value.runtime == "OpenAI"
 
 
 class TestAnthropicBackend:
@@ -669,10 +729,13 @@ class TestAnthropicBackend:
         assert "".join(self._backend().stream("p")) == "Hi"
 
     @pytest.mark.parametrize(
-        ("status", "expected"),
-        [(401, "Invalid Anthropic API key"), (404, "not available")],
+        ("status", "exc_type", "expected"),
+        [
+            (401, AuthError, "Invalid Anthropic API key"),
+            (404, ModelNotFoundError, "not available"),
+        ],
     )
-    def test_errors_are_explained(self, monkeypatch, status, expected):
+    def test_errors_are_explained(self, monkeypatch, status, exc_type, expected):
         class Resp:
             status_code = status
 
@@ -689,8 +752,201 @@ class TestAnthropicBackend:
                 return iter(())
 
         monkeypatch.setattr("requests.post", lambda *a, **k: Resp())
-        with pytest.raises(RuntimeError, match=expected):
+        with pytest.raises(exc_type, match=expected) as exc:
             list(self._backend().stream("p"))
+        # Hosted failures reach the user through `except ProtorError` in cli().
+        assert isinstance(exc.value, ProtorError)
+
+
+# ── typed errors reaching the CLI ─────────────────────────────────────────────
+
+
+class TestStreamFailuresAreTyped:
+    """
+    Every stream failure a user can trigger must be a `ProtorError`.
+
+    `cli.cli()` catches `KeyboardInterrupt`, then `OllamaUnavailableError`,
+    `OllamaModelNotFoundError`, `DataFileNotFoundError`, `ProtorError` and
+    `ValueError`. A bare `RuntimeError` matches none of them, so it escaped the
+    entry point and the user saw a traceback — even where the message had been
+    carefully written with the remedy in it. These tests are the guard on that
+    contract, not a restatement of the messages.
+    """
+
+    def _replay(self, monkeypatch, status):
+        """Force every stream() call to answer *status* without any network."""
+        monkeypatch.setattr("requests.post", lambda *a, **k: FakeStream([], status_code=status))
+
+    @pytest.mark.parametrize(
+        "backend",
+        ["ollama", "llamacpp", "lmstudio", "vllm", "koboldcpp", "docker", "openai-compatible"],
+    )
+    def test_missing_model_is_a_protor_error(self, monkeypatch, backend):
+        from protor.llm_backends import create_backend as make
+
+        self._replay(monkeypatch, 404)
+        kwargs = {"base_url": OPENAI_URL} if backend == "openai-compatible" else {}
+        with pytest.raises(ModelNotFoundError) as exc:
+            list(make(backend, "m", **kwargs).stream("hi"))
+        assert isinstance(exc.value, ProtorError)
+
+    @pytest.mark.parametrize("backend", ["llamacpp", "lmstudio", "vllm", "openai-compatible"])
+    @pytest.mark.parametrize("status", [401, 403])
+    def test_rejected_credentials_are_a_protor_error(self, monkeypatch, backend, status):
+        from protor.llm_backends import create_backend as make
+
+        self._replay(monkeypatch, status)
+        kwargs = {"base_url": OPENAI_URL} if backend == "openai-compatible" else {}
+        with pytest.raises(AuthError) as exc:
+            list(make(backend, "m", **kwargs).stream("hi"))
+        assert isinstance(exc.value, ProtorError)
+        assert exc.value.status == status
+
+
+class TestExceptionHierarchy:
+    """
+    The shape of `protor.exceptions` is load-bearing, not documentation.
+
+    cli.py imports `OllamaModelNotFoundError` by name and catches `ProtorError`
+    for everything else, so an error that opts out of that base class is an
+    error the CLI cannot render.
+    """
+
+    @pytest.mark.parametrize(
+        "exc_type",
+        [AuthError, ConfigurationError, ModelListUnavailableError, ModelNotFoundError],
+    )
+    def test_every_error_the_backends_raise_is_a_protor_error(self, exc_type):
+        """ModelListUnavailableError inherited RuntimeError, so ProtorError missed it."""
+        assert issubclass(exc_type, ProtorError)
+
+    def test_ollama_model_not_found_is_a_kind_of_model_not_found(self):
+        """One concept, two classes: the CLI names the pull hint, callers want the base."""
+        assert issubclass(OllamaModelNotFoundError, ModelNotFoundError)
+
+    def test_cli_handlers_catch_the_types_the_backends_raise(self):
+        """
+        Guards the pairing between cli's except clauses and this module.
+
+        If a raise site goes back to a bare RuntimeError, or an exception is
+        renamed, this fails instead of the failure mode silently becoming a
+        traceback for users.
+        """
+        from protor.cli import cli as _cli  # noqa: F401  (import is the assertion)
+        from protor.exceptions import (
+            DataFileNotFoundError,
+            OllamaUnavailableError,
+            RuntimeUnavailableError,
+        )
+
+        for handled in (
+            OllamaUnavailableError,
+            OllamaModelNotFoundError,
+            DataFileNotFoundError,
+            RuntimeUnavailableError,
+        ):
+            assert issubclass(handled, ProtorError)
+
+    def test_unreachable_variants_all_look_unavailable(self):
+        from protor.exceptions import OllamaUnavailableError
+
+        assert issubclass(OllamaUnavailableError, RuntimeUnavailableError)
+        assert issubclass(RuntimeUnavailableError, ProtorError)
+
+
+class TestCliRendersTheError:
+    """
+    The end-to-end proof: `protor analyze` prints advice and exits, no traceback.
+
+    Everything above tests the exception in isolation. This drives the real
+    `cli()` entry point so the `except` ordering in it is exercised too — the
+    bug being fixed was precisely that a live code path produced a stack trace.
+    """
+
+    def _index(self, tmp_path):
+        index = tmp_path / "sites_index.json"
+        index.write_text(
+            json.dumps(
+                [
+                    {
+                        "url": "https://example.com/",
+                        "domain": "example.com",
+                        "html_file": "example.com.html",
+                        "js_count": 0,
+                        "metadata": {"title": "Example", "description": "A description"},
+                        "text_content": "Some real content worth analysing.",
+                        "js_files": [],
+                        "status": 200,
+                    }
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return index
+
+    def _run(self, monkeypatch, tmp_path, capsys, argv):
+        """Invoke the real CLI and return whatever it printed."""
+        from protor.cli import cli
+
+        index = self._index(tmp_path)
+        monkeypatch.setattr(
+            "sys.argv",
+            ["protor", "analyze", "--file", str(index), "--output", str(tmp_path / "out"), *argv],
+        )
+        with pytest.raises(SystemExit) as exc:
+            cli()
+        assert exc.value.code == 1
+        return capsys.readouterr().out
+
+    @responses_lib.activate
+    def test_ollama_missing_model_prints_the_pull_hint(self, monkeypatch, tmp_path, capsys):
+        responses_lib.add(
+            responses_lib.GET, "http://localhost:11434/api/tags", json={"models": []}, status=200
+        )
+        responses_lib.add(
+            responses_lib.POST, "http://localhost:11434/api/generate", json={}, status=404
+        )
+        out = self._run(monkeypatch, tmp_path, capsys, ["--backend", "ollama", "--model", "nope"])
+        assert "not found" in out
+        assert "ollama pull nope" in out
+        assert "Traceback" not in out
+
+    @responses_lib.activate
+    def test_openai_compat_missing_model_prints_the_models_hint(
+        self, monkeypatch, tmp_path, capsys
+    ):
+        responses_lib.add(
+            responses_lib.GET, f"{OPENAI_URL}/v1/models", json={"data": []}, status=200
+        )
+        responses_lib.add(
+            responses_lib.POST, f"{OPENAI_URL}/v1/chat/completions", json={}, status=404
+        )
+        out = self._run(
+            monkeypatch,
+            tmp_path,
+            capsys,
+            ["--backend", "llamacpp", "--model", "m", "--base-url", OPENAI_URL],
+        )
+        assert "not available" in out
+        assert "protor models --backend llamacpp" in out
+        assert "Traceback" not in out
+
+    @responses_lib.activate
+    def test_rejected_token_prints_the_token_hint(self, monkeypatch, tmp_path, capsys):
+        responses_lib.add(
+            responses_lib.GET, f"{OPENAI_URL}/v1/models", json={"data": []}, status=200
+        )
+        responses_lib.add(
+            responses_lib.POST, f"{OPENAI_URL}/v1/chat/completions", json={}, status=401
+        )
+        out = self._run(
+            monkeypatch,
+            tmp_path,
+            capsys,
+            ["--backend", "lmstudio", "--model", "m", "--base-url", OPENAI_URL],
+        )
+        assert "API token" in out
+        assert "Traceback" not in out
 
 
 # ── display metadata ──────────────────────────────────────────────────────────

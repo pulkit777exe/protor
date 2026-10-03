@@ -62,6 +62,7 @@ from .theme import (
     header_rule,
     label,
     muted,
+    safe,
     warn,
 )
 from .utils import canonicalize_url, get_default_output_dir, save_json
@@ -301,7 +302,7 @@ def _render(state: _State, output_dir: str) -> Group:
         filled = 0
         pct = 0
     filled = max(0, min(filled, _BAR_WIDTH))
-    bar = "█" * filled + "░" * (_BAR_WIDTH - filled)
+    bar = safe("█" * filled + "░" * (_BAR_WIDTH - filled))
 
     stat = Table(box=box.SIMPLE, show_header=False, show_edge=False, padding=(0, 1))
     stat.add_column(width=10, style="grey74")
@@ -310,7 +311,10 @@ def _render(state: _State, output_dir: str) -> Group:
         "progress",
         f"[grey50]{bar}[/grey50]  [white]{pct}%[/white]  [grey50]{state.scraped}/{state.max_pages}[/grey50]",
     )
-    stat.add_row("current", muted(state.current[:72]) if state.current else "[grey23]—[/grey23]")
+    stat.add_row(
+        "current",
+        muted(state.current[:72]) if state.current else f"[grey23]{safe(chr(0x2014))}[/grey23]",
+    )
     stat.add_row("queue", bright(str(state.queue_n)))
     stat.add_row("errors", str(state.errors) if state.errors else "[grey23]0[/grey23]")
     stat.add_row("blocked", str(state.blocked) if state.blocked else "[grey23]0[/grey23]")
@@ -366,6 +370,7 @@ class Crawler:
         output_dir: str | Path | None = None,
         resume: bool = False,
         auto_scale: bool = False,
+        live: bool = True,
     ) -> None:
         self.start_url = start_url
         self.max_pages = max_pages
@@ -373,6 +378,7 @@ class Crawler:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.resume = resume
         self.auto_scale = auto_scale
+        self._live = live
 
         self._base_domain = urlparse(start_url).netloc
         self._state = _State(max_pages=max_pages)
@@ -504,6 +510,7 @@ class Crawler:
             on_checkpoint=self._save_checkpoint,
             on_status=self._on_status,
             live_render=lambda: _render(self._state, str(self.output_dir)),
+            live=self._live,
         )
         await engine.arun()
 

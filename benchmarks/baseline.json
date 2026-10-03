@@ -1,116 +1,148 @@
 {
   "results": [
     {
+      "name": "calibration",
+      "scale": 2000,
+      "seconds": 0.009504077999736182,
+      "items": 2000,
+      "scaling_meaningful": true,
+      "normalised": 1.0343542309409188,
+      "median": 0.009615905000828207
+    },
+    {
+      "name": "calibration",
+      "scale": 8000,
+      "seconds": 0.0375551480010472,
+      "items": 8000,
+      "scaling_meaningful": true,
+      "normalised": 1.0218068030790006,
+      "median": 0.039971582000362105
+    },
+    {
       "name": "parse_html",
       "scale": 200,
-      "seconds": 0.04985919600039779,
+      "seconds": 0.03912306600068405,
       "items": 200,
       "scaling_meaningful": true,
-      "median": 0.051198946001022705
+      "normalised": 42.57867922202623,
+      "median": 0.04032655800074281
     },
     {
       "name": "parse_html",
       "scale": 800,
-      "seconds": 0.14369327500025975,
+      "seconds": 0.12543973399988317,
       "items": 800,
       "scaling_meaningful": true,
-      "median": 0.16218083499916247
+      "normalised": 34.12985446733608,
+      "median": 0.1291748319999897
     },
     {
       "name": "clean_soup",
       "scale": 200,
-      "seconds": 0.028577126000527642,
+      "seconds": 0.027540902001419454,
       "items": 200,
       "scaling_meaningful": true,
-      "median": 0.03151084999990417
+      "normalised": 29.973500333107733,
+      "median": 0.029157827999370056
     },
     {
       "name": "clean_soup",
       "scale": 800,
-      "seconds": 0.11169712000082654,
+      "seconds": 0.11226655400059826,
       "items": 800,
       "scaling_meaningful": true,
-      "median": 0.12407135600005859
+      "normalised": 30.545673427474856,
+      "median": 0.11441399900104443
     },
     {
       "name": "extract_text",
       "scale": 200,
-      "seconds": 0.027433500999904936,
+      "seconds": 0.024724608001633896,
       "items": 200,
       "scaling_meaningful": true,
-      "median": 0.029162422999434057
+      "normalised": 26.908452240770337,
+      "median": 0.02543407700068201
     },
     {
       "name": "extract_text",
       "scale": 800,
-      "seconds": 0.10659351899994363,
+      "seconds": 0.09020960199995898,
       "items": 800,
       "scaling_meaningful": true,
-      "median": 0.11191280499951972
+      "normalised": 24.544380712875054,
+      "median": 0.09826600199994573
     },
     {
       "name": "prepare_context",
       "scale": 100,
-      "seconds": 0.005743372001234093,
+      "seconds": 0.004797390000021551,
       "items": 8000,
       "scaling_meaningful": false,
-      "median": 0.00759583999933966
+      "normalised": 0.13052819653136497,
+      "median": 0.005236760000116192
     },
     {
       "name": "prepare_context",
       "scale": 400,
-      "seconds": 0.02624517399999604,
+      "seconds": 0.02243323299990152,
       "items": 8000,
       "scaling_meaningful": false,
-      "median": 0.026593636999677983
+      "normalised": 0.6103671883736561,
+      "median": 0.022694843999488512
     },
     {
       "name": "http_cache_put",
       "scale": 100,
-      "seconds": 0.002757285001280252,
+      "seconds": 0.0027941049993387423,
       "items": 100,
       "scaling_meaningful": false,
-      "median": 0.0031920649998937733
+      "normalised": 6.0817984192457715,
+      "median": 0.002848821999577922
     },
     {
       "name": "http_cache_put",
       "scale": 400,
-      "seconds": 0.011471252000774257,
+      "seconds": 0.009788041999854613,
       "items": 400,
       "scaling_meaningful": false,
-      "median": 0.012139694999859785
+      "normalised": 5.3262939632114055,
+      "median": 0.010570328999165213
     },
     {
       "name": "canonicalize_url",
       "scale": 20000,
-      "seconds": 0.10115680799935944,
+      "seconds": 0.08915800500108162,
       "items": 20000,
       "scaling_meaningful": true,
-      "median": 0.10881058700033464
+      "normalised": 0.9703304170870681,
+      "median": 0.09264629899917054
     },
     {
       "name": "canonicalize_url",
       "scale": 80000,
-      "seconds": 0.38873451000108616,
+      "seconds": 0.37023297599989746,
       "items": 80000,
       "scaling_meaningful": true,
-      "median": 0.41775266300101066
+      "normalised": 1.0073361276337687,
+      "median": 0.38226667399976577
     },
     {
       "name": "is_url_blocked",
       "scale": 20000,
-      "seconds": 0.08436665299996093,
+      "seconds": 0.07686614199883479,
       "items": 20000,
       "scaling_meaningful": true,
-      "median": 0.08624211400092463
+      "normalised": 0.8365547841127483,
+      "median": 0.07980524500089814
     },
     {
       "name": "is_url_blocked",
       "scale": 80000,
-      "seconds": 0.3308143289996224,
+      "seconds": 0.29897655700006,
       "items": 80000,
       "scaling_meaningful": true,
-      "median": 0.3501581820000865
+      "normalised": 0.8134604605879314,
+      "median": 0.3035333109983185
     }
   ]
 }

@@ -136,9 +136,7 @@ class TestAnalyze:
 
 
 class TestAnalyzeFailures:
-    def test_unavailable_local_runtime_is_reported_with_its_start_hint(
-        self, monkeypatch, tmp_path
-    ):
+    def test_unavailable_local_runtime_is_reported_with_its_start_hint(self, monkeypatch, tmp_path):
         monkeypatch.setattr(
             "protor.analyzer.create_backend", lambda *a, **k: FakeBackend(available=False)
         )

@@ -12,8 +12,22 @@ from __future__ import annotations
 import json
 
 import pytest
-from benchmarks.cases import BENCH_CASES, BenchCase, artificial_page, site_batch
-from benchmarks.runner import MAX_SLOWDOWN, Result, compare, measure
+from benchmarks.cases import (
+    BENCH_CASES,
+    CALIBRATION_CASE,
+    BenchCase,
+    artificial_page,
+    site_batch,
+)
+from benchmarks.runner import (
+    MAX_SLOWDOWN,
+    REPEATS,
+    Result,
+    check_scaling,
+    compare,
+    measure,
+    run_cases,
+)
 
 
 class TestFixtures:
@@ -114,6 +128,7 @@ class TestRegressionDetection:
             "seconds": seconds,
             "items": 100,
             "scaling_meaningful": True,
+            "normalised": seconds,
             "median": seconds,
         }
 
@@ -147,6 +162,24 @@ class TestRegressionDetection:
         assert compare(before, []) == 1
         assert "MISSING" in capsys.readouterr().out
 
+    def test_gate_uses_normalised_figures_when_present(self, capsys):
+        """
+        Raw seconds from a different machine are meaningless. A baseline
+        recorded locally made every case look 1.6-1.7x slower on CI's runner
+        with no code change, so the comparison must divide out machine speed.
+        """
+        rec = self._record("parse_html", 200, 0.1)
+        before = [{**rec, "normalised": 2.0}]
+        after = [{**rec, "normalised": 2.1}]
+        assert compare(before, after) == 0, "5x slower wall clock must not fail"
+
+    def test_normalised_regression_still_fails(self, capsys):
+        rec = self._record("parse_html", 200, 0.1)
+        before = [{**rec, "normalised": 2.0}]
+        after = [{**rec, "normalised": 4.0}]
+        assert compare(before, after) == 1
+        assert "SLOWER" in capsys.readouterr().out
+
     def test_names_are_matched_on_both_name_and_scale(self):
         """Two scales of one case are separate measurements, not interchangeable."""
         before = [self._record("parse_html", 200, 0.1)]
@@ -156,6 +189,80 @@ class TestRegressionDetection:
 
 #: Cases whose work item count grows with the input page.
 _PAGE_CASES = ("parse_html", "clean_soup", "extract_text")
+
+
+class TestScalingGate:
+    """
+    `--gate` is what CI enforces, so its behaviour is pinned here rather than
+    only in the workflow file.
+    """
+
+    @staticmethod
+    def _r(name: str, scale: int, seconds: float) -> Result:
+        """
+        A result for *scale* items that took *seconds* total.
+
+        ``items`` has to equal ``scale`` for a per-item ratio to mean what it
+        says: the ratio asks whether the cost of handling one item changes when
+        there are more of them.
+        """
+        return Result(name=name, scale=scale, seconds=seconds, items=scale)
+
+    def test_flat_scaling_passes(self, capsys):
+        # 4x the items in 4.1x the time: per-item cost unchanged.
+        results = [self._r("parse_html", 200, 1.0), self._r("parse_html", 800, 4.1)]
+        assert check_scaling(results) == 0
+        assert "flat" in capsys.readouterr().out
+
+    def test_superlinear_scaling_fails(self, capsys):
+        """4x the input for 16x the time is quadratic — what a re-scan looks like."""
+        results = [self._r("parse_html", 200, 1.0), self._r("parse_html", 800, 16.0)]
+        assert check_scaling(results) == 1
+        assert "SUPERLINEAR" in capsys.readouterr().out
+
+    def test_sublinear_is_not_a_failure(self, capsys):
+        """Per-item cost falling with scale is fine; batching can cause it."""
+        results = [self._r("http_cache_put", 100, 1.0), self._r("http_cache_put", 400, 2.0)]
+        assert check_scaling(results) == 0
+
+    def test_cases_without_meaningful_items_are_skipped(self, capsys):
+        results = [Result(name="x", scale=1, seconds=1.0), Result(name="x", scale=2, seconds=9.0)]
+        assert check_scaling(results) == 0
+
+    @pytest.mark.slow
+    def test_real_suite_is_flat(self, capsys):
+        """
+        The committed suite must itself be linear, or the gate is noise.
+
+        Marked slow and given the default repeat count: it is a real measurement
+        of every case, and at two repeats the ratio is a difference of two noisy
+        samples, which fails intermittently. Excluded from the default run by
+        the ``slow`` marker below; CI's benchmark job exercises the same code
+        path directly via ``--gate``.
+        """
+        assert check_scaling(run_cases(repeats=REPEATS)) == 0
+
+
+class TestMachineNormalisation:
+    """The calibration case exists to make timings comparable across hosts."""
+
+    def test_calibration_case_is_present_and_runs(self):
+        assert CALIBRATION_CASE in BENCH_CASES
+        result = measure(CALIBRATION_CASE, CALIBRATION_CASE.scales[0], repeats=1)
+        assert result.items == CALIBRATION_CASE.scales[0]
+
+    def test_every_result_carries_the_machine_reference(self):
+        results = run_cases(repeats=1)
+        assert all(r.machine_us > 0 for r in results), "no machine reference was recorded"
+
+    def test_normalised_figure_divides_out_machine_speed(self):
+        slow = Result(name="x", scale=1, seconds=2.0, items=1000, machine_us=2.0)
+        fast = Result(name="x", scale=1, seconds=1.0, items=1000, machine_us=1.0)
+        # Twice the wall clock on twice the reference speed is the same work.
+        assert slow.normalised_us == pytest.approx(fast.normalised_us)
+
+    def test_normalised_is_none_without_a_reference(self):
+        assert Result(name="x", scale=1, seconds=1.0, items=10).normalised_us is None
 
 
 class TestScalingIsMeaningful:
@@ -180,6 +287,11 @@ class TestBaselineFile:
         baseline = Path(__file__).resolve().parent.parent / "benchmarks" / "baseline.json"
         data = json.loads(baseline.read_text(encoding="utf-8"))
         records = data["results"]
+
+        for r in records:
+            assert r.get("normalised") is not None, (
+                f"{r['name']} has no normalised figure; re-record the baseline"
+            )
 
         recorded = {(r["name"], r["scale"]) for r in records}
         expected = {(c.name, s) for c in BENCH_CASES for s in c.scales}

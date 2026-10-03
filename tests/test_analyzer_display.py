@@ -9,6 +9,7 @@ import io
 import pytest
 from rich.console import Console
 
+import protor.runtimes as _runtimes
 from protor.analyzer import list_models, list_ollama_models, list_runtime_models, list_runtimes
 from protor.llm_backends import ModelInfo
 
@@ -147,3 +148,55 @@ class TestListRuntimes:
         monkeypatch.setattr("protor.analyzer.detect_runtimes", lambda: [])
         list_runtimes()
         assert "stopped\n" not in captured()
+
+
+class TestResponsiveLayout:
+    """A terminal too narrow for four columns must lose the least useful one."""
+
+    def _render(self, width):
+        import io
+
+        from rich.console import Console
+
+        import protor.analyzer as analyzer
+
+        original = analyzer.console
+        analyzer.console = Console(file=io.StringIO(), width=width, highlight=False)
+        analyzer.detect_runtimes = lambda *a, **k: []
+        try:
+            analyzer.list_runtimes()
+            return analyzer.console.file.getvalue()
+        finally:
+            analyzer.console = original
+            analyzer.detect_runtimes = _real_detect
+
+    def test_wide_terminal_keeps_every_column(self):
+        out = self._render(120)
+        assert "URL" in out
+        assert "http://localhost:11434" in out, "full URL, not clipped"
+        assert "ollama serve" in out
+
+    def test_narrow_terminal_does_not_clip_urls_mid_value(self):
+        """
+        "http://localhost:11434" used to render as "http://localhost:114" at
+        60 columns, which reads as a different port entirely.
+        """
+        out = self._render(60)
+        assert "localhost:114" not in out, "a clipped URL is a wrong URL"
+
+    def test_narrow_terminal_keeps_the_start_commands(self):
+        """The reason to run `protor runtimes` is the column that got dropped."""
+        out = self._render(60)
+        for hint in ("ollama serve", "vllm serve <model>", "localai run"):
+            assert hint in out, f"lost an actionable hint: {hint}"
+
+    def test_narrow_terminal_still_reports_status(self):
+        out = self._render(60)
+        assert "stopped" in out
+
+    def test_works_at_a_very_narrow_width(self):
+        out = self._render(40)
+        assert "ollama serve" in out
+
+
+_real_detect = _runtimes.detect_runtimes

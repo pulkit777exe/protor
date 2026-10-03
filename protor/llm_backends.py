@@ -231,7 +231,16 @@ class OllamaBackend(LLMBackend):
         ]
 
     def stream(self, prompt: str) -> Iterator[str]:
-        """Yield Ollama response chunks; raise RuntimeError if the model is missing."""
+        """
+        Yield Ollama response chunks.
+
+        Raises
+        ------
+        OllamaModelNotFoundError
+            If the model has not been pulled. Typed because ``cli.cli()`` has a
+            handler for it that prints the ``ollama pull`` hint; as a bare
+            ``RuntimeError`` the user got a traceback instead.
+        """
         import requests
 
         resp = requests.post(
@@ -243,9 +252,7 @@ class OllamaBackend(LLMBackend):
         )
 
         if resp.status_code == 404:
-            raise RuntimeError(
-                f"Model '{self._model}' not found. Pull with: ollama pull {self._model}"
-            )
+            raise OllamaModelNotFoundError(self._model)
         resp.raise_for_status()
 
         for line in resp.iter_lines():
@@ -360,7 +367,10 @@ class OpenAICompatBackend(LLMBackend):
                 timeout=OLLAMA_CHECK_TIMEOUT,
             )
         except Exception as exc:
-            raise RuntimeError(f"Could not reach {self._label} at {self._base_url}: {exc}") from exc
+            # Same diagnosis the analyzer makes when check_available() fails, so
+            # it gets the same type: only the typed error carries the URL and the
+            # command that starts the runtime.
+            raise RuntimeUnavailableError(self._label, self._base_url, self.start_hint()) from exc
         if resp.status_code == 404:
             raise ModelListUnavailableError(
                 self._label, _endpoint(self._base_url, self._models_path)
@@ -379,11 +389,27 @@ class OpenAICompatBackend(LLMBackend):
         return models
 
     def stream(self, prompt: str) -> Iterator[str]:
-        """Yield chat-completion deltas from an OpenAI-compatible SSE stream."""
+        """
+        Yield chat-completion deltas from an OpenAI-compatible SSE stream.
+
+        Raises
+        ------
+        ConfigurationError
+            If no base URL was configured for this backend.
+        ModelNotFoundError
+            If the runtime has no such model loaded. Carries the
+            ``protor models --backend <runtime>`` hint, which used to be built
+            here and then thrown away into an untyped ``RuntimeError`` that the
+            CLI could not render.
+        AuthError
+            If the runtime rejected the token.
+        """
         import requests
 
         if not self._base_url:
-            raise RuntimeError(f"No base URL configured for {self._label}")
+            raise ConfigurationError(
+                f"No base URL configured for {self._label}. Pass --base-url <url>."
+            )
 
         resp = requests.post(
             _endpoint(self._base_url, self._chat_path),
@@ -398,15 +424,13 @@ class OpenAICompatBackend(LLMBackend):
         )
 
         if resp.status_code == 404:
-            raise RuntimeError(
-                f"Model '{self._model}' not available on {self._label}. "
-                f"List what is loaded with: protor models --backend {self._runtime_key or 'openai-compatible'}"
+            raise ModelNotFoundError(
+                self._model,
+                self._label,
+                f"List what is loaded with: protor models --backend {self._runtime_key or 'openai-compatible'}",
             )
         if resp.status_code in (401, 403):
-            raise RuntimeError(
-                f"{self._label} rejected the request (HTTP {resp.status_code}). "
-                f"Set an API token for it."
-            )
+            raise AuthError(self._label, resp.status_code)
         resp.raise_for_status()
 
         yield from _iter_sse_text(resp)
@@ -521,7 +545,16 @@ class OpenAIBackend(LLMBackend):
         return [ModelInfo(name=str(m.get("id", "?"))) for m in resp.json().get("data", [])]
 
     def stream(self, prompt: str) -> Iterator[str]:
-        """Yield OpenAI API chunks; wrap auth/model errors as RuntimeError."""
+        """
+        Yield OpenAI API chunks.
+
+        Raises
+        ------
+        AuthError
+            If the API key was rejected.
+        ModelNotFoundError
+            If the model is not available to this key.
+        """
         import requests
 
         resp = requests.post(
@@ -536,9 +569,9 @@ class OpenAIBackend(LLMBackend):
             timeout=self._timeout,
         )
         if resp.status_code in (401, 403):
-            raise RuntimeError("Invalid OpenAI API key")
+            raise AuthError("OpenAI", resp.status_code, "Invalid OpenAI API key")
         if resp.status_code == 404:
-            raise RuntimeError(f"Model '{self._model}' not available")
+            raise ModelNotFoundError(self._model, "OpenAI")
         resp.raise_for_status()
         yield from _iter_sse_text(resp)
 
@@ -607,7 +640,16 @@ class AnthropicBackend(LLMBackend):
         ]
 
     def stream(self, prompt: str) -> Iterator[str]:
-        """Yield Anthropic response chunks; wrap auth/model errors as RuntimeError."""
+        """
+        Yield Anthropic response chunks.
+
+        Raises
+        ------
+        AuthError
+            If the API key was rejected.
+        ModelNotFoundError
+            If the model is not available to this key.
+        """
         import requests
 
         with requests.post(
@@ -627,9 +669,9 @@ class AnthropicBackend(LLMBackend):
             timeout=self._timeout,
         ) as resp:
             if resp.status_code in (401, 403):
-                raise RuntimeError("Invalid Anthropic API key")
+                raise AuthError("Anthropic", resp.status_code, "Invalid Anthropic API key")
             if resp.status_code == 404:
-                raise RuntimeError(f"Model '{self._model}' not available")
+                raise ModelNotFoundError(self._model, "Anthropic")
             resp.raise_for_status()
 
             for raw in resp.iter_lines():
@@ -669,19 +711,17 @@ def create_backend(backend: str, model: str, **kwargs: Any) -> LLMBackend:
     name = backend.strip().lower()
     cls = _HOSTED.get(name)
     if cls is not None:
-        backend_obj: LLMBackend = cls(model, **kwargs)  # type: ignore[call-arg]
+        backend_obj: LLMBackend = cls(model, **kwargs)
         return backend_obj
     if name in ("openai-compatible", "local", "compat"):
-        compat: LLMBackend = OpenAICompatBackend(model, **kwargs)  # type: ignore[arg-type]
+        compat: LLMBackend = OpenAICompatBackend(model, **kwargs)
         return compat
     # Raises ValueError listing valid runtimes.
     runtime = get_runtime(name)
     if runtime.api == "ollama":
-        native: LLMBackend = OllamaBackend(model, **kwargs)  # type: ignore[arg-type]
+        native: LLMBackend = OllamaBackend(model, **kwargs)
         return native
-    local: LLMBackend = OpenAICompatBackend(  # type: ignore[arg-type]
-        model, runtime=runtime.key, **kwargs
-    )
+    local: LLMBackend = OpenAICompatBackend(model, runtime=runtime.key, **kwargs)
     return local
 
 

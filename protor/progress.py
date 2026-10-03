@@ -181,16 +181,19 @@ def live_display(
         Erase the display when the block exits. Right for in-progress feedback;
         the caller prints the durable summary afterwards.
     enabled:
-        Force animation on or off. ``None`` auto-detects, which is what keeps
-        pipes and CI logs readable.
+        Set False to forbid animation entirely. True and None both mean "you may
+        animate" and still auto-detect: a pipe, a CI log and a dumb terminal are
+        never animated, because you cannot force a cursor-up sequence to render
+        somewhere that has no cursor.
 
     Yields
     ------
     LiveDisplay
     """
     con = console or _console
-    if enabled is None:
-        enabled = live_enabled(con)
+    # False forbids animation outright; anything else still auto-detects, so a
+    # redirected stdout can never be handed escape codes it has no cursor for.
+    enabled = enabled is not False and live_enabled(con)
 
     if not enabled:
         # Nothing to animate: callers keep calling update() and pay nothing.

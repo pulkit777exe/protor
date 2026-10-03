@@ -1,5 +1,9 @@
 """Typed exception hierarchy for protor."""
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+from pathlib import Path
+
 
 class ProtorError(RuntimeError):
     """
@@ -175,3 +179,58 @@ class ModelListUnavailableError(ProtorError):
         super().__init__(
             f"{runtime} does not expose a model list at {url}. Pass the model explicitly: --model <name>"
         )
+
+
+class InvalidSelectorError(ProtorError):
+    """
+    Raised when a schema's CSS selector cannot be parsed.
+
+    A malformed selector used to be swallowed per field, so ``scrape --schema``
+    reported pages scraped while every extracted field was ``None`` — a failure
+    presented as success. It is now raised when the schema is loaded, before any
+    page is fetched, and says which field (or which base_selector) was at fault.
+    """
+
+    def __init__(self, selector: str, *, where: str = "", reason: str = "") -> None:
+        self.selector = selector
+        self.where = where
+        self.reason = reason
+        super().__init__(
+            f"Invalid CSS selector {selector!r}"
+            + (f" in {where}" if where else "")
+            + (f": {reason}" if reason else "")
+        )
+
+
+@dataclass
+class InvalidManifestError(ProtorError, ValueError):
+    """
+    Raised when a record cannot be read as a site manifest.
+
+    Carries what was missing and, where known, the file it came from: a bare
+    ``TypeError: missing 8 required positional arguments`` named neither, which
+    is no help when the record arrived from JSON written minutes ago.
+
+    Two tiers, because a partial record is not always a wrong one. A record
+    short a *measurement* -- the shape a run killed mid-write leaves -- still
+    names a real page, so it loads with that measurement empty. A record with no
+    ``url``/``domain`` names no page at all, and only that case raises.
+
+    Also a ``ValueError``, since it reports bad data rather than a failed
+    operation, so callers already catching ``ValueError`` around parsing keep
+    working.
+    """
+
+    missing_fields: Sequence[str] = ()
+    source: str | Path | None = None
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        parts = []
+        if self.detail:
+            parts.append(self.detail)
+        elif self.missing_fields:
+            parts.append("not a site manifest: missing " + ", ".join(self.missing_fields))
+        message = "; ".join(parts)
+        where = f"{self.source}: " if self.source is not None else ""
+        super().__init__(where + message)

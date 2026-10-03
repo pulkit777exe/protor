@@ -32,7 +32,19 @@ from .runtimes import (
     resolve_base_url,
     shared_url_runtimes,
 )
-from .theme import OK, bright, console, err, header_rule, info, label, muted, section_rule, warn
+from .theme import (
+    OK,
+    bright,
+    console,
+    err,
+    header_rule,
+    info,
+    label,
+    muted,
+    safe,
+    section_rule,
+    warn,
+)
 from .utils import human_bytes, save_json, timestamp
 
 __all__ = [
@@ -180,7 +192,7 @@ def list_runtime_models(
 
     for m in models:
         size = human_bytes(m.size_bytes) if m.size_bytes else "—"
-        t.add_row(m.name, size, m.modified or "—")
+        t.add_row(m.name, size, m.modified or safe("—"))
 
     console.print(t)
     console.print()
@@ -196,20 +208,44 @@ def list_runtimes() -> None:
 
     detected = {r.key for r in detect_runtimes()}
 
+    # Column set follows the terminal. Declaring all four unconditionally made
+    # rich drop the last one on a narrow terminal and clip the URL mid-value:
+    # at 60 columns "http://localhost:11434" rendered as "http://localhost:114",
+    # which reads as a different port, and the actionable "Start with" column —
+    # the reason to run this command at all — disappeared entirely. Below the
+    # threshold the URL is dropped (it is reference information, and the
+    # shared-port footnote still names it) so the start command survives.
+    width = console.width or 80
+    show_url = width >= 96
+
     t = Table(
         box=box.SIMPLE, show_header=True, header_style="bold white", show_edge=False, padding=(0, 1)
     )
-    t.add_column("Runtime", style="white", min_width=10, no_wrap=True)
-    t.add_column("Status", width=12, no_wrap=True)
-    t.add_column("URL", style="grey74", min_width=24, overflow="fold")
-    t.add_column("Start with", style="grey50", min_width=30, overflow="fold")
+    if show_url:
+        t.add_column("Runtime", style="white", min_width=10, no_wrap=True)
+        t.add_column("Status", width=12, no_wrap=True)
+        t.add_column("URL", style="grey74", min_width=24, overflow="fold")
+        t.add_column("Start with", style="grey50", min_width=26, overflow="fold")
+    else:
+        # Narrow: status rides along with the name, freeing the hint column
+        # enough width to wrap instead of clipping the command the user needs.
+        t.add_column("Runtime", style="white", min_width=10, overflow="fold")
+        t.add_column("Start with", style="grey50", overflow="fold")
 
     for runtime in RUNTIMES.values():
         up = runtime.key in detected
-        status = (
-            Text(f"  {OK} running", style="green") if up else Text("  — stopped", style="grey35")
-        )
-        t.add_row(runtime.label, status, muted(runtime.url), muted(runtime.start_hint))
+        status = f"  {OK} running" if up else safe("  — stopped")
+        if show_url:
+            t.add_row(
+                runtime.label,
+                Text(status, style="green" if up else "grey35"),
+                muted(runtime.url),
+                muted(runtime.start_hint),
+            )
+        else:
+            cell = Text(status, style="green" if up else "grey35")
+            cell.append(f"  {runtime.label}", style="white")
+            t.add_row(cell, muted(runtime.start_hint))
 
     console.print(t)
     console.print()
