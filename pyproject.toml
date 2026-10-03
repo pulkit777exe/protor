@@ -72,6 +72,11 @@ addopts = [
     "-v",
     "--strict-markers",
     "--tb=short",
+    # Benchmark-gate tests take minutes and assert on timings, which is a poor
+    # default: slow, and flaky under load. Run them with `pytest -m slow`, or
+    # exercise the same gate directly with `python -m benchmarks --gate`.
+    "-m",
+    "not slow",
     "--cov=protor",
     "--cov-report=term-missing",
     "--cov-report=html:htmlcov",
