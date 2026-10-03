@@ -12,6 +12,7 @@ here, fixes every call site at once.
 from __future__ import annotations
 
 import sys
+from typing import Any
 
 from rich.console import Console
 from rich.rule import Rule
@@ -36,13 +37,24 @@ def safe(text: str) -> str:
 
     Applied to every string the CLI prints, so a legacy terminal or a CI log
     gets readable ASCII instead of a UnicodeEncodeError traceback.
+
+    Total by construction: the substitution table holds the glyphs *this* module
+    uses, and scraped page text or model output can hold anything at all. A
+    character the table does not name — ``♠``, or an ``é`` on an ASCII terminal —
+    used to come straight back and raise at the write, which is the crash this
+    function exists to prevent. Whatever survives the table is therefore forced
+    through the encoding, so the return value is always printable.
     """
     if not text or _can_encode(text):
         return text
     out = text
     for fancy, plain in _FALLBACKS:
         out = out.replace(fancy, plain)
-    return out
+    encoding = _output_encoding()
+    try:
+        return out.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    except LookupError:
+        return out
 
 
 #: (fancy, plain) pairs, applied in order until the text is encodable.
@@ -69,6 +81,39 @@ ARROW = "→" if _can_encode("→") else "->"
 # ── console (shared instance; importable) ────────────────────────────────────
 
 
+class _EncodingSafeFile:
+    """
+    A text stream that writes what the terminal can encode instead of raising.
+
+    ``rich.console.Console`` takes no ``errors`` parameter and writes straight to
+    the stream, so there was nowhere to say "replace what will not fit". The
+    helpers above sanitise their own arguments, but a ``Table`` renders its cells
+    without ever passing them through ``print`` — a model name or a page title in
+    a cell reached the terminal unsanitised and raised from the middle of the
+    render, taking the error report that followed down with it.
+
+    Encoding before writing means the replacement happens with the whole string
+    in hand: nothing is written half-way, and nothing raises.
+    """
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+
+    def write(self, text: str) -> int:
+        encoding = getattr(self._stream, "encoding", None) or "utf-8"
+        try:
+            text.encode(encoding)
+        except (UnicodeEncodeError, LookupError):
+            text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+        written: int = self._stream.write(text)
+        return written
+
+    def __getattr__(self, name: str) -> Any:
+        # isatty, fileno, encoding and the rest must reach the real stream: the
+        # console decides whether it may colourise or animate from them.
+        return getattr(self._stream, name)
+
+
 class ProtorConsole(Console):
     """
     Console that degrades glyphs the terminal cannot encode.
@@ -78,8 +123,24 @@ class ProtorConsole(Console):
     and a raw em dash in one of those crashed the command with a
     UnicodeEncodeError. Sanitising at the console is the one chokepoint that
     cannot be forgotten; the helpers stay because a Table renders its cells
-    without ever passing them through ``print``.
+    without ever passing them through ``print``, which the write path below
+    covers rather than the arguments.
     """
+
+    @property
+    def file(self) -> Any:
+        """
+        The underlying stream, wrapped so a write cannot fail on encoding.
+
+        Resolved per access rather than cached, because ``Console`` picks up
+        ``sys.stdout`` afresh every time and a test that swaps it mid-run has to
+        be writing to the replacement.
+        """
+        return _EncodingSafeFile(super().file)
+
+    @file.setter
+    def file(self, value: Any) -> None:
+        self._file = value
 
     def print(self, *objects: object, **kwargs: object) -> None:
         super().print(*(_degrade(obj) for obj in objects), **kwargs)  # type: ignore[arg-type]

@@ -92,3 +92,102 @@ class TestPrintHelpersSanitize:
 
         con = Console(file=StringIO(), width=80, force_terminal=False)
         con.print(rule("Protor — Analyzer ✓"))
+
+
+class TestSafeIsTotal:
+    """
+    `theme.safe()` must return text the terminal can actually encode.
+
+    The substitution table names the glyphs this module uses. Scraped page text
+    and model output name none of them, and a character the table does not know
+    came straight back — so `é` on an ASCII terminal, or a `♠` from a page, still
+    raised at the write. That is the crash `theme.safe()` exists to prevent, so the
+    guarantee is total rather than best-effort.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        ["♠", "café", "naïve", "日本", "→→→", "\U0001d518\U0001d52d", "emoji \U0001f642 here"],
+    )
+    @pytest.mark.parametrize("encoding", ["ascii", "cp1252", "latin-1", "cp437"])
+    def test_the_result_always_encodes(self, text, encoding, monkeypatch):
+        monkeypatch.setattr(theme, "_output_encoding", lambda: encoding)
+        try:
+            theme.safe(text).encode(encoding)
+        except UnicodeEncodeError as exc:  # pragma: no cover - the failure itself
+            pytest.fail(f"theme.safe({text!r}) is not encodable in {encoding}: {exc}")
+
+    def test_a_substitutable_glyph_still_reads_as_its_fallback(self, monkeypatch):
+        """The table runs first, so the common glyphs keep their readable form."""
+        monkeypatch.setattr(theme, "_output_encoding", lambda: "ascii")
+        assert theme.safe("crawl — complete ✓") == "crawl - complete +"
+
+    def test_text_that_already_fits_is_returned_untouched(self, monkeypatch):
+        monkeypatch.setattr(theme, "_output_encoding", lambda: "ascii")
+        original = "plain ascii text"
+        assert theme.safe(original) is original
+
+
+class TestConsoleWritesWhatTheTerminalCanEncode:
+    """
+    The console is the chokepoint that cannot be forgotten.
+
+    `rich.console.Console` takes no `errors` parameter, so there was nowhere to
+    ask for replacement at the write. A `Table` renders its cells without ever
+    passing them through `print`, which is why a model name or page title in a
+    cell raised `UnicodeEncodeError` from the middle of the render — and took the
+    error report printed after it down too.
+    """
+
+    @pytest.mark.parametrize("encoding", ["ascii", "cp1252", "cp437"])
+    def test_a_table_cell_that_cannot_encode_still_prints(self, encoding, tmp_path):
+        import subprocess
+        import sys
+
+        script = tmp_path / "render.py"
+        script.write_text(
+            "from rich.table import Table\n"
+            "from protor.theme import console\n"
+            "t = Table('model')\n"
+            "t.add_row('café — 日本 model')\n"
+            "console.print(t)\n"
+            "console.print('♠ plain f-string')\n",
+            encoding="utf-8",
+        )
+        done = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            env={"PATH": "/usr/bin:/bin", "PYTHONIOENCODING": encoding},
+            timeout=120,
+        )
+        assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
+        assert done.stdout, "nothing was written"
+
+    def test_the_wrapper_is_transparent_to_the_console(self):
+        """isatty and fileno must reach the real stream or Rich stops detecting."""
+        import sys
+
+        wrapped = theme.console.file
+        assert wrapped.isatty() == sys.stdout.isatty()
+        assert wrapped.fileno() == sys.stdout.fileno()
+
+    def test_utf8_output_is_untouched(self, tmp_path):
+        """Degrading must not cost anything on a terminal that can encode it."""
+        import subprocess
+        import sys
+
+        script = tmp_path / "render.py"
+        script.write_text(
+            "from protor.theme import console, safe\n"
+            "console.print('café — 日本 ✓')\n"
+            "assert safe('café — 日本 ✓') == 'café — 日本 ✓'\n",
+            encoding="utf-8",
+        )
+        done = subprocess.run(
+            [sys.executable, str(script)],
+            capture_output=True,
+            env={"PATH": "/usr/bin:/bin", "PYTHONIOENCODING": "utf-8"},
+            timeout=120,
+        )
+        assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
+        assert "café — 日本 ✓" in done.stdout.decode("utf-8")
