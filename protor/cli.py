@@ -35,7 +35,6 @@ from .exceptions import (
     ConfigurationError,
     DataFileNotFoundError,
     OllamaModelNotFoundError,
-    OllamaUnavailableError,
     OutputPathError,
     ProtorError,
     URLValidationError,
@@ -118,6 +117,7 @@ def _run_scrape(args: argparse.Namespace) -> str:
         auto_scale=args.auto_scale,
         use_cache=args.cache,
         live=not args.no_live,
+        allow_internal_redirects=args.allow_internal_redirects,
     )
 
 
@@ -179,6 +179,7 @@ def _cmd_crawl(args: argparse.Namespace) -> None:
         resume=args.resume,
         auto_scale=args.auto_scale,
         live=not args.no_live,
+        allow_internal_redirects=args.allow_internal_redirects,
     ).crawl()
 
 
@@ -361,6 +362,14 @@ def _add_output_flags(parser: argparse.ArgumentParser) -> None:
         "--no-live",
         action="store_true",
         help="disable in-place progress rendering (plain output for pipes and CI)",
+    )
+    parser.add_argument(
+        "--allow-internal-redirects",
+        action="store_true",
+        help=(
+            "follow redirects into link-local addresses (cloud metadata) and "
+            "non-HTTP schemes; refused by default"
+        ),
     )
 
 
@@ -628,8 +637,6 @@ def cli() -> None:
     except KeyboardInterrupt:
         console.print(f"\n  {ERR} interrupted\n")
         sys.exit(130)
-    except OllamaUnavailableError as exc:
-        _abort(str(exc), hint="Start with: ollama serve")
     except OllamaModelNotFoundError as exc:
         # The message already names the exact pull command.
         _abort(str(exc))

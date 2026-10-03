@@ -36,7 +36,7 @@ from .http_cache import CacheEntry, HTTPCache
 from .netguard import describe_block
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Mapping
 
 __all__ = ["FetchResult", "download_file", "fetch", "random_user_agent"]
 
@@ -100,6 +100,74 @@ def _from_cache(entry: CacheEntry) -> FetchResult:
     )
 
 
+@dataclass
+class _Response:
+    """A completed HTTP response: everything the caller needs, nothing live."""
+
+    status: int
+    #: aiohttp exposes a multidict, not a dict; only ``.get`` is ever needed.
+    headers: Mapping[str, str]
+    data: bytes
+    url: str
+
+
+async def _get_following(
+    session: aiohttp.ClientSession,
+    url: str,
+    *,
+    headers: dict[str, str],
+    timeout: int,
+    allow_internal_redirects: bool,
+) -> _Response:
+    """
+    GET *url*, following redirects by hand so each hop can be checked.
+
+    Following redirects is left to aiohttp by default, which means a site
+    answering ``302 Location: http://169.254.169.254/latest/meta-data/`` sends
+    the request to the host's metadata service and the credentials it returns
+    are written into the output directory as though they were a web page.
+    Nothing in the saved output distinguishes that from a successful scrape.
+
+    Each hop is resolved against the response's own URL, so a relative
+    ``Location`` behaves as a browser would, and a hop that leaves the public
+    internet is refused unless the caller opted in. See :mod:`protor.netguard`
+    for exactly what is and is not blocked, and why loopback is allowed.
+
+    The body is read here rather than handed back live, so the response is
+    always released — including on the error paths, where a half-read body would
+    otherwise leak the connection.
+    """
+    current = url
+    for _hop in range(MAX_REDIRECTS + 1):
+        async with session.get(
+            current,
+            headers=headers,
+            timeout=aiohttp.ClientTimeout(total=timeout),
+            allow_redirects=False,
+        ) as response:
+            if response.status not in _REDIRECT_STATUSES:
+                return _Response(
+                    status=response.status,
+                    headers=response.headers,
+                    data=await response.read(),
+                    url=str(response.url),
+                )
+
+            location = response.headers.get("Location", "")
+            status = response.status
+            resolved = urljoin(str(response.url), location) if location else ""
+            await response.read()
+
+        if not location:
+            raise FetchError(url, f"HTTP {status} with no Location header")
+        blocked = describe_block(resolved)
+        if blocked is not None and not allow_internal_redirects:
+            raise FetchError(url, f"refused to follow a redirect: {blocked}")
+        current = resolved
+
+    raise FetchError(url, f"more than {MAX_REDIRECTS} redirects")
+
+
 async def fetch(
     session: aiohttp.ClientSession,
     url: str,
@@ -150,44 +218,43 @@ async def fetch(
                 timeout=timeout,
                 allow_internal_redirects=allow_internal_redirects,
             )
-            try:
-                if r.status == 304:
-                    # 304 means "what you already have is current". Serving it
-                    # needs a cache; without one there is nothing to serve, and
-                    # passing the empty body off as a page would report a blank
-                    # site as successfully scraped.
-                    if cache is None:
-                        raise FetchError(url, "304 Not Modified with no cache entry")
-                    # The entry a 304 refers to is, by definition, the one that
-                    # was stale — which get() will not return.
-                    served = cache.entry_for(url)
-                    if served is None:
-                        raise FetchError(url, "304 Not Modified with no cache entry")
-                    # Refresh it so the next visit is a disk hit, not another
-                    # round trip to re-validate the same unchanged page.
-                    cache.touch(url)
-                    return _from_cache(served)
-                if r.status >= 400:
-                    if r.status in RETRYABLE_STATUS and attempt < max_retries - 1:
-                        await asyncio.sleep(_backoff(attempt))
-                        continue
-                    raise FetchError(url, f"HTTP {r.status}")
-                data = await r.read()
-                text = data.decode("utf-8", errors="replace")
-                if cache:
-                    cache.put(
-                        url,
-                        CacheEntry(
-                            etag=r.headers.get("ETag"),
-                            last_modified=r.headers.get("Last-Modified"),
-                            body=text,
-                            status=r.status,
-                        ),
-                    )
-                for hook in (hooks or {}).get("after_fetch", []):
-                    with contextlib.suppress(Exception):
-                        hook(url, {"status": r.status, "body": text})
-                return FetchResult(text=text, nbytes=len(data), status=r.status)
+            if r.status == 304:
+                # 304 means "what you already have is current". Serving it
+                # needs a cache; without one there is nothing to serve, and
+                # passing the empty body off as a page would report a blank
+                # site as successfully scraped.
+                if cache is None:
+                    raise FetchError(url, "304 Not Modified with no cache entry")
+                # The entry a 304 refers to is, by definition, the one that
+                # was stale — which get() will not return.
+                served = cache.entry_for(url)
+                if served is None:
+                    raise FetchError(url, "304 Not Modified with no cache entry")
+                # Refresh it so the next visit is a disk hit, not another
+                # round trip to re-validate the same unchanged page.
+                cache.touch(url)
+                return _from_cache(served)
+            if r.status >= 400:
+                if r.status in RETRYABLE_STATUS and attempt < max_retries - 1:
+                    await asyncio.sleep(_backoff(attempt))
+                    continue
+                raise FetchError(url, f"HTTP {r.status}")
+            data = r.data
+            text = data.decode("utf-8", errors="replace")
+            if cache:
+                cache.put(
+                    url,
+                    CacheEntry(
+                        etag=r.headers.get("ETag"),
+                        last_modified=r.headers.get("Last-Modified"),
+                        body=text,
+                        status=r.status,
+                    ),
+                )
+            for hook in (hooks or {}).get("after_fetch", []):
+                with contextlib.suppress(Exception):
+                    hook(url, {"status": r.status, "body": text})
+            return FetchResult(text=text, nbytes=len(data), status=r.status)
         except TimeoutError as exc:
             last_exc = exc
             if attempt < max_retries - 1:

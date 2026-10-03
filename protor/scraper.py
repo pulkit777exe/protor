@@ -242,6 +242,7 @@ def scrape_multiple(
     block_ads: bool = False,
     auto_scale: bool = False,
     live: bool = True,
+    allow_internal_redirects: bool = False,
 ) -> str:
     """
     Scrape *urls* concurrently and write a ``sites_index.json`` index file.
@@ -307,6 +308,7 @@ def scrape_multiple(
         hooks=hooks,
         extraction_schema=extraction_schema,
         blocklist=Blocklist(block_ads=True) if block_ads else None,
+        allow_internal_redirects=allow_internal_redirects,
         rate_limiter=DomainRateLimiter(delay=RATE_LIMIT_DELAY),
         auto_scaler=(
             AutoScaler(

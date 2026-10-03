@@ -28,10 +28,20 @@ if TYPE_CHECKING:
 class FakeResponse:
     """A minimal stand-in for ``aiohttp.ClientResponse``."""
 
-    def __init__(self, status: int = 200, body: str = "", headers: dict | None = None) -> None:
+    def __init__(
+        self,
+        status: int = 200,
+        body: str = "",
+        headers: dict | None = None,
+        url: str = "http://test.local/",
+    ) -> None:
         self.status = status
         self._body = body.encode("utf-8") if isinstance(body, str) else body
         self.headers = headers or {}
+        # Real ClientResponse carries the final URL, which redirect handling
+        # needs to resolve a relative `Location` against. Absent here, every
+        # redirect test failed with AttributeError instead of testing redirects.
+        self.url = url
 
     async def __aenter__(self) -> FakeResponse:
         return self

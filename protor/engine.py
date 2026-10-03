@@ -207,6 +207,7 @@ class CrawlEngine:
         hooks: dict[str, list[Callable[..., Any]]] | None = None,
         extraction_schema: ExtractionSchema | None = None,
         blocklist: Blocklist | None = None,
+        allow_internal_redirects: bool = False,
         rate_limiter: DomainRateLimiter | None = None,
         auto_scaler: AutoScaler | None = None,
         allowed_domain: str | None = None,
@@ -231,6 +232,7 @@ class CrawlEngine:
         self._hooks = hooks
         self._extraction_schema = extraction_schema
         self._blocklist = blocklist
+        self._allow_internal_redirects = allow_internal_redirects
         self._rate_limiter = rate_limiter
         self._auto_scaler = auto_scaler
         self._allowed_domain = allowed_domain
@@ -428,6 +430,7 @@ class CrawlEngine:
                 timeout=self._timeout,
                 cache=self._cache,
                 hooks=self._hooks,
+                allow_internal_redirects=self._allow_internal_redirects,
             )
         except Exception as exc:
             self._fail(stats, row, url, str(exc))

@@ -127,6 +127,13 @@ protor scrape https://example.com --schema schemas/product_listing.json
 protor scrape https://example.com --output my_data --timeout 60 --concurrency 3
 ```
 
+Redirects are followed, but never into a cloud metadata endpoint (the
+`169.254.x.x` range) or a non-HTTP scheme — a site that answers with a `302`
+pointing there would otherwise have its response saved as though it were a web
+page. Redirects to loopback and private addresses are allowed, because scraping
+a local or intranet site is a normal thing to do. Lift the restriction with
+`--allow-internal-redirects`.
+
 ### crawl a whole site
 
 ```bash

@@ -882,6 +882,7 @@ class TestCacheCannotLoseData:
         class Resp:
             status = 200
             headers: ClassVar[dict] = {}
+            url = "https://x.com/"
 
             async def __aenter__(self):
                 return self

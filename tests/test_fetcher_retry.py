@@ -33,6 +33,9 @@ class _Resp:
         self.status = spec.get("status", 200)
         self.headers = spec.get("headers", {})
         self._body = spec.get("body", "")
+        # Real ClientResponse carries the final URL; redirect handling resolves
+        # a relative `Location` against it.
+        self.url = spec.get("url", "http://test.local/")
 
     async def __aenter__(self):
         return self
