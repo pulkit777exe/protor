@@ -159,7 +159,12 @@ def list_runtime_models(
         else:
             console.print(f"  {info('Pass --base-url if it listens somewhere else')}")
         console.print()
-        return
+        # A runtime that is not running is a failure, not an empty list: this
+        # path is shared by `protor models` and by `analyze`, and exiting 0
+        # meant a script could not tell "no models" from "the runtime is down".
+        raise RuntimeUnavailableError(
+            llm.display_name, str(url), hint or "Pass --base-url if it listens somewhere else"
+        )
 
     try:
         models = llm.list_models()

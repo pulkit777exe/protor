@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock, patch
 
+import pytest
 import responses
 
 from protor.analyzer import (
@@ -11,6 +12,7 @@ from protor.analyzer import (
     check_ollama,
     list_ollama_models,
 )
+from protor.exceptions import RuntimeUnavailableError
 
 
 class TestCheckOllama:
@@ -73,12 +75,15 @@ class TestListOllamaModels:
     @responses.activate
     @patch("protor.analyzer.console")
     def test_list_models_ollama_unavailable(self, mock_console):
+        """A runtime that is not running is a failure, not an empty model list."""
         responses.add(
             responses.GET,
             "http://localhost:11434/api/tags",
             body=ConnectionError("Connection refused"),
         )
-        list_ollama_models()
+        with pytest.raises(RuntimeUnavailableError) as exc:
+            list_ollama_models()
+        assert "11434" in str(exc.value), "the typed error carries the URL"
         assert mock_console.print.called
 
 

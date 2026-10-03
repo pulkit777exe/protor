@@ -11,6 +11,7 @@ from rich.console import Console
 
 import protor.runtimes as _runtimes
 from protor.analyzer import list_models, list_ollama_models, list_runtime_models, list_runtimes
+from protor.exceptions import RuntimeUnavailableError
 from protor.llm_backends import ModelInfo
 
 
@@ -62,8 +63,17 @@ class TestListRuntimeModels:
         assert "http://localhost:1234" in captured()
 
     def test_reports_a_stopped_runtime_with_a_start_hint(self, monkeypatch, captured):
+        """
+        The message is printed, and the command exits non-zero.
+
+        Returning 0 meant `protor models` could not be told apart from a runtime
+        with no models loaded, so a script saw success from a runtime that is not
+        running. The typed error is what carries the URL out to the CLI.
+        """
         _stub_models(monkeypatch, [], available=False)
-        list_runtime_models("vllm")
+        with pytest.raises(RuntimeUnavailableError) as exc:
+            list_runtime_models("vllm")
+        assert "vllm serve" in str(exc.value)
         out = captured()
         assert "not reachable" in out
         assert "vllm serve" in out, "must tell the user how to start it"

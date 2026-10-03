@@ -192,13 +192,16 @@ class TestCmdUpdate:
     @patch("protor.updater._is_editable_install")
     @patch("protor.cli.check_for_update")
     def test_check_network_failure(self, mock_check, mock_editable, mock_console):
+        """A failed check exits non-zero: `--check` in a script must not read as up to date."""
         mock_editable.return_value = False
         mock_check.return_value = None
         args = MagicMock()
         args.check = True
         args.yes = False
 
-        _cmd_update(args)
+        with pytest.raises(SystemExit) as excinfo:
+            _cmd_update(args)
+        assert excinfo.value.code == 1
         assert mock_console.print.called
 
 

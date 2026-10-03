@@ -150,8 +150,12 @@ class TestExtractCommand:
             },
         )
         out = tmp_path / "out"
-        _run(["extract", site, schema, "--output", str(out)])
+        # Non-zero, so `protor extract ... && next-step` does not run on a schema
+        # that matched nothing. The message is unchanged; only the code is.
+        with pytest.raises(SystemExit) as excinfo:
+            _run(["extract", site, schema, "--output", str(out)])
 
+        assert excinfo.value.code == 1, "an empty extraction reported success"
         assert not (out / "none_index.json").exists(), "wrote a file for no matches"
 
     def test_a_missing_schema_file_is_reported(self, site, tmp_path):
@@ -203,8 +207,10 @@ class TestExtractCommand:
             },
         )
         out = tmp_path / "out"
-        _run(["extract", site, schema, "--output", str(out)])
+        with pytest.raises(SystemExit) as excinfo:
+            _run(["extract", site, schema, "--output", str(out)])
 
+        assert excinfo.value.code == 1, "all-null records reported success"
         assert not (out / "stale_index.json").exists(), "wrote records whose every value was None"
 
     def test_a_url_without_a_scheme_is_rejected(self, tmp_path, capsys):

@@ -228,9 +228,12 @@ def _cmd_extract(args: argparse.Namespace) -> None:
     empty = sum(1 for r in results if not any(v not in (None, "") for v in r.values()))
 
     if not results or empty == len(results):
+        # Non-zero: a script that pipes this into `&&` must not read an empty
+        # extraction as success. The comment above explains why an empty result
+        # is a failure at all, and returning 0 contradicted it.
         console.print(f"  {ERR} No data matched the schema")
         console.print()
-        return
+        sys.exit(1)
 
     if empty:
         console.print(
@@ -288,7 +291,7 @@ def _cmd_update(args: argparse.Namespace) -> None:
     if result is None:
         console.print(f"\n  {err('Failed to check for updates.')}")
         console.print(f"  {info('Check your internet connection and try again.')}\n")
-        return
+        sys.exit(1)
 
     current = result["current"]
     latest = result["latest"]
@@ -321,6 +324,7 @@ def _cmd_update(args: argparse.Namespace) -> None:
     else:
         console.print(f"\n  {err('Update failed.')}")
         console.print(f"  {info('Try: pip install --upgrade protor')}\n")
+        sys.exit(1)
 
 
 # ── parser ────────────────────────────────────────────────────────────────────
