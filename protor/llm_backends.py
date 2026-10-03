@@ -410,17 +410,25 @@ class OpenAICompatBackend(LLMBackend):
                 f"No base URL configured for {self._label}. Pass --base-url <url>."
             )
 
-        resp = requests.post(
-            _endpoint(self._base_url, self._chat_path),
-            json={
-                "model": self._model,
-                "messages": [{"role": "user", "content": prompt}],
-                "stream": True,
-            },
-            headers=_auth_headers(self._api_key),
-            stream=True,
-            timeout=self._timeout,
-        )
+        try:
+            resp = requests.post(
+                _endpoint(self._base_url, self._chat_path),
+                json={
+                    "model": self._model,
+                    "messages": [{"role": "user", "content": prompt}],
+                    "stream": True,
+                },
+                headers=_auth_headers(self._api_key),
+                stream=True,
+                timeout=self._timeout,
+            )
+        except requests.RequestException as exc:
+            # check_available() already reports an unreachable runtime in these
+            # terms, and cli.cli() knows how to print it. Letting requests'
+            # own ConnectionError escape bypassed both, so a runtime that died
+            # between the check and the call surfaced as a traceback instead of
+            # "Cannot reach llama.cpp at http://localhost:8080".
+            raise RuntimeUnavailableError(self._label, self._base_url, self.start_hint()) from exc
 
         if resp.status_code == 404:
             raise ModelNotFoundError(
