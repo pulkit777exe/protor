@@ -121,7 +121,7 @@ def artificial_page(blocks: int, *, nested: bool = False, noise: bool = True) ->
     return "".join(parts)
 
 
-def site_batch(count: int) -> list[dict]:
+def site_batch(count: int) -> list[dict[Any, Any]]:
     """Build a batch of scraped-site records, as ``sites_index.json`` would hold."""
     rng = random.Random(count)
     return [

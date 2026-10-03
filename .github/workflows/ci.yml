@@ -45,6 +45,14 @@ jobs:
         # below exercises that code path properly instead.
         run: pytest -m "not integration and not ollama and not slow" --tb=short
 
+      - name: Run integration tests
+        # These open a socket, but only to loopback: the LLM wire tests run a
+        # real HTTP server in-process, so they need no outbound network and no
+        # secrets. They are the only coverage of the streaming path against a
+        # real connection, so they run on every push rather than being left to
+        # a maintainer with a local runtime.
+        run: pytest -m "integration and not ollama" --tb=short --no-cov
+
       - name: Upload coverage
         if: matrix.python-version == '3.12'
         uses: actions/upload-artifact@v6

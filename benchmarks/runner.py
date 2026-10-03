@@ -306,7 +306,7 @@ def check_scaling(results: list[Result]) -> int:
     return 1 if failures else 0
 
 
-def compare(before: list[dict], after: list[dict]) -> int:
+def compare(before: list[dict[str, Any]], after: list[dict[str, Any]]) -> int:
     """
     Compare two recorded runs. Returns a process exit code.
 
