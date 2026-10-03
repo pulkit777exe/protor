@@ -33,7 +33,7 @@ from .runtimes import (
     shared_url_runtimes,
 )
 from .theme import OK, bright, console, err, header_rule, info, label, muted, section_rule, warn
-from .utils import save_json, timestamp
+from .utils import human_bytes, save_json, timestamp
 
 __all__ = [
     "analyze",
@@ -179,7 +179,7 @@ def list_runtime_models(
     t.add_column("Modified", style="grey50", width=12)
 
     for m in models:
-        size = "—" if not m.size_bytes else f"{m.size_bytes / (1024**3):.1f} GB"
+        size = human_bytes(m.size_bytes) if m.size_bytes else "—"
         t.add_row(m.name, size, m.modified or "—")
 
     console.print(t)
