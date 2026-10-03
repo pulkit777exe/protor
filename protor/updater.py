@@ -10,6 +10,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import TypedDict
 from urllib.error import URLError
 from urllib.request import urlopen
 
@@ -37,7 +38,22 @@ def get_latest_version() -> str | None:
         return None
 
 
-def check_for_update() -> dict | None:
+class UpdateInfo(TypedDict):
+    """
+    What a successful version comparison found.
+
+    A :class:`~typing.TypedDict` rather than a dataclass because callers index
+    the result by key (``result["update_available"]``), and rather than a bare
+    ``dict[str, str | bool]`` because the three values have three different
+    types — a union would make every read a narrowing site.
+    """
+
+    current: str
+    latest: str
+    update_available: bool
+
+
+def check_for_update() -> UpdateInfo | None:
     """Compare current and latest versions.
 
     Returns:

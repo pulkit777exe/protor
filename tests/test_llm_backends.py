@@ -23,7 +23,6 @@ from protor.llm_backends import (
     _format_timestamp,
     _iter_sse_text,
     create_backend,
-    list_models,
 )
 from protor.runtimes import resolve_base_url
 
@@ -495,6 +494,12 @@ class TestCreateBackend:
 class TestListModelsHelper:
     @responses_lib.activate
     def test_delegates_to_the_backend(self):
+        """
+        The helper lives in protor.analyzer now — it was implemented here too,
+        byte for byte, and one of the two had to go.
+        """
+        from protor.analyzer import list_models
+
         responses_lib.add(
             responses_lib.GET,
             f"{OPENAI_URL}/v1/models",
@@ -503,6 +508,12 @@ class TestListModelsHelper:
         )
         models = list_models("openai-compatible", base_url=OPENAI_URL)
         assert [m.name for m in models] == ["a", "b"]
+
+    def test_helper_is_not_duplicated_in_this_module(self):
+        """A second copy is how the two implementations drift apart unnoticed."""
+        import protor.llm_backends as backends
+
+        assert "list_models" not in vars(backends), "the helper lives in protor.analyzer"
 
 
 def test_ollama_backend_url_matches_registry(monkeypatch):

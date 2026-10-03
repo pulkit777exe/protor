@@ -20,7 +20,7 @@ Public API
 ----------
     RUNTIMES, Runtime, get_runtime, runtime_names
     resolve_base_url, resolve_api_key
-    detect_runtimes, detect_runtime
+    detect_runtimes,
 """
 
 from __future__ import annotations
@@ -31,7 +31,6 @@ from dataclasses import dataclass
 __all__ = [
     "RUNTIMES",
     "Runtime",
-    "detect_runtime",
     "detect_runtimes",
     "get_runtime",
     "resolve_api_key",
@@ -482,12 +481,3 @@ def detect_runtimes(timeout: float = 1.0) -> list[Runtime]:
             found.append(runtime)
     return found
 
-
-def detect_runtime(timeout: float = 1.0) -> Runtime | None:
-    """
-    Return the first running runtime, or None.
-
-    Used to pick a sensible default when the user did not name one.
-    """
-    detected = detect_runtimes(timeout)
-    return detected[0] if detected else None

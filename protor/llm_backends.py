@@ -24,7 +24,7 @@ user as a traceback no matter how actionable the message that was discarded.
 
 Public API
 ----------
-    BACKEND_CHOICES, create_backend, list_models
+    BACKEND_CHOICES, create_backend
     LLMBackend, ModelInfo
     OllamaBackend, OpenAICompatBackend, OpenAIBackend, AnthropicBackend
 """
@@ -61,7 +61,6 @@ __all__ = [
     "OpenAIBackend",
     "OpenAICompatBackend",
     "create_backend",
-    "list_models",
 ]
 
 #: Backends selectable with ``--backend``.
@@ -724,12 +723,3 @@ def create_backend(backend: str, model: str, **kwargs: Any) -> LLMBackend:
     local: LLMBackend = OpenAICompatBackend(model, runtime=runtime.key, **kwargs)
     return local
 
-
-def list_models(
-    backend: str = "ollama",
-    *,
-    base_url: str | None = None,
-    api_key: str | None = None,
-) -> list[ModelInfo]:
-    """Return the models a backend has available."""
-    return create_backend(backend, "unused", base_url=base_url, api_key=api_key).list_models()

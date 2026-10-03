@@ -13,9 +13,7 @@ from __future__ import annotations
 
 import sys
 
-from rich import box
 from rich.console import Console
-from rich.panel import Panel
 from rich.rule import Rule
 from rich.text import Text
 
@@ -142,12 +140,3 @@ def warn(s: str) -> str:
 
 def info(s: str) -> str:
     return f"[grey74]{ARROW} {safe(s)}[/grey74]"
-
-
-# ── panels ────────────────────────────────────────────────────────────────────
-def simple_panel(body: str, title: str = "") -> Panel:
-    kw: dict = dict(box=box.ROUNDED, border_style="grey35", padding=(0, 2))
-    if title:
-        kw["title"] = f"[bold white]{title}[/bold white]"
-        kw["title_align"] = "left"
-    return Panel(body, **kw)

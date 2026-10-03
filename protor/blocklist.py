@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypedDict, Unpack
 from urllib.parse import urlparse
 
 if TYPE_CHECKING:
@@ -145,6 +145,20 @@ _AD_FILE_PATTERNS = re.compile(
 )
 
 
+class _BlocklistOptions(TypedDict, total=False):
+    """
+    The keyword arguments :meth:`Blocklist.from_file` forwards to ``__init__``.
+
+    Everything except ``extra_blocked``, which ``from_file`` supplies from the
+    file itself — passing it here would collide at the call and raise
+    ``TypeError: got multiple values for keyword argument 'extra_blocked'``, so
+    leaving it out is what makes the signature honest.
+    """
+
+    block_ads: bool
+    custom_patterns: Sequence[str] | None
+
+
 class Blocklist:
     """
     Domain and URL blocklist for filtering requests.
@@ -223,7 +237,7 @@ class Blocklist:
         self._patterns.append(re.compile(pattern, re.IGNORECASE))
 
     @classmethod
-    def from_file(cls, path: str | Path, **kwargs) -> Blocklist:
+    def from_file(cls, path: str | Path, **kwargs: Unpack[_BlocklistOptions]) -> Blocklist:
         """
         Load a blocklist from a file (one domain per line).
 

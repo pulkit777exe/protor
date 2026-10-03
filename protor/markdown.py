@@ -11,9 +11,21 @@ produces structured Markdown with headings, tables, and code blocks.
 from __future__ import annotations
 
 import re
+from typing import TYPE_CHECKING
 from urllib.parse import urljoin
 
-from bs4 import BeautifulSoup, NavigableString, Tag
+from bs4 import BeautifulSoup, Tag
+
+# bs4 omits both of these from its top-level ``__all__`` (only ``Tag`` and the
+# markup classes are re-exported), so under ``no_implicit_reexport`` the
+# canonical ``bs4.element`` module is where they have to come from. They are the
+# same objects ``bs4`` itself imports, so this is a source fix, not a
+# behavioural one. ``PageElement`` is the common base of ``NavigableString``
+# and ``Tag``, which is exactly what a run of soup children contains.
+from bs4.element import NavigableString, PageElement
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 __all__ = ["clean_soup", "extract_clean_markdown", "html_to_markdown", "soup_to_markdown"]
 
@@ -162,7 +174,7 @@ def _has_block_child(tag: Tag) -> bool:
     return any(isinstance(c, Tag) and c.name in _BLOCK_TAGS for c in tag.children)
 
 
-def _render_inline_children(children, base_url: str, _depth: int = 0) -> str:
+def _render_inline_children(children: Iterable[PageElement], base_url: str, _depth: int = 0) -> str:
     """
     Render a run of inline nodes as a single Markdown string.
 
@@ -333,7 +345,7 @@ def _emit_block(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: int = 0
     block child is reached. Emitting all inline text first and recursing after
     would hoist trailing links above earlier headings and paragraphs.
     """
-    buffer: list = []
+    buffer: list[PageElement] = []
 
     def flush() -> None:
         text = _render_inline_children(buffer, base_url).strip()
@@ -367,7 +379,7 @@ def _render_li_body(item: Tag, base_url: str) -> list[str]:
         return [text] if text else []
 
     scratch = _Lines()
-    buffer: list = []
+    buffer: list[PageElement] = []
 
     def flush() -> None:
         text = _render_inline_children(buffer, base_url).strip()
