@@ -16,6 +16,12 @@ Two local-runtime backends and two hosted ones:
 Everything here uses ``requests`` rather than vendor SDKs, so pointing protor
 at a local runtime never requires installing an optional cloud dependency.
 
+Every user-facing failure — an unreachable runtime, a missing model, a rejected
+token — is raised as a :class:`~protor.exceptions.ProtorError` subclass. That is
+the contract ``cli.cli()`` relies on: it catches ``ProtorError`` to print a
+message plus a hint, so a bare ``RuntimeError`` escaping this module reaches the
+user as a traceback no matter how actionable the message that was discarded.
+
 Public API
 ----------
     BACKEND_CHOICES, create_backend, list_models
@@ -33,7 +39,14 @@ from typing import TYPE_CHECKING, Any
 from urllib.parse import urlsplit
 
 from .config import ANALYSIS_TIMEOUT, OLLAMA_CHECK_TIMEOUT
-from .exceptions import ModelListUnavailableError
+from .exceptions import (
+    AuthError,
+    ConfigurationError,
+    ModelListUnavailableError,
+    ModelNotFoundError,
+    OllamaModelNotFoundError,
+    RuntimeUnavailableError,
+)
 from .runtimes import get_runtime, resolve_api_key, resolve_base_url, runtime_names
 
 if TYPE_CHECKING:
