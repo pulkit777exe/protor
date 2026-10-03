@@ -288,3 +288,118 @@ class TestDownloadFile:
     async def test_transport_error_is_swallowed(self, tmp_path):
         session = RecordingSession([ConnectionError("refused")])
         assert await download_file(session, "https://x.com/a.js", tmp_path / "a.js") is False
+
+
+class TestDownloadFileRedirectsAreGuarded:
+    """
+    The JS download path must apply the same redirect guard as the page path.
+
+    ``_get_following`` exists because a ``302`` to ``169.254.169.254`` sends the
+    request to the host's metadata service and saves the credentials it returns
+    as though they were a page. ``download_file`` left that to aiohttp's default
+    ``allow_redirects=True`` and consulted nothing — on the default path, since
+    ``--download-js`` is on unless asked otherwise — so the guarantee the README
+    states did not hold for every request protor makes.
+
+    The session double records which URLs were actually requested, so the test
+    asserts the blocked hop is never *attempted*, which is the whole point and
+    does not need a listener on a link-local address.
+
+    It also refuses to follow redirects itself. A plain double would hand back the
+    next scripted response either way, so "we checked the hop" and "aiohttp
+    followed it unchecked" look identical to it — and the second is the bug.
+    """
+
+    class _NoAutoRedirect(RecordingSession):
+        """Fails if the caller delegates redirect handling to aiohttp."""
+
+        def get(self, url, **kwargs):
+            if kwargs.get("allow_redirects", True) is not False:
+                raise AssertionError(
+                    "download_file let aiohttp follow redirects, which bypasses the guard"
+                )
+            return super().get(url, **kwargs)
+
+    @pytest.mark.asyncio
+    async def test_a_metadata_redirect_is_never_requested(self, tmp_path):
+        metadata = "http://169.254.169.254/latest/meta-data/iam/security-credentials/"
+        session = self._NoAutoRedirect(
+            [
+                {
+                    "status": 302,
+                    "headers": {"Location": metadata},
+                    "url": "http://site.example/app.js",
+                    "body": "",
+                }
+            ]
+        )
+
+        assert (
+            await download_file(session, "http://site.example/app.js", tmp_path / "app.js") is False
+        )
+        requested = [call["url"] for call in session.calls]
+        assert requested == ["http://site.example/app.js"], (
+            f"the metadata endpoint was requested: {requested}"
+        )
+        assert not (tmp_path / "app.js").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_non_http_scheme_redirect_is_refused(self, tmp_path):
+        """
+        The second half of the guard: ``file://`` is never a web page.
+
+        RFC1918 addresses are deliberately *not* blocked — protor scrapes
+        internal sites on demand — so the guarantee is the metadata endpoint and
+        the scheme, and this is the half that was unguarded.
+        """
+        session = self._NoAutoRedirect(
+            [
+                {
+                    "status": 302,
+                    "headers": {"Location": "file:///etc/passwd"},
+                    "url": "http://site.example/app.js",
+                    "body": "",
+                }
+            ]
+        )
+
+        assert (
+            await download_file(session, "http://site.example/app.js", tmp_path / "app.js") is False
+        )
+        assert [c["url"] for c in session.calls] == ["http://site.example/app.js"]
+        assert not (tmp_path / "app.js").exists()
+
+    @pytest.mark.asyncio
+    async def test_a_same_site_redirect_is_still_followed(self, tmp_path):
+        """The guard must not cost ordinary redirects."""
+        session = self._NoAutoRedirect(
+            [
+                {
+                    "status": 302,
+                    "headers": {"Location": "/real.js"},
+                    "url": "http://site.example/app.js",
+                },
+                {"status": 200, "body": "// real", "url": "http://site.example/real.js"},
+            ]
+        )
+
+        assert (
+            await download_file(session, "http://site.example/app.js", tmp_path / "app.js") is True
+        )
+        assert (tmp_path / "app.js").read_text() == "// real"
+        assert [c["url"] for c in session.calls] == [
+            "http://site.example/app.js",
+            "http://site.example/real.js",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_redirect_loop_gives_up(self, tmp_path):
+        session = self._NoAutoRedirect(
+            [
+                {"status": 302, "headers": {"Location": "/a.js"}, "url": "http://site.example/x.js"}
+                for _ in range(30)
+            ]
+        )
+
+        assert await download_file(session, "http://site.example/x.js", tmp_path / "x.js") is False
+        assert len(session.calls) <= 11, f"redirects were not bounded: {len(session.calls)}"

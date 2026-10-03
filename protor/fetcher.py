@@ -275,15 +275,48 @@ async def download_file(
     session: aiohttp.ClientSession,
     url: str,
     dest: str | Path,
+    *,
+    allow_internal_redirects: bool = False,
 ) -> bool:
-    """Download *url* to *dest* (best-effort). Returns True on success."""
+    """
+    Download *url* to *dest* (best-effort). Returns True on success.
+
+    Redirects are followed by hand for the same reason :func:`_get_following`
+    does it for pages: left to aiohttp, a ``<script src>`` that answers ``302
+    Location: http://169.254.169.254/...`` sends the request to the host's
+    metadata service and writes the credentials it returns into the output
+    directory as though they were a script. The page path was guarded and this
+    one was not, on the default path — ``--download-js`` is on unless asked
+    otherwise — so the guarantee the README states without qualification did not
+    hold for every request protor makes.
+
+    Best-effort throughout, so a refused hop is a ``False`` rather than an
+    exception: a script that will not download is not worth failing a page over.
+    """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
+    current = url
     try:
-        async with session.get(url, timeout=aiohttp.ClientTimeout(total=JS_DOWNLOAD_TIMEOUT)) as r:
-            if r.status == 200:
-                dest.write_bytes(await r.read())
-                return True
+        for _hop in range(MAX_REDIRECTS + 1):
+            async with session.get(
+                current,
+                timeout=aiohttp.ClientTimeout(total=JS_DOWNLOAD_TIMEOUT),
+                allow_redirects=False,
+            ) as r:
+                if r.status in _REDIRECT_STATUSES:
+                    location = r.headers.get("Location", "")
+                    resolved = urljoin(str(r.url), location) if location else ""
+                    await r.read()
+                    if not location:
+                        return False
+                    if describe_block(resolved) is not None and not allow_internal_redirects:
+                        return False
+                    current = resolved
+                    continue
+                if r.status == 200:
+                    dest.write_bytes(await r.read())
+                    return True
+                return False
     except Exception:
         pass
     return False
