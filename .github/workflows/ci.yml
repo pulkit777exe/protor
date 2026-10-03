@@ -101,3 +101,42 @@ jobs:
         with:
           name: benchmark-report
           path: bench.json
+
+  # Everything else in this suite either stubs HTTP or talks to a server the test
+  # itself started. Both are useful; neither can tell you whether a real runtime
+  # works, because a stub decides where SSE lines begin and a hand-written server
+  # reproduces the wire format as its author understood it. This job is the only
+  # place protor talks to an actual Ollama.
+  real-llm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -e ".[dev]"
+
+      - name: Install Ollama
+        run: curl -fsSL https://ollama.com/install.sh | sh
+
+      - name: Start Ollama
+        run: |
+          ollama serve &
+          for _ in $(seq 1 30); do
+            if curl -sf http://localhost:11434/api/tags >/dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "Ollama did not become ready" >&2
+          exit 1
+
+      - name: Pull a small chat model
+        # qwen2.5:0.5b is ~400 MB: enough for a real round trip, cheap enough to
+        # pull on every push. A larger model would only make the job slower
+        # without testing anything the smaller one does not.
+        run: ollama pull qwen2.5:0.5b
+
+      - name: Run against the real runtime
+        run: pytest -m ollama --tb=short --no-cov
