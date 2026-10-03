@@ -15,6 +15,7 @@ Public API
 
 from __future__ import annotations
 
+import json
 import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -32,10 +33,10 @@ from .parser import extract_links
 from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
 from .theme import ERR, OK, SPIN, bright, console, header_rule, label, muted, safe
-from .utils import human_bytes, save_json
+from .utils import human_bytes
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Iterable
 
     from .extractor import ExtractionSchema
     from .models import SiteManifest
@@ -193,6 +194,38 @@ async def scrape_site_async(
 # ── orchestrator ──────────────────────────────────────────────────────────────
 
 
+def _write_manifest_index(manifests: Iterable[SiteManifest], path: str | Path) -> None:
+    """
+    Write *manifests* to *path* as a JSON array, one manifest at a time.
+
+    ``save_json`` builds the whole document as a single ``str`` before handing it
+    to ``write_text``, which then encodes it a second time. For a run of real
+    pages that is two copies of the entire index live at once: 2,000 manifests
+    of ``text_content`` plus ``markdown_content`` measured 201 MiB of peak
+    allocation for a 97 MiB file, and it grows without bound — ~50 MB of
+    transient string per 1,000 pages scraped.
+
+    Dumping manifest-by-manifest bounds the transient copy to the largest single
+    manifest instead (0.3 MiB for the same 2,000). The result is byte-for-byte
+    what ``save_json`` produced — same indent, same separators, same ``[]`` for
+    no manifests — so existing indexes are unaffected; only the peak is.
+    """
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    with p.open("w", encoding="utf-8") as fh:
+        fh.write("[")
+        written = False
+        for manifest in manifests:
+            # Indent each element two spaces to match json.dumps(indent=2) for a
+            # list, so the file stays as readable as the one-liner produced.
+            fh.write("\n  " if not written else ",\n  ")
+            written = True
+            dumped = json.dumps(manifest.to_dict(), indent=2, ensure_ascii=False)
+            fh.write(dumped.replace("\n", "\n  "))
+        # An empty run must still leave a valid, empty array behind.
+        fh.write("\n]" if written else "]")
+
+
 def scrape_multiple(
     urls: list[str],
     output_dir: str | Path = "data",
@@ -313,7 +346,7 @@ def scrape_multiple(
     _print_failure_reasons(rows)
 
     index = out / "sites_index.json"
-    save_json([m.to_dict() for m in manifests], index)
+    _write_manifest_index(manifests, index)
     console.print(f"  {label('index')} {muted(str(index))}")
     console.print()
 

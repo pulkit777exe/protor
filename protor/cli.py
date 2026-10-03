@@ -135,7 +135,9 @@ def _cmd_run(args: argparse.Namespace) -> None:
     _analyze(args, data, base / "analysis")
 
 
-def _analyze(args: argparse.Namespace, data: list, out: Path) -> None:
+def _analyze(
+    args: argparse.Namespace, data: list[dict[str, Any] | SiteManifest], out: Path
+) -> None:
     """Shared analysis step for the `analyze` and `run` subcommands."""
     analyze_with_runtime(
         data,
@@ -182,7 +184,7 @@ def _cmd_extract(args: argparse.Namespace) -> None:
     from .fetcher import fetch
     from .theme import OK, bright, header_rule, label, muted
 
-    async def _extract_async() -> list[dict]:
+    async def _extract_async() -> list[dict[str, Any]]:
         async with aiohttp.ClientSession() as session:
             result = await fetch(session, args.url, timeout=args.timeout)
             extractor = Extractor(schema, base_url=args.url)

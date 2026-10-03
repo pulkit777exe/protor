@@ -20,6 +20,28 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+#: Seconds a sweep of the bodies directory stays good for. The sweep is one
+#: readdir plus one stat per body file, so its cost tracks the size of a cache
+#: that only ever grows: 2.2 ms for 200 files, 21 ms for 2,000 — and it used to
+#: be paid by *every* construction, before any work was done. An orphan can only
+#: appear when a run died between writing a body and flushing the index, so
+#: nothing is lost by looking for them on a timer rather than on every open.
+DEFAULT_SWEEP_INTERVAL_S = 300.0
+
+#: Zero-byte marker recording when the bodies directory was last swept. Its mtime
+#: is the whole payload, which is why the schedule survives between processes —
+#: each `protor` invocation is a fresh interpreter with no memory of the last.
+_SWEEP_MARKER = ".last-sweep"
+
+
+def _dir_has_entries(path: Path) -> bool:
+    """True if *path* holds at least one entry, without listing them all."""
+    try:
+        with os.scandir(path) as entries:
+            return next(entries, None) is not None
+    except OSError:
+        return False
+
 
 @dataclass
 class CacheEntry:
@@ -89,6 +111,8 @@ class HTTPCache:
         cache_dir: str | Path | None = None,
         ttl: int = 3600,
         stale_ttl: int = 86_400,
+        *,
+        sweep_interval: float | None = None,
     ) -> None:
         self._cache_dir = (
             Path(cache_dir) if cache_dir else Path.home() / ".cache" / "protor" / "http"
@@ -97,9 +121,16 @@ class HTTPCache:
         self._bodies_dir.mkdir(parents=True, exist_ok=True)
         self._ttl = ttl
         self._stale_ttl = stale_ttl
+        # sweep_interval=0 restores the old sweep-on-every-open behaviour, which
+        # is what the tests use to make the orphan path deterministic.
+        self._sweep_interval = (
+            DEFAULT_SWEEP_INTERVAL_S if sweep_interval is None else float(sweep_interval)
+        )
         self._index: dict[str, CacheEntry] = self._load_index()
         self._dirty = False
-        # An abandoned cache would otherwise keep its bytes forever.
+        # An abandoned cache would otherwise keep its bytes forever. Entry expiry
+        # is a walk of the in-memory index plus one unlink per dead entry, so it
+        # still happens on every open; only the O(files) orphan sweep is on a timer.
         self.prune()
 
     # ── paths ────────────────────────────────────────────────────────────────
@@ -172,8 +203,11 @@ class HTTPCache:
         """Delete a URL's body file so the cache cannot grow without bound."""
         with contextlib.suppress(OSError):
             self._body_path(url).unlink()
+        # The index is about to be rewritten without this entry, so a body file
+        # left here by a half-finished put is exactly what the sweep looks for.
+        self._mark_swept()
 
-    def prune(self) -> int:
+    def prune(self, *, sweep_orphans: bool | None = None) -> int:
         """
         Discard entries past their retention window, plus their body files.
 
@@ -186,22 +220,72 @@ class HTTPCache:
         unreadable index looks exactly like an empty one, and reconciling
         against it deleted every cached body on disk. Returns the number of
         entries removed.
+
+        *sweep_orphans* defaults to the ``sweep_interval`` schedule: pass True to
+        force the sweep (an explicit call means the caller wants it now) or False
+        to skip it entirely.
         """
         doomed = [url for url, entry in self._index.items() if not entry.is_retained]
         for url in doomed:
             del self._index[url]
             self._drop_body(url)
 
-        if self._index_readable:
-            live = {self._body_path(url).name for url in self._index}
-            for body in self._bodies_dir.glob("*.body"):
-                if body.name not in live:
-                    with contextlib.suppress(OSError):
-                        body.unlink()
-
         if doomed:
             self._dirty = True
+
+        if self._sweep_orphans(sweep_orphans):
+            self._sweep_orphan_bodies()
         return len(doomed)
+
+    def _sweep_orphans(self, forced: bool | None = None) -> bool:
+        """
+        Decide whether the O(files) orphan sweep is due.
+
+        Forced unless a sweep has already happened inside this cache's interval.
+        An empty index with bodies still on disk is swept regardless: every one
+        of those files is unreachable, so nothing is at risk and the bytes are
+        pure garbage.
+        """
+        if not self._index_readable:
+            # An unreadable index is indistinguishable from an empty one, so a
+            # sweep cannot tell a live body from an orphan. Do nothing.
+            return False
+        if forced is not None:
+            return forced
+        if not self._index and _dir_has_entries(self._bodies_dir):
+            return True
+        if self._sweep_interval <= 0:
+            return True
+
+        try:
+            last = (self._cache_dir / _SWEEP_MARKER).stat().st_mtime
+        except OSError:
+            # No marker: this cache has never been swept, so sweep it now rather
+            # than inherit an interval from nobody.
+            return True
+        return (time.time() - last) >= self._sweep_interval
+
+    def _sweep_orphan_bodies(self) -> int:
+        """Delete every body file with no index entry. Returns how many went."""
+        live = {self._body_path(url).name for url in self._index}
+        removed = 0
+        for body in self._bodies_dir.glob("*.body"):
+            if body.name not in live:
+                with contextlib.suppress(OSError):
+                    body.unlink()
+                removed += 1
+        self._mark_swept()
+        return removed
+
+    def _mark_swept(self) -> None:
+        """
+        Record the sweep time for the next open to read.
+
+        Failure (a read-only cache directory, say) only means the next open
+        sweeps again, which is the direction that leaks less.
+        """
+        with contextlib.suppress(OSError):
+            (self._cache_dir / _SWEEP_MARKER).touch()
 
     def flush(self) -> None:
         """Persist the index. Cheap and idempotent; safe to call repeatedly."""

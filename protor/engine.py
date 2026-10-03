@@ -302,12 +302,12 @@ class CrawlEngine:
 
     async def _start(self, session: aiohttp.ClientSession, on_tick: Any = None) -> CrawlStats:
         stats = CrawlStats()
-        pending: set[asyncio.Task] = set()
+        pending: set[asyncio.Task[Any]] = set()
         rows = list(self._rows)
         checkpointed = 0
         # Which page each in-flight task is working on, so a failure that escapes
         # the task can be reported against the right row.
-        in_flight: dict[asyncio.Task, tuple[str, dict[str, Any]]] = {}
+        in_flight: dict[asyncio.Task[Any], tuple[str, dict[str, Any]]] = {}
 
         def spawn() -> None:
             # stats.total counts every dispatched page, so failures and blocked

@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 from rich import box
 from rich.table import Table
@@ -287,7 +288,7 @@ _DESCRIPTION_BUDGETS = (_DESCRIPTION_MAX, 80, 0)
 _SITE_MARKER_RE = re.compile(r"^##(\s*)\[", re.MULTILINE)
 
 
-def _site_header(i: int, site: dict | SiteManifest, desc_budget: int) -> str:
+def _site_header(i: int, site: dict[str, Any] | SiteManifest, desc_budget: int) -> str:
     """Render a site's identity block (everything except its content preview)."""
     d = site.to_dict() if isinstance(site, SiteManifest) else site
     # Tolerate a null/absent metadata block rather than raising on a bad index.
@@ -305,7 +306,9 @@ def _site_header(i: int, site: dict | SiteManifest, desc_budget: int) -> str:
     return f"{head}JS files: {d.get('js_count', 0)}\n\n### Content preview\n"
 
 
-def _prepare_context(data: list[dict | SiteManifest], max_chars: int | None = None) -> str:
+def _prepare_context(
+    data: list[dict[str, Any] | SiteManifest], max_chars: int | None = None
+) -> str:
     """
     Flatten site data into a concise LLM context string.
 
@@ -347,7 +350,7 @@ def _prepare_context(data: list[dict | SiteManifest], max_chars: int | None = No
     return context[:limit]
 
 
-def _site_body(site: dict | SiteManifest) -> str:
+def _site_body(site: dict[str, Any] | SiteManifest) -> str:
     """The site's content preview source, without copying the whole manifest."""
     if isinstance(site, SiteManifest):
         return site.text_content or ""
@@ -425,7 +428,7 @@ def _unavailable_error(backend: str, base_url: str | None) -> Exception:
 
 
 def analyze(
-    data: list[dict | SiteManifest],
+    data: list[dict[str, Any] | SiteManifest],
     model: str = "llama3",
     focus: str = "general",
     output_dir: str | Path = "analysis",
@@ -553,7 +556,7 @@ def analyze(
 
 
 def analyze_with_ollama(
-    data: list[dict | SiteManifest],
+    data: list[dict[str, Any] | SiteManifest],
     model: str = "llama3",
     focus: str = "general",
     output_dir: str | Path = "analysis",
@@ -576,7 +579,7 @@ def analyze_with_ollama(
 
 
 def analyze_with_runtime(
-    data: list[dict | SiteManifest],
+    data: list[dict[str, Any] | SiteManifest],
     backend: str = "ollama",
     model: str = "llama3",
     focus: str = "general",

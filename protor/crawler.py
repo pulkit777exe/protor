@@ -35,6 +35,7 @@ import time
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 from urllib.parse import urlparse
 
 from rich import box
@@ -76,8 +77,15 @@ __all__ = ["Crawler"]
 #: "Have we already seen this URL?", answered in one round trip. ``enqueue`` is
 #: on the hot path (once per discovered link) and the two tables it consulted
 #: made no difference to the caller: either one means "reject".
+#: Refuse a URL already queued, or already fetched *successfully*. A URL whose
+#: earlier attempt failed is deliberately not "seen": retrying a page that timed
+#: out or returned 503 is the whole point of running the crawl again, and with
+#: this treating every visit as final the second run found an empty queue and
+#: reported "0 pages queued" without saying why — the retry appeared to have
+#: nothing to do rather than being unable to do anything.
 _SEEN_SQL = (
-    "SELECT 1 FROM visited WHERE url = ? UNION ALL SELECT 1 FROM queue WHERE url = ? LIMIT 1"
+    "SELECT 1 FROM visited WHERE url = ? AND success = 1"
+    " UNION ALL SELECT 1 FROM queue WHERE url = ? LIMIT 1"
 )
 
 
@@ -514,7 +522,7 @@ class Crawler:
         )
         await engine.arun()
 
-    def _on_status(self, status: str, url: str, row: dict) -> None:
+    def _on_status(self, status: str, url: str, row: dict[str, Any]) -> None:
         """Keep crawl state in sync with engine events for the live render."""
         # The engine already parsed this URL to scope the request — that parse is
         # where row["domain"] comes from — so re-parsing on every status event
