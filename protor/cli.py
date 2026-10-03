@@ -199,7 +199,7 @@ def _cmd_extract(args: argparse.Namespace) -> None:
 
     from .extractor import Extractor
     from .fetcher import fetch
-    from .theme import OK, bright, header_rule, label, muted
+    from .theme import OK, bright, header_rule, label, muted, warn
 
     async def _extract_async() -> list[dict[str, Any]]:
         async with aiohttp.ClientSession() as session:
@@ -217,10 +217,26 @@ def _cmd_extract(args: argparse.Namespace) -> None:
 
     results = asyncio.run(_extract_async())
 
-    if not results:
+    # A record whose every field is empty is not data. Counting containers is
+    # not enough: a schema whose base_selector matches but whose field
+    # selectors match nothing produced a full set of records with every value
+    # null, written to disk and reported as a successful extraction. That is the
+    # same failure-as-success shape the selector *syntax* check exists to
+    # prevent, one level up, and it is what a stale CSS selector looks like
+    # after the site redesigns its markup.
+    empty = sum(1 for r in results if not any(v not in (None, "") for v in r.values()))
+
+    if not results or empty == len(results):
         console.print(f"  {ERR} No data matched the schema")
         console.print()
         return
+
+    if empty:
+        console.print(
+            f"  {warn('warn')} {empty} of {len(results)} records matched the container "
+            f"but no field selector matched inside it; those records are empty."
+        )
+        console.print()
 
     console.print(f"  {OK} Extracted {len(results)} records")
     console.print()
