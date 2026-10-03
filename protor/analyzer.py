@@ -13,12 +13,14 @@ Public API
 from __future__ import annotations
 
 import re
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from rich import box
 from rich.table import Table
 from rich.text import Text
+
+if TYPE_CHECKING:
+    from pathlib import Path
 
 from .config import ANALYSIS_MAX_DATA_CHARS, OLLAMA_BASE
 from .exceptions import ModelListUnavailableError, RuntimeUnavailableError
@@ -46,7 +48,7 @@ from .theme import (
     section_rule,
     warn,
 )
-from .utils import human_bytes, save_json, timestamp
+from .utils import ensure_output_dir, human_bytes, save_json, timestamp
 
 __all__ = [
     "analyze",
@@ -542,8 +544,7 @@ def analyze(
         analysis=raw,
     )
 
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    out = ensure_output_dir(output_dir)
     save_json(result.to_dict(), out / "analysis.json")
 
     report_path = write_output(result, out, fmt)

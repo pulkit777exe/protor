@@ -154,11 +154,37 @@ class AuthError(ProtorError):
 
 
 class DataFileNotFoundError(ProtorError):
-    """Raised when a scraped-data index file cannot be located."""
+    """
+    Raised when a scraped-data index file cannot be used as input.
 
-    def __init__(self, path: str) -> None:
+    Covers more than absence: pointing ``--index`` at a directory, or at a file
+    that is not readable, produced a bare ``IsADirectoryError`` traceback rather
+    than a sentence saying which path was wrong.
+    """
+
+    def __init__(self, path: str, reason: str = "") -> None:
         self.path = path
-        super().__init__(f"Data file not found: {path!r}. Run: protor scrape <urls>")
+        detail = f" ({reason})" if reason else ""
+        super().__init__(
+            f"Cannot read data file {path!r}{detail}. "
+            f"Run: protor scrape <urls>   # it writes sites_index.json"
+        )
+
+
+class OutputPathError(ProtorError):
+    """
+    Raised when ``--output`` names something that cannot be a directory.
+
+    ``Path.mkdir(exist_ok=True)`` still fails when the path exists as a *file*,
+    so ``protor scrape https://x -o notes.txt`` died with
+    ``FileExistsError`` from inside the run — after the user had already waited
+    for the network.
+    """
+
+    def __init__(self, path: str, reason: str) -> None:
+        self.path = path
+        self.reason = reason
+        super().__init__(f"Cannot use {path!r} as an output directory: {reason}")
 
 
 class ModelListUnavailableError(ProtorError):

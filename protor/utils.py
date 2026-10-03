@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse, urlunparse
 
-from .exceptions import URLValidationError
+from .exceptions import OutputPathError, URLValidationError
 
 #: Most filesystems cap a single path component at 255 bytes. Staying well under
 #: that leaves room for a suffix we may need to add.
@@ -91,6 +91,28 @@ def manifest_filename(url: str) -> str:
     if page == "index.html":
         return "manifest.json"
     return f"{Path(page).stem}.manifest.json"
+
+
+def ensure_output_dir(path: str | Path) -> Path:
+    """
+    Create *path* as a directory, or explain why it cannot be one.
+
+    ``mkdir(parents=True, exist_ok=True)`` is happy to do nothing when the path
+    already exists as a *directory*, and raises ``FileExistsError`` when it
+    exists as a file — so ``protor scrape https://example.com -o notes.txt``
+    died with a raw ``[Errno 17]`` traceback raised from deep inside a run,
+    after the user had already waited on the network. Checking first also turns
+    an unwritable parent into a sentence instead of a traceback.
+    """
+    p = Path(path)
+    if p.exists() and not p.is_dir():
+        kind = "a file" if p.is_file() else "not a directory"
+        raise OutputPathError(str(p), f"it already exists and is {kind}")
+    try:
+        p.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise OutputPathError(str(p), exc.strerror or str(exc)) from exc
+    return p
 
 
 def save_json(data: Any, path: str | Path) -> None:

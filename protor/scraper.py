@@ -33,7 +33,7 @@ from .parser import extract_links
 from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
 from .theme import ERR, OK, SPIN, bright, console, header_rule, label, muted, safe
-from .utils import human_bytes
+from .utils import ensure_output_dir, human_bytes
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -248,8 +248,7 @@ def scrape_multiple(
 
     Returns the absolute path to ``{output_dir}/sites_index.json``.
     """
-    out = Path(output_dir)
-    out.mkdir(parents=True, exist_ok=True)
+    out = ensure_output_dir(output_dir)
 
     # Caching was previously always on, so every batch run paid to build and
     # populate a cache the user never asked for. Opt in via --cache.

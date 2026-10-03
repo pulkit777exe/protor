@@ -29,6 +29,7 @@ Public API
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import sqlite3
 import time
@@ -77,14 +78,23 @@ __all__ = ["Crawler"]
 #: "Have we already seen this URL?", answered in one round trip. ``enqueue`` is
 #: on the hot path (once per discovered link) and the two tables it consulted
 #: made no difference to the caller: either one means "reject".
-#: Refuse a URL already queued, or already fetched *successfully*. A URL whose
-#: earlier attempt failed is deliberately not "seen": retrying a page that timed
-#: out or returned 503 is the whole point of running the crawl again, and with
-#: this treating every visit as final the second run found an empty queue and
-#: reported "0 pages queued" without saying why — the retry appeared to have
-#: nothing to do rather than being unable to do anything.
+#: Refuse a URL that is already queued, already fetched successfully, or already
+#: attempted during *this* run.
+#:
+#: A URL whose earlier attempt failed in a **previous** run is deliberately not
+#: "seen": retrying a page that timed out or returned 503 is the whole point of
+#: running the crawl again, and treating every visit as final made the second
+#: run find an empty queue and report "0 pages queued" without saying why — the
+#: retry looked like it had nothing to do rather than being unable to do
+#: anything.
+#:
+#: The current-run cutoff is what keeps that from becoming a loop. Without it, a
+#: page that links to itself and keeps failing — a 404 in a nav footer, say —
+#: would be re-queued by every page that links to it, on every pass. Comparing
+#: against the run's start time allows one retry per run and no more.
 _SEEN_SQL = (
-    "SELECT 1 FROM visited WHERE url = ? AND success = 1"
+    "SELECT 1 FROM visited WHERE url = ?"
+    " AND (success = 1 OR scraped_at IS NULL OR scraped_at >= ?)"
     " UNION ALL SELECT 1 FROM queue WHERE url = ? LIMIT 1"
 )
 
@@ -113,15 +123,54 @@ class _CrawlQueue:
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
-        conn = sqlite3.connect(str(db_path))
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA synchronous=NORMAL")
-        self._conn = conn
+        #: Marks the boundary between "this run" and earlier attempts, so a
+        #: failure is retried once per run rather than on every rediscovery.
+        self._run_started = time.time()
+        self._conn = self._connect(db_path)
         self._closed = False
         self._dirty = 0
         self._queued = 0
         self._visited = 0
         self._init_db()
+
+    def _connect(self, db_path: Path) -> sqlite3.Connection:
+        """
+        Open *db_path*, quarantining it if it is not a usable database.
+
+        A crawl killed mid-write, or a directory synced from somewhere else,
+        can leave a file that is not a database at all. That raised
+        ``sqlite3.DatabaseError: file is not a database`` out of the crawler
+        constructor — unlike the checkpoint JSON beside it, which is already
+        handled — so one bad byte turned ``--resume`` into a traceback.
+
+        The file is *renamed*, not deleted: the crawl history it claims to hold
+        may still be worth recovering by hand, and silently discarding a user's
+        file to make an error go away is worse than reporting it.
+        """
+        conn = sqlite3.connect(str(db_path))
+        try:
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            # Touch the file rather than trusting connect(): a corrupt database
+            # opens fine and only fails on first real use.
+            conn.execute("SELECT count(*) FROM sqlite_master").fetchone()
+        except sqlite3.DatabaseError as exc:
+            conn.close()
+            quarantine = db_path.with_name(f"{db_path.name}.corrupt")
+            counter = 0
+            while quarantine.exists():
+                counter += 1
+                quarantine = db_path.with_name(f"{db_path.name}.corrupt{counter}")
+            with contextlib.suppress(OSError):
+                db_path.rename(quarantine)
+            console.print(
+                f"  {warn('crawl queue')} {muted(str(db_path))} was not a usable database "
+                f"({exc}). Moved to {muted(str(quarantine))} and starting a fresh queue."
+            )
+            conn = sqlite3.connect(str(db_path))
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+        return conn
 
     def _commit(self, force: bool = False) -> None:
         """Commit once enough mutations have accumulated (or when forced)."""
@@ -167,7 +216,7 @@ class _CrawlQueue:
         and then answers the one question that matters with one statement.
         """
         url = canonicalize_url(url)
-        if self._conn.execute(_SEEN_SQL, (url, url)).fetchone() is not None:
+        if self._conn.execute(_SEEN_SQL, (url, self._run_started, url)).fetchone() is not None:
             return False
         self._conn.execute(
             "INSERT INTO queue (url, priority, added_at) VALUES (?, ?, ?)",

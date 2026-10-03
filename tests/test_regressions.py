@@ -13,6 +13,7 @@ from rich.console import Console
 from protor.analyzer import _prepare_context
 from protor.crawler import _render, _State
 from protor.engine import CrawlEngine, StaticQueue, StaticSource
+from protor.exceptions import DataFileNotFoundError, OutputPathError
 from protor.markdown import html_to_markdown
 from protor.utils import page_filename
 
@@ -946,3 +947,185 @@ class TestContextCannotBeForgedByPageText:
             for i in range(4)
         ]
         assert _sites_included(_prepare_context(data)) == 4
+
+
+# ── unusable paths and damaged state must not raise raw errors ───────────────
+
+
+class TestUnusablePathsAreReported:
+    def test_output_path_that_is_a_file_is_explained(self, tmp_path):
+        """
+        ``mkdir(exist_ok=True)`` still raises FileExistsError when the path is a
+        file, so `-o notes.txt` died with a raw [Errno 17] from inside the run.
+        """
+        from protor.utils import ensure_output_dir
+
+        target = tmp_path / "notes.txt"
+        target.write_text("existing work")
+        with pytest.raises(OutputPathError) as excinfo:
+            ensure_output_dir(target)
+        assert "already exists" in str(excinfo.value)
+        assert target.read_text() == "existing work", "the existing file was touched"
+
+    def test_output_path_under_an_unwritable_parent_is_explained(self, tmp_path):
+        from protor.utils import ensure_output_dir
+
+        blocker = tmp_path / "blocker"
+        blocker.write_text("i am a file")
+        with pytest.raises(OutputPathError):
+            ensure_output_dir(blocker / "nested")
+
+    def test_a_normal_directory_still_works(self, tmp_path):
+        from protor.utils import ensure_output_dir
+
+        target = tmp_path / "deep" / "nested"
+        assert ensure_output_dir(target) == target
+        assert ensure_output_dir(target) == target, "not idempotent"
+
+    @pytest.mark.parametrize(
+        "make,reason",
+        [
+            (lambda p: p.mkdir(), "directory"),
+            (lambda p: p.write_text("not json{"), "not valid JSON"),
+        ],
+    )
+    def test_unusable_input_file_is_explained(self, tmp_path, make, reason):
+        """
+        `-f <directory>` escaped as a bare IsADirectoryError, and malformed
+        JSON escaped as JSONDecodeError — neither said which path was wrong.
+        """
+        from protor.cli import _load_index
+
+        target = tmp_path / "input"
+        make(target)
+        with pytest.raises(DataFileNotFoundError) as excinfo:
+            _load_index(str(target))
+        assert reason in str(excinfo.value)
+        assert str(target) in str(excinfo.value), "the message must name the path"
+
+    def test_missing_input_file_still_suggests_scraping(self, tmp_path):
+        from protor.cli import _load_index
+
+        with pytest.raises(DataFileNotFoundError, match="protor scrape"):
+            _load_index(str(tmp_path / "absent.json"))
+
+
+class TestCrawlQueueRecoversFromDamage:
+    def test_corrupt_queue_db_is_quarantined_not_raised(self, tmp_path):
+        """
+        A corrupt queue raised sqlite3.DatabaseError out of the constructor,
+        unlike the checkpoint JSON beside it which was already handled.
+        """
+        from protor.crawler import Crawler
+
+        db = tmp_path / "crawl_queue.db"
+        db.write_bytes(b"SQLite format 3\x00" + bytes(range(256)) * 2)
+
+        crawler = Crawler("https://example.com/", output_dir=tmp_path)
+        try:
+            assert crawler._queue.queue_size >= 1, "the fresh queue was not usable"
+            assert db.exists(), "a fresh database should have been created"
+            assert list(tmp_path.glob("crawl_queue.db.corrupt*")), (
+                "the unreadable file was deleted rather than kept"
+            )
+        finally:
+            crawler._queue.close()
+
+    def test_the_quarantined_file_is_preserved_byte_for_byte(self, tmp_path):
+        from protor.crawler import Crawler
+
+        original = b"SQLite format 3\x00" + bytes(range(200))
+        db = tmp_path / "crawl_queue.db"
+        db.write_bytes(original)
+
+        crawler = Crawler("https://example.com/", output_dir=tmp_path)
+        try:
+            kept = next(tmp_path.glob("crawl_queue.db.corrupt*"))
+            assert kept.read_bytes() == original, "quarantine altered the evidence"
+        finally:
+            crawler._queue.close()
+
+
+class TestFailedPagesStayRetryable:
+    def _queue(self, tmp_path):
+        from protor.crawler import _CrawlQueue
+
+        return _CrawlQueue(tmp_path / "q.db")
+
+    def test_a_page_failed_in_an_earlier_run_can_be_queued_again(self, tmp_path):
+        """
+        Treating every visit as final meant a retry found an empty queue and
+        reported "0 pages queued" without saying why — the run looked like it had
+        nothing to do rather than being unable to do anything.
+        """
+        url = "https://x.com/a"
+        q = self._queue(tmp_path)
+        q.enqueue(url)
+        q.dequeue()
+        q.mark_visited(url, success=False)
+        q.close()
+
+        # A new queue over the same database stands in for the next run.
+        later = self._queue(tmp_path)
+        assert later.enqueue(url) is True, "a page that failed became unreachable"
+        assert later.queue_size == 1
+        assert later.dequeue() == url, "the retry was not dequeueable"
+        later.close()
+
+    def test_a_failure_is_not_retried_repeatedly_within_one_run(self, tmp_path):
+        """
+        Allowing retries without a run boundary turns a self-linking 404 into a
+        loop: every page that links to it re-queues it, forever.
+        """
+        url = "https://x.com/loop"
+        q = self._queue(tmp_path)
+        q.enqueue(url)
+        q.dequeue()
+        q.mark_visited(url, success=False)
+        for _ in range(3):
+            assert q.enqueue(url) is False, "a failure was retried within one run"
+            q.dequeue()
+        q.close()
+
+    def test_a_successful_page_is_still_skipped(self, tmp_path):
+        url = "https://x.com/b"
+        q = self._queue(tmp_path)
+        q.enqueue(url)
+        q.dequeue()
+        q.mark_visited(url, success=True)
+        assert q.enqueue(url) is False, "re-crawling a finished page wastes a fetch"
+        q.close()
+
+        later = self._queue(tmp_path)
+        assert later.enqueue(url) is False, "a success was undone by a later run"
+        later.close()
+
+    def test_retrying_does_not_duplicate_a_queued_url(self, tmp_path):
+        url = "https://x.com/c"
+        q = self._queue(tmp_path)
+        q.enqueue(url)
+        q.dequeue()
+        q.mark_visited(url, success=False)
+        q.close()
+
+        later = self._queue(tmp_path)
+        assert later.enqueue(url) is True
+        assert later.enqueue(url) is False, "the same URL was queued twice"
+        later.close()
+
+    def test_success_after_a_retry_closes_it(self, tmp_path):
+        """The retry must actually be able to finish the job."""
+        url = "https://x.com/d"
+        q = self._queue(tmp_path)
+        q.enqueue(url)
+        q.dequeue()
+        q.mark_visited(url, success=False)
+        q.close()
+
+        later = self._queue(tmp_path)
+        assert later.enqueue(url) is True
+        retried = later.dequeue()
+        assert retried == url
+        later.mark_visited(retried, success=True)
+        assert later.enqueue(retried) is False
+        later.close()

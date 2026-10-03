@@ -36,6 +36,7 @@ from .exceptions import (
     DataFileNotFoundError,
     OllamaModelNotFoundError,
     OllamaUnavailableError,
+    OutputPathError,
     ProtorError,
     URLValidationError,
 )
@@ -63,11 +64,27 @@ def _abort(msg: str, hint: str = "") -> NoReturn:
 
 
 def _load_index(path: str) -> list[dict[str, Any] | SiteManifest]:
-    """Load a sites index written by `scrape`."""
+    """
+    Load a sites index written by `scrape`.
+
+    Reports the unusable case as a sentence naming the path. Pointing ``--index``
+    at a directory used to escape as a bare ``IsADirectoryError`` traceback from
+    ``read_text``, which said nothing about which of the paths on the command
+    line was the wrong one.
+    """
+    p = Path(path)
+    if p.is_dir():
+        raise DataFileNotFoundError(path, "it is a directory")
     try:
         result: list[dict[str, Any] | SiteManifest] = list(load_json(path))
     except FileNotFoundError as exc:
         raise DataFileNotFoundError(path) from exc
+    except json.JSONDecodeError as exc:
+        raise DataFileNotFoundError(
+            path, f"it is not valid JSON ({exc.msg} at line {exc.lineno})"
+        ) from exc
+    except OSError as exc:
+        raise DataFileNotFoundError(path, exc.strerror or str(exc)) from exc
     return result
 
 
@@ -602,6 +619,8 @@ def cli() -> None:
         _abort(str(exc))
     except DataFileNotFoundError as exc:
         _abort(str(exc), hint="Run: protor scrape <urls>")
+    except OutputPathError as exc:
+        _abort(str(exc), hint="--output/-o takes a directory, not a file")
     except ConfigurationError as exc:
         _abort(str(exc), hint="Check the environment variables listed in protor --help")
     except URLValidationError as exc:
