@@ -432,10 +432,13 @@ def _probe(runtime: Runtime, timeout: float) -> bool:
     """
     Return True if *runtime* answers its health path at its resolved URL.
 
-    Falls back to the bare base URL when the documented path is missing (404) or
-    unreachable: a runtime may serve its API under a prefix other than the one
-    documented here, and "something is listening" is still the question being
-    asked.
+    Any status below 500 counts as running, including a 404: "something is
+    listening" is the question being asked, and the backend's own check reports
+    the auth or model problem that follows. The bare base URL is tried only when
+    the health path could not be *reached* at all — a connection error, which is
+    the one answer that cannot distinguish a wrong prefix from a stopped
+    runtime. The 5xx case is a real answer from a broken endpoint, so it counts
+    as not running rather than prompting another request.
     """
     import requests
 

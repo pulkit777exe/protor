@@ -110,3 +110,48 @@ class TestBehaviourDocumented:
         from protor import __version__  # noqa: F401  - import guard
 
         assert "3.11" in readme, "the README must state the minimum Python version"
+
+
+class TestHelpEnvironmentBlock:
+    """
+    `protor --help`'s environment block is generated from the runtime registry.
+
+    Written out by hand it named six of the seventeen runtimes, so the other
+    eleven were documented only in the README, and it described the API-key
+    variables as ``*_API_KEY`` — a pattern the registry does not follow, since
+    KoboldCpp's is ``KOBOLDCPP_API_KEY`` and TabbyAPI's is ``TABBY_API_KEY``.
+    """
+
+    def test_every_runtime_url_variable_is_listed(self):
+        from protor.cli import _runtime_env_help
+        from protor.runtimes import RUNTIMES
+
+        block = _runtime_env_help()
+        for runtime in RUNTIMES.values():
+            if runtime.env_url:
+                assert runtime.env_url in block, f"{runtime.key} has no URL in --help"
+            if runtime.env_key:
+                assert runtime.env_key in block, f"{runtime.key} has no key in --help"
+
+    def test_the_block_is_in_the_help_output(self, capsys):
+        from protor.cli import _build_parser
+
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(["--help"])
+        out = capsys.readouterr().out
+        assert "Environment:" in out
+        assert "OLLAMA_HOST" in out
+
+    def test_no_variable_is_invented(self):
+        """Every variable named in the block is one the code actually reads."""
+        from protor.cli import _runtime_env_help
+        from protor.runtimes import RUNTIMES
+
+        known = {v for r in RUNTIMES.values() for v in (r.env_url, r.env_key) if v}
+        # The block opens with its own "Environment:" heading.
+        flags = {"--base-url", "--api-key", "Environment:"}
+        for line in _runtime_env_help().splitlines():
+            token = line.strip().split(" ")[0] if line.strip() else ""
+            if not token or token in flags:
+                continue
+            assert token in known, f"--help documents {token}, which no runtime reads"

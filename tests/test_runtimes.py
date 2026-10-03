@@ -282,12 +282,32 @@ class TestProbe:
         assert str(responses_lib.calls[0].request.url) == "http://x:2/v1/models"
 
     @responses_lib.activate
-    def test_probe_falls_back_to_the_base_url(self, monkeypatch):
-        """A runtime serving its API elsewhere is still 'running'."""
+    def test_a_404_health_path_still_counts_as_running(self, monkeypatch):
+        """
+        A 404 is an answer, so no fallback request is made.
+
+        This used to be named and documented as a fallback to the base URL, which
+        is not what happens: any status below 500 returns True immediately, so the
+        base-URL stub below was never requested and the test asserted nothing
+        about a second request. The fallback exists for a connection error only,
+        and there is a separate test for that.
+        """
         monkeypatch.setenv("LMSTUDIO_URL", "http://x:3")
         responses_lib.add(responses_lib.GET, "http://x:3/v1/models", status=404)
         responses_lib.add(responses_lib.GET, "http://x:3/", status=200)
         assert _probe(get_runtime("lmstudio"), 1.0) is True
+        assert len(responses_lib.calls) == 1, "the base URL was probed as well"
+
+    @responses_lib.activate
+    def test_an_unreachable_health_path_falls_back_to_the_base_url(self, monkeypatch):
+        """A connection error cannot tell a wrong prefix from a stopped runtime."""
+        monkeypatch.setenv("LMSTUDIO_URL", "http://x:3")
+        responses_lib.add(
+            responses_lib.GET, "http://x:3/v1/models", body=ConnectionError("refused")
+        )
+        responses_lib.add(responses_lib.GET, "http://x:3/", status=200)
+        assert _probe(get_runtime("lmstudio"), 1.0) is True
+        assert len(responses_lib.calls) == 2, "the base URL was never tried"
 
     @responses_lib.activate
     def test_probe_uses_the_runtime_specific_prefix(self, monkeypatch):

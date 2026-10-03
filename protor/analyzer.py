@@ -290,6 +290,15 @@ _DESCRIPTION_MAX = 160
 #: dropped, so something has to give when the headers alone overflow the cap.
 _DESCRIPTION_BUDGETS = (_DESCRIPTION_MAX, 80, 0)
 
+#: Display names for the backends that are not local runtimes. ``str.capitalize``
+#: rendered "openai" as "Openai", which is simply wrong in a message the user
+#: reads to decide what to fix.
+_HOSTED_LABELS = {
+    "openai": "OpenAI",
+    "anthropic": "Anthropic",
+    "openai-compatible": "OpenAI-compatible",
+}
+
 #: A site header at the start of a line. Anchored so that ordinary prose
 #: mentioning the marker mid-line is not mistaken for structure.
 _SITE_MARKER_RE = re.compile(r"^##(\s*)\[", re.MULTILINE)
@@ -438,16 +447,19 @@ def _unavailable_error(backend: str, base_url: str | None) -> Exception:
     """
     Build the right "backend is down" error for *backend*.
 
-    Local runtimes get their URL and start hint; hosted ones get a generic
-    auth/connectivity message, since there is nothing to start locally.
+    Local runtimes get their URL and start hint. A *hosted* backend is not in the
+    runtime registry at all, so it used to fall through to a bare
+    ``RuntimeError`` — which is neither a ``ProtorError`` nor a ``ValueError``,
+    and so matched none of ``cli.cli()``'s handlers: an unreachable OpenAI
+    endpoint reached the user as a traceback. It carries the same typed error as
+    the local case now, which is also what fixes the "Openai" that
+    ``str.capitalize()`` rendered on the way past.
     """
     name = backend.strip().lower()
     try:
         runtime = get_runtime(name)
     except ValueError:
-        return RuntimeError(
-            f"{backend.capitalize()} backend unavailable. Check your API key and connection."
-        )
+        return RuntimeUnavailableError(_HOSTED_LABELS.get(name, name), base_url or "", "")
     return RuntimeUnavailableError(
         runtime.label, resolve_base_url(runtime.key, base_url), runtime.start_hint
     )

@@ -42,7 +42,7 @@ from .exceptions import (
 from .extractor import ExtractionSchema
 from .formatters import FORMAT_CHOICES
 from .llm_backends import BACKEND_CHOICES
-from .runtimes import get_runtime, runtime_names
+from .runtimes import RUNTIMES, get_runtime, runtime_names
 from .scraper import scrape_multiple
 from .theme import ERR, console, err, info, safe
 from .updater import check_for_update, perform_update
@@ -425,6 +425,27 @@ def _add_analysis_flags(parser: argparse.ArgumentParser) -> None:
     )
 
 
+def _runtime_env_help() -> str:
+    """
+    The `Environment:` block of ``protor --help``, built from the registry.
+
+    Hand-written, it listed six of the seventeen runtimes and named the key
+    variables by a pattern (``*_API_KEY``) the registry does not follow —
+    KoboldCpp's is ``KOBOLDCPP_API_KEY`` and TabbyAPI's is ``TABBY_API_KEY``,
+    neither of which is the runtime key plus a suffix. Generated, it cannot
+    drift, and ``tests/test_docs.py`` asserts it against the registry.
+    """
+    rows = []
+    for runtime in sorted(RUNTIMES.values(), key=lambda r: r.label):
+        if runtime.env_url:
+            rows.append(f"  {runtime.env_url:<22} {runtime.label} URL")
+        if runtime.env_key:
+            rows.append(f"  {runtime.env_key:<22} {runtime.label} API key")
+    rows.append(f"  {'--base-url':<22} override any runtime's URL for one command")
+    rows.append(f"  {'--api-key':<22} token for runtimes started with authentication")
+    return "Environment:\n" + "\n".join(rows)
+
+
 def _build_parser() -> argparse.ArgumentParser:
     root = _Parser(
         prog="protor",
@@ -443,14 +464,12 @@ def _build_parser() -> argparse.ArgumentParser:
             "  protor analyze --backend vllm --model Qwen/Qwen3-8B\n"
             "\n"
             "Environment:\n"
-            "  OLLAMA_HOST    Ollama base URL (default: http://localhost:11434)\n"
-            "  LLAMA_CPP_URL  llama-server URL (default: http://localhost:8080)\n"
-            "  LMSTUDIO_URL   LM Studio URL (default: http://localhost:1234)\n"
-            "  VLLM_URL       vLLM URL (default: http://localhost:8000)\n"
-            "  LOCALAI_URL    LocalAI URL (default: http://localhost:8081)\n"
-            "  JAN_URL        Jan URL (default: http://localhost:1337)\n"
-            "  *_API_KEY      token for runtimes started with authentication\n"
-        ),
+            # Built from the registry rather than written out by hand: the block
+            # listed six of the seventeen runtimes, so the other eleven were
+            # documented only in the README. `_runtime_env_help` is what
+            # tests/test_docs.py checks against the registry.
+            "{env}"
+        ).format(env=_runtime_env_help()),
     )
     sub = root.add_subparsers(dest="command", metavar="<command>", parser_class=_Parser)
     root.set_defaults(func=lambda _: root.print_help())

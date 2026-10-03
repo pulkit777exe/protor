@@ -65,7 +65,18 @@ __all__ = [
 ]
 
 #: Backends selectable with ``--backend``.
-BACKEND_CHOICES = (*runtime_names(), "openai", "anthropic", "openai-compatible")
+#: ``local`` and ``compat`` are synonyms the factory has always honoured for
+#: ``openai-compatible``. They were not offered by the CLI, which meant
+#: ``--backend local`` died with "invalid choice" for a name the same package
+#: accepts — the two lists had drifted apart and only one of them was reachable.
+BACKEND_CHOICES = (
+    *runtime_names(),
+    "openai",
+    "anthropic",
+    "openai-compatible",
+    "local",
+    "compat",
+)
 
 
 @dataclass(frozen=True)

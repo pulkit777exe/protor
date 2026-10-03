@@ -13,7 +13,7 @@ from pathlib import Path
 import pytest
 
 from protor.analyzer import analyze, analyze_with_runtime
-from protor.exceptions import RuntimeUnavailableError
+from protor.exceptions import ProtorError, RuntimeUnavailableError
 from protor.llm_backends import LLMBackend
 
 
@@ -158,9 +158,33 @@ class TestAnalyzeFailures:
             "protor.analyzer.create_backend", lambda *a, **k: FakeBackend(available=False)
         )
         monkeypatch.setattr("protor.analyzer.console", _QuietConsole())
-        with pytest.raises(RuntimeError) as exc:
+        with pytest.raises(RuntimeUnavailableError) as exc:
             analyze([site()], backend="openai", output_dir=tmp_path)
         assert "vllm" not in str(exc.value)
+
+    @pytest.mark.parametrize(
+        ("backend", "label"),
+        [("openai", "OpenAI"), ("anthropic", "Anthropic")],
+    )
+    def test_an_unreachable_hosted_backend_is_typed_and_named_right(
+        self, monkeypatch, tmp_path, backend, label
+    ):
+        """
+        A `ProtorError`, so the CLI prints a message instead of a traceback.
+
+        The hosted path fell through to a bare ``RuntimeError``, which matches
+        neither ``except ProtorError`` nor ``except ValueError`` in
+        ``cli.cli()`` — so an unreachable OpenAI endpoint reached the user as a
+        traceback. The name was "Openai", from ``str.capitalize``.
+        """
+        monkeypatch.setattr(
+            "protor.analyzer.create_backend", lambda *a, **k: FakeBackend(available=False)
+        )
+        monkeypatch.setattr("protor.analyzer.console", _QuietConsole())
+        with pytest.raises(ProtorError) as exc:
+            analyze([site()], backend=backend, output_dir=tmp_path)
+        assert label in str(exc.value)
+        assert label.lower() + " backend unavailable" not in str(exc.value)
 
     def test_empty_batch_is_refused_before_spending_a_model_call(self, backend, tmp_path):
         """
