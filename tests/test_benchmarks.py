@@ -191,6 +191,54 @@ class TestRegressionDetection:
 _PAGE_CASES = ("parse_html", "clean_soup", "extract_text")
 
 
+class TestScalesAreBelowSaturation:
+    """
+    The scales must stay under the renderer's character budgets.
+
+    This is not a nicety. With both scales saturated, a budgeted function stops
+    walking at the cap and does the same fixed work regardless of page size, so
+    its per-item ratio is flat no matter what the code does. Measured directly:
+    a full-document rescan injected into `clean_soup` passed the gate at
+    (200, 800) and was caught at the same scales only after the page cases were
+    resized -- the injected bug in `_process_element` went undetected for the
+    same reason.
+    """
+
+    @pytest.mark.parametrize(
+        "name,scale",
+        [("parse_html", 20), ("parse_html", 80), ("extract_text", 10), ("extract_text", 30)],
+    )
+    def test_page_scales_are_not_truncated(self, name, scale):
+        from benchmarks.cases import BENCH_CASES, artificial_page
+        from bs4 import BeautifulSoup
+
+        from protor.parser import _extract_text, parse_html
+
+        case = next(c for c in BENCH_CASES if c.name == name)
+        assert scale in case.scales, f"{name} no longer measures {scale}"
+
+        if name == "parse_html":
+            _, page = parse_html(artificial_page(scale), "https://example.com/")
+            assert not page.markdown_content.endswith("[truncated]"), (
+                f"{scale} blocks saturate the markdown budget"
+            )
+        else:
+            soup = BeautifulSoup(artificial_page(scale), "lxml")
+            assert not _extract_text(soup, max_chars=10_000).endswith("[truncated]"), (
+                f"{scale} blocks saturate the text budget"
+            )
+
+    def test_the_larger_scale_does_real_extra_work(self):
+        """Guards against a scale change that quietly makes both sides equal."""
+        from benchmarks.cases import artificial_page
+
+        from protor.parser import parse_html
+
+        _, small = parse_html(artificial_page(20), "https://example.com/")
+        _, large = parse_html(artificial_page(80), "https://example.com/")
+        assert len(large.markdown_content) > len(small.markdown_content) * 2
+
+
 class TestScalingGate:
     """
     `--gate` is what CI enforces, so its behaviour is pinned here rather than
@@ -215,9 +263,49 @@ class TestScalingGate:
         assert "flat" in capsys.readouterr().out
 
     def test_superlinear_scaling_fails(self, capsys):
-        """4x the input for 16x the time is quadratic — what a re-scan looks like."""
-        results = [self._r("parse_html", 200, 1.0), self._r("parse_html", 800, 16.0)]
+        """
+        4x the input for 16x the time is quadratic — what a re-scan looks like.
+
+        Uses a name that is not a real case, so the gate has nothing to
+        re-measure and must decide on the evidence given.
+        """
+        results = [self._r("hypothetical_case", 200, 1.0), self._r("hypothetical_case", 800, 16.0)]
         assert check_scaling(results) == 1
+        assert "SUPERLINEAR" in capsys.readouterr().out
+
+    def test_a_known_case_is_re_measured_before_failing(self, capsys):
+        """
+        A single bad sample on a real case is treated as contention, not proof.
+
+        Measured: `is_url_blocked` reported 2.34x while the host was at load
+        average 10.9, and was flat in every run once idle. Re-measuring costs a
+        few seconds only when there is a signal, and is the difference between a
+        gate people trust and one they learn to ignore.
+        """
+        results = [self._r("clean_soup", 200, 1.0), self._r("clean_soup", 800, 6.0)]
+        assert check_scaling(results) == 0
+        assert "re-measured" in capsys.readouterr().out
+
+    def test_a_confirmed_regression_still_fails(self, monkeypatch, capsys):
+        """
+        The re-measure must not launder a regression that reproduces.
+
+        Verified end to end by hand as well: injecting a full-document rescan
+        into `clean_soup` made the gate report SUPERLINEAR 5.3x and exit 1,
+        while the same command on the real code reported flat and exited 0.
+        Here the re-measure is stubbed to confirm, so the decision path is
+        exercised without a slow real measurement.
+        """
+        import benchmarks.runner as runner
+
+        def confirming(case, scale, *, repeats=1, machine_us=0.0):
+            # Quadratic on re-measure too: 4x items costs 16x the time.
+            seconds = (scale / 200) ** 2
+            return Result(name=case.name, scale=scale, seconds=seconds, items=scale)
+
+        monkeypatch.setattr(runner, "measure", confirming)
+        results = [self._r("clean_soup", 200, 1.0), self._r("clean_soup", 800, 6.0)]
+        assert runner.check_scaling(results) == 1
         assert "SUPERLINEAR" in capsys.readouterr().out
 
     def test_sublinear_is_not_a_failure(self, capsys):

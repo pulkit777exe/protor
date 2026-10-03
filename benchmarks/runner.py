@@ -260,6 +260,7 @@ def check_scaling(results: list[Result]) -> int:
     for r in results:
         if r.items and r.scaling_meaningful:
             by_case.setdefault(r.name, []).append(r)
+    known = {c.name: c for c in BENCH_CASES}
 
     failures = 0
     print("scaling gate: per-item cost at the large scale / at the small scale")
@@ -271,11 +272,28 @@ def check_scaling(results: list[Result]) -> int:
         if not small.per_item_us or not large.per_item_us:
             continue
         ratio = large.per_item_us / small.per_item_us
+
         if ratio > MAX_SCALING_RATIO:
-            print(
-                f"{name:<20} {small.scale:>7} -> {large.scale:<7} "
-                f"SUPERLINEAR {ratio:.2f}x"
-            )
+            # A busy host inflates one scale and not the other, which looks
+            # exactly like superlinear growth. Measured: is_url_blocked reported
+            # 2.34x while the machine sat at load average 10.9, and flat in every
+            # run once it was idle. A real regression reproduces, so re-measure
+            # before failing rather than trusting one sample of a ratio.
+            case = known.get(name)
+            if case is not None:
+                again = sorted(
+                    (measure(case, scale, repeats=REPEATS) for scale in case.scales),
+                    key=lambda r: r.scale,
+                )
+                costs = [r.per_item_us for r in again]
+                if len(again) == 2 and costs[0] and costs[1]:
+                    ratio = costs[1] / costs[0]
+                    print(
+                        f"{name:<20} {small.scale:>7} -> {large.scale:<7} re-measured {ratio:.2f}x"
+                    )
+
+        if ratio > MAX_SCALING_RATIO:
+            print(f"{name:<20} {small.scale:>7} -> {large.scale:<7} SUPERLINEAR {ratio:.2f}x")
             failures += 1
         else:
             print(f"{name:<20} {small.scale:>7} -> {large.scale:<7} flat ({ratio:.2f}x)")

@@ -298,11 +298,18 @@ CALIBRATION_CASE = BenchCase("calibration", _calibration, (2_000, 8_000))
 
 #: Every case the benchmark runner can execute. The calibration case runs too,
 #: but is excluded from scaling checks since it is linear by construction.
+#:
+#: Page scales are chosen to stay *below* the renderer's character budgets, and
+#: a test asserts that. Getting it wrong is not subtle-but-harmless: with both
+#: scales saturated, each case stops at the cap and measures the same fixed work
+#: regardless of page size, so the ratio is flat no matter what the code does.
+#: A quadratic re-scan injected into `_process_element` passed the gate unnoticed
+#: for exactly that reason.
 BENCH_CASES: tuple[BenchCase, ...] = (
     CALIBRATION_CASE,
-    BenchCase("parse_html", _parse_page, (200, 800)),
+    BenchCase("parse_html", _parse_page, (20, 80)),
     BenchCase("clean_soup", _clean_soup, (200, 800)),
-    BenchCase("extract_text", _extract_text, (200, 800)),
+    BenchCase("extract_text", _extract_text, (10, 30)),
     # The context is capped by a character budget, so its item count does not
     # grow with the batch; a per-item ratio here would be noise.
     BenchCase("prepare_context", _prepare_context, (100, 400), scaling_meaningful=False),

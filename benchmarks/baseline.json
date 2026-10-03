@@ -3,146 +3,146 @@
     {
       "name": "calibration",
       "scale": 2000,
-      "seconds": 0.009504077999736182,
+      "seconds": 0.010143998999410542,
       "items": 2000,
       "scaling_meaningful": true,
-      "normalised": 1.0343542309409188,
-      "median": 0.009615905000828207
+      "normalised": 0.9712641993125619,
+      "median": 0.015989681000064593
     },
     {
       "name": "calibration",
       "scale": 8000,
-      "seconds": 0.0375551480010472,
+      "seconds": 0.04260341799999878,
       "items": 8000,
       "scaling_meaningful": true,
-      "normalised": 1.0218068030790006,
-      "median": 0.039971582000362105
+      "normalised": 1.0197944290548457,
+      "median": 0.04328671800067241
     },
     {
       "name": "parse_html",
-      "scale": 200,
-      "seconds": 0.03912306600068405,
-      "items": 200,
+      "scale": 20,
+      "seconds": 0.006077673999243416,
+      "items": 20,
       "scaling_meaningful": true,
-      "normalised": 42.57867922202623,
-      "median": 0.04032655800074281
+      "normalised": 58.19230828888046,
+      "median": 0.00692592200175568
     },
     {
       "name": "parse_html",
-      "scale": 800,
-      "seconds": 0.12543973399988317,
-      "items": 800,
+      "scale": 80,
+      "seconds": 0.024407077000432764,
+      "items": 80,
       "scaling_meaningful": true,
-      "normalised": 34.12985446733608,
-      "median": 0.1291748319999897
+      "normalised": 58.42301468524122,
+      "median": 0.02513054199880571
     },
     {
       "name": "clean_soup",
       "scale": 200,
-      "seconds": 0.027540902001419454,
+      "seconds": 0.029154118999940692,
       "items": 200,
       "scaling_meaningful": true,
-      "normalised": 29.973500333107733,
-      "median": 0.029157827999370056
+      "normalised": 27.91438765795026,
+      "median": 0.03091715399932582
     },
     {
       "name": "clean_soup",
       "scale": 800,
-      "seconds": 0.11226655400059826,
+      "seconds": 0.12432752499989874,
       "items": 800,
       "scaling_meaningful": true,
-      "normalised": 30.545673427474856,
-      "median": 0.11441399900104443
+      "normalised": 29.760174963679543,
+      "median": 0.12726176899923303
     },
     {
       "name": "extract_text",
-      "scale": 200,
-      "seconds": 0.024724608001633896,
-      "items": 200,
+      "scale": 10,
+      "seconds": 0.0017660470002738293,
+      "items": 10,
       "scaling_meaningful": true,
-      "normalised": 26.908452240770337,
-      "median": 0.02543407700068201
+      "normalised": 33.81897466214235,
+      "median": 0.001805582998713362
     },
     {
       "name": "extract_text",
-      "scale": 800,
-      "seconds": 0.09020960199995898,
-      "items": 800,
+      "scale": 30,
+      "seconds": 0.004265968000254361,
+      "items": 30,
       "scaling_meaningful": true,
-      "normalised": 24.544380712875054,
-      "median": 0.09826600199994573
+      "normalised": 27.23043114325248,
+      "median": 0.004457602999536903
     },
     {
       "name": "prepare_context",
       "scale": 100,
-      "seconds": 0.004797390000021551,
+      "seconds": 0.005617071999949985,
       "items": 8000,
       "scaling_meaningful": false,
-      "normalised": 0.13052819653136497,
-      "median": 0.005236760000116192
+      "normalised": 0.1344553794521632,
+      "median": 0.005733800999223604
     },
     {
       "name": "prepare_context",
       "scale": 400,
-      "seconds": 0.02243323299990152,
+      "seconds": 0.024792968999463483,
       "items": 8000,
       "scaling_meaningful": false,
-      "normalised": 0.6103671883736561,
-      "median": 0.022694843999488512
+      "normalised": 0.5934672111374509,
+      "median": 0.025468509000347694
     },
     {
       "name": "http_cache_put",
       "scale": 100,
-      "seconds": 0.0027941049993387423,
+      "seconds": 0.003097623000940075,
       "items": 100,
       "scaling_meaningful": false,
-      "normalised": 6.0817984192457715,
-      "median": 0.002848821999577922
+      "normalised": 5.93180327394564,
+      "median": 0.0038438419996964512
     },
     {
       "name": "http_cache_put",
       "scale": 400,
-      "seconds": 0.009788041999854613,
+      "seconds": 0.013610164000056102,
       "items": 400,
       "scaling_meaningful": false,
-      "normalised": 5.3262939632114055,
-      "median": 0.010570328999165213
+      "normalised": 6.515706991293715,
+      "median": 0.014035197998964577
     },
     {
       "name": "canonicalize_url",
       "scale": 20000,
-      "seconds": 0.08915800500108162,
+      "seconds": 0.1091174070006673,
       "items": 20000,
       "scaling_meaningful": true,
-      "normalised": 0.9703304170870681,
-      "median": 0.09264629899917054
+      "normalised": 1.0447736730625128,
+      "median": 0.11089533499944082
     },
     {
       "name": "canonicalize_url",
       "scale": 80000,
-      "seconds": 0.37023297599989746,
+      "seconds": 0.412716602000728,
       "items": 80000,
       "scaling_meaningful": true,
-      "normalised": 1.0073361276337687,
-      "median": 0.38226667399976577
+      "normalised": 0.9879162547446322,
+      "median": 0.4965770420003537
     },
     {
       "name": "is_url_blocked",
       "scale": 20000,
-      "seconds": 0.07686614199883479,
+      "seconds": 0.19758695099881152,
       "items": 20000,
       "scaling_meaningful": true,
-      "normalised": 0.8365547841127483,
-      "median": 0.07980524500089814
+      "normalised": 1.8918488829466833,
+      "median": 0.22937054000067292
     },
     {
       "name": "is_url_blocked",
       "scale": 80000,
-      "seconds": 0.29897655700006,
+      "seconds": 0.7662196250003035,
       "items": 80000,
       "scaling_meaningful": true,
-      "normalised": 0.8134604605879314,
-      "median": 0.3035333109983185
+      "normalised": 1.8340934640685986,
+      "median": 0.862922049998815
     }
   ]
 }
