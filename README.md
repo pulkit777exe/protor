@@ -2,7 +2,7 @@
 
 > scrape websites. analyze with ai. no bs.
 
-a cli tool that actually works. scrapes web content with async aiohttp, feeds it to a local llm, gets insights. works with **ollama, llama.cpp, LM Studio, vLLM, LocalAI, Jan**, or the OpenAI/Anthropic APIs. that's it.
+a cli tool that actually works. scrapes web content with async aiohttp, feeds it to a local llm, gets insights. works with **Ollama, LM Studio, llama.cpp, vLLM, LocalAI, Jan, llamafile, TabbyAPI, Cortex.cpp, GPT4All, KoboldCpp, text-generation-webui, SGLang, Xinference, LiteLLM proxy, AnythingLLM and Docker Model Runner** (or anything else speaking the OpenAI API), plus the OpenAI/Anthropic hosted APIs. that's it.
 
 ## why this exists
 
@@ -29,19 +29,30 @@ protor models --backend <runtime>
 
 | `--backend` | Default URL | Start it with |
 |---|---|---|
-| `ollama` (default) | `http://localhost:11434` | `ollama serve` |
-| `llamacpp` (alias `llama.cpp`) | `http://localhost:8080` | `llama-server -m model.gguf` |
-| `lmstudio` (alias `lm-studio`) | `http://localhost:1234` | `lms server start` |
+| `ollama` | `http://localhost:11434` | `ollama serve` |
+| `lmstudio` | `http://localhost:1234` | `lms server start` |
+| `llamacpp` | `http://localhost:8080` | `llama-server -m model.gguf` |
 | `vllm` | `http://localhost:8000` | `vllm serve <model>` |
 | `localai` | `http://localhost:8081` | `localai run` |
-| `jan` | `http://localhost:1337` | enable the local server in Jan |
+| `jan` | `http://localhost:1337` | `start the Jan app and enable its local server` |
+| `llamafile` | `http://localhost:8080` | `llamafile -m model.gguf --server` |
+| `tabbyapi` | `http://localhost:8080` | `tabby serve --model <model-repo>` |
+| `cortex` | `http://localhost:8080` | `cortex server --config config.yaml` |
+| `gpt4all` | `http://localhost:4891` | `GPT4All → Settings → Application → Enable Local API Server` |
+| `koboldcpp` | `http://localhost:5001` | `koboldcpp --model model.gguf --port 5001` |
+| `oobabooga` | `http://localhost:5000` | `python server.py --api --api-port 5000` |
+| `sglang` | `http://localhost:30000` | `python -m sglang.launch_server --model-path <model>` |
+| `xinference` | `http://localhost:9997` | `xinference-local` |
+| `litellm` | `http://localhost:4000` | `litellm --config config.yaml` |
+| `anythingllm` | `http://localhost:3001` | `docker run -p 3001:3001 anythingllm` |
+| `docker` | `http://localhost:12434` | `docker desktop enable model-runner --tcp=12434` |
 | `openai-compatible` | — | any OpenAI-compatible server |
 | `openai` / `anthropic` | — | set `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` |
 
-override the URL with `--base-url`, or set a per-runtime environment variable
-(`OLLAMA_HOST`, `LLAMA_CPP_URL`, `LMSTUDIO_URL`, `VLLM_URL`, `LOCALAI_URL`,
-`JAN_URL`). If a runtime was started with authentication on, pass `--api-key` or
-set the matching `*_API_KEY` variable — no header is sent when there's no token.
+`protor runtimes` prints this table for the terminal you are actually in, and
+probes each one so you can see what is running right now.
+
+override the URL with `--base-url`, or set the runtime's environment variable (`OLLAMA_HOST`, `LMSTUDIO_URL`, `LLAMA_CPP_URL`, `VLLM_URL`, `LOCALAI_URL`, `JAN_URL`, `LLAMAFILE_URL`, `TABBY_API_URL`, `CORTEX_URL`, `GPT4ALL_URL`, `KOBOLDCPP_URL`, `OOBABOOGA_URL`, `SGLANG_URL`, `XINFERENCE_URL`, `LITELLM_URL`, `ANYTHINGLLM_URL`, `DOCKER_MODEL_RUNNER_URL`). If a runtime was started with authentication on, pass `--api-key` or set the matching `*_API_KEY` variable — no header is sent when there's no token.
 
 ### get ollama set up (the easy default)
 
@@ -100,6 +111,18 @@ protor scrape https://example.com https://another-site.com
 # skip the js files if you want
 protor scrape https://example.com --no-js
 
+# block ad and tracker requests
+protor scrape https://example.com --block-ads
+
+# let protor tune concurrency to the success rate
+protor scrape https://example.com --auto-scale
+
+# reuse cached responses (ETag / Last-Modified) across runs
+protor scrape https://example.com --cache
+
+# extract structured data with a JSON schema
+protor scrape https://example.com --schema schemas/product_listing.json
+
 # custom settings
 protor scrape https://example.com --output my_data --timeout 60 --concurrency 3
 ```
@@ -112,7 +135,13 @@ protor crawl https://example.com
 
 # deeper crawl
 protor crawl https://example.com --max-pages 50
+
+# pick up where a previous run stopped
+protor crawl https://example.com --resume
 ```
+
+`--max-pages` is a ceiling for the crawl, not for each run: resuming a crawl
+that already covered some of those pages only fetches the remainder.
 
 ### analyze what you scraped
 
@@ -178,6 +207,21 @@ protor update
 # skip the prompt
 protor update -y
 ```
+
+## output, pipes and odd terminals
+
+progress is redrawn in place while a crawl or scrape runs, and the model's
+answer streams as it arrives. three things about that:
+
+- **pipes and CI get plain output.** `protor scrape ... | tee log` writes one
+  clean line per result with no cursor-up escape codes. Animation is skipped
+  automatically when stdout is not a terminal, or when `CI` is set.
+- **`--no-live` forces plain output** on `scrape`, `run` and `crawl` when you
+  want it even on a real terminal.
+- **terminals that cannot encode the glyphs still work.** `✓` and `→` are
+  replaced with ASCII equivalents rather than raising `UnicodeEncodeError`, so
+  an ASCII or cp1252 terminal gets readable output instead of a traceback.
+  `NO_COLOR` is honoured by `rich` as usual.
 
 ## what the focus modes do
 
