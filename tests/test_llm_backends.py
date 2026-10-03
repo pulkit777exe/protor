@@ -196,10 +196,7 @@ class TestEndpointJoining:
         ``/api/v1/v1/...`` — a 404 that read as "no such model on a working
         runtime".
         """
-        assert (
-            _endpoint("http://gw:8080/api/v1", "/v1/models")
-            == "http://gw:8080/api/v1/models"
-        )
+        assert _endpoint("http://gw:8080/api/v1", "/v1/models") == "http://gw:8080/api/v1/models"
 
     def test_a_deep_gateway_prefix_still_finds_the_overlap(self):
         assert (
@@ -209,9 +206,7 @@ class TestEndpointJoining:
 
     def test_a_base_with_a_prefix_that_does_not_overlap_is_left_intact(self):
         """No overlap at all must still append, prefix and all."""
-        assert (
-            _endpoint("http://gw:8080/api", "/v1/models") == "http://gw:8080/api/v1/models"
-        )
+        assert _endpoint("http://gw:8080/api", "/v1/models") == "http://gw:8080/api/v1/models"
 
     def test_a_longer_shared_suffix_wins_over_a_shorter_one(self):
         """Longest first, so the most of the base path is reused."""

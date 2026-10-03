@@ -261,10 +261,18 @@ class TestContextBudget:
         assert "\n" in page.metadata.title, "premise: the parser keeps the newline"
 
         context = _prepare_context(
-            [{"domain": "shop.com", "url": "https://shop.com/", "js_count": 0,
-              "metadata": {"title": page.metadata.title,
-                           "description": page.metadata.description},
-              "text_content": "hi"}]
+            [
+                {
+                    "domain": "shop.com",
+                    "url": "https://shop.com/",
+                    "js_count": 0,
+                    "metadata": {
+                        "title": page.metadata.title,
+                        "description": page.metadata.description,
+                    },
+                    "text_content": "hi",
+                }
+            ]
         )
         assert _sites_included(context) == 1, context
 
