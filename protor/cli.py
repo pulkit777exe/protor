@@ -575,7 +575,10 @@ def _build_parser() -> argparse.ArgumentParser:
     cp.add_argument(
         "--resume",
         action="store_true",
-        help="resume from a previous checkpoint if available",
+        help=(
+            "continue an interrupted crawl, reusing its queue and pages already "
+            "saved; without it a crawl starts fresh"
+        ),
     )
     cp.add_argument(
         "--auto-scale",

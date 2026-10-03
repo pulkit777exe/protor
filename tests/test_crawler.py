@@ -397,16 +397,72 @@ class TestCrawlerInit:
         c._queue.close()
 
     def test_a_scraped_seed_url_is_not_requeued(self, tmp_path):
-        """The seed is enqueued on every start, so it has to stay rejected once
-        the crawl has seen it — otherwise --resume re-scrapes page one."""
+        """The seed is enqueued on every start, so on a *resume* it has to stay
+        rejected once the crawl has seen it — otherwise --resume re-scrapes
+        page one."""
         c = Crawler("https://example.com", output_dir=str(tmp_path))
         assert c._queue.dequeue() == "https://example.com/"
         c._queue.mark_visited("https://example.com/", success=True)
         c._queue.close()
 
-        again = Crawler("https://example.com", max_pages=3, output_dir=str(tmp_path))
+        again = Crawler("https://example.com", max_pages=3, output_dir=str(tmp_path), resume=True)
         assert again._queue.queue_size == 0
         again._queue.close()
+
+    def test_a_fresh_crawl_forgets_the_previous_one(self, tmp_path):
+        """
+        A plain `protor crawl URL` means "crawl it".
+
+        The queue database is opened whether or not --resume was passed, so an
+        earlier run's rows used to make a second crawl do nothing at all — zero
+        requests, no explanation. Continuing is what --resume is for.
+        """
+        c = Crawler("https://example.com", output_dir=str(tmp_path))
+        c._queue.mark_visited("https://example.com/", success=True)
+        c._queue.close()
+
+        fresh = Crawler("https://example.com", output_dir=str(tmp_path))
+        assert fresh._queue.visited_count == 0, "previous crawl state must not survive"
+        assert fresh._queue.queue_size == 1, "the seed is queued again"
+        assert fresh._queue.dequeue() == "https://example.com/"
+        fresh._queue.close()
+
+    def test_a_fresh_crawl_keeps_the_pages_already_on_disk(self, tmp_path):
+        """Only the crawl state is reset; artefacts a user may be using stay."""
+        page = tmp_path / "crawler" / "example.com" / "index.html"
+        page.parent.mkdir(parents=True, exist_ok=True)
+        page.write_text("<html>earlier run</html>")
+
+        c = Crawler("https://example.com", output_dir=str(tmp_path / "crawler"))
+        c._queue.mark_visited("https://example.com/", success=True)
+        c._queue.close()
+
+        Crawler("https://example.com", output_dir=str(tmp_path / "crawler"))._queue.close()
+        assert page.exists()
+        assert page.read_text() == "<html>earlier run</html>"
+
+    def test_resume_leaves_the_state_alone(self, tmp_path):
+        """The counterpart: --resume must never clear anything."""
+        c = Crawler("https://example.com", output_dir=str(tmp_path))
+        c._queue.mark_visited("https://example.com/", success=True)
+        c._queue.close()
+
+        resumed = Crawler("https://example.com", output_dir=str(tmp_path), resume=True)
+        assert resumed._queue.visited_count == 1
+        assert resumed._state.scraped == 1, "and the budget is priced from it"
+        resumed._queue.close()
+
+    def test_has_state_is_false_for_a_new_database(self, tmp_path):
+        """The queue, not the Crawler: the crawler enqueues its seed by then."""
+        from protor.crawler import _CrawlQueue
+
+        q = _CrawlQueue(tmp_path / "q.db")
+        assert q.has_state() is False
+        q.enqueue("https://example.com/a")
+        assert q.has_state() is True
+        assert q.clear_state() == 0, "nothing had been visited yet"
+        assert q.has_state() is False
+        q.close()
 
     @pytest.mark.asyncio
     async def test_resume_does_not_reset_the_page_ceiling(self, tmp_path):

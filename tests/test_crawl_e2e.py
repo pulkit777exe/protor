@@ -614,3 +614,66 @@ class TestFailingPages:
         assert not (site_dir / "private.html").exists()
         assert _manifests(out, site) == ["manifest.json", "public.manifest.json"]
         assert _summary(out)["scraped"] == 2
+
+
+class TestFreshVersusResume:
+    """
+    A plain `protor crawl URL` means "crawl it"; `--resume` means "carry on".
+
+    The queue database is opened unconditionally, so an earlier run's rows used
+    to suppress a second crawl entirely — the user asked for a crawl and got
+    zero requests and no explanation. Every crawl here completes the whole tree,
+    so "resume has nothing to do" is a statement about the mode and not about
+    leftover budget.
+    """
+
+    async def test_a_second_plain_crawl_actually_crawls(self, site, tmp_path):
+        _tree(site)
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path)
+        assert site.page_requests, "the first crawl must have fetched something"
+
+        site.forget()
+        clear_cache()
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path)
+        assert site.page_requests, (
+            "a fresh crawl over a populated output directory did no work at all"
+        )
+
+    async def test_resume_still_does_nothing_when_there_is_nothing_left(self, site, tmp_path):
+        _tree(site)
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path)
+        site.forget()
+        clear_cache()
+
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path, resume=True)
+        assert site.page_requests == [], "resume had nothing left to do"
+
+    async def test_the_two_modes_disagree_on_the_same_directory(self, site, tmp_path):
+        """One crawl, then the same command with and without --resume."""
+        _tree(site)
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path)
+
+        site.forget()
+        clear_cache()
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path, resume=True)
+        resumed = len(site.page_requests)
+
+        site.forget()
+        clear_cache()
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path)
+        fresh = len(site.page_requests)
+
+        assert resumed == 0, f"resume should find nothing to do, made {resumed} requests"
+        assert fresh == len(TREE), f"a fresh crawl should re-crawl, made {fresh} requests"
+
+    async def test_pages_from_the_earlier_crawl_are_still_on_disk(self, site, tmp_path):
+        """Resetting the crawl state must not delete what was already saved."""
+        _tree(site)
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path)
+        site_dir = _site_dir(tmp_path, site)
+        before = sorted(p.name for p in site_dir.glob("*.html"))
+        assert before, "the first crawl wrote pages"
+
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path)
+        after = sorted(p.name for p in site_dir.glob("*.html"))
+        assert after == before, "a fresh crawl must not delete what was already saved"

@@ -150,6 +150,10 @@ protor crawl https://example.com --resume
 `--max-pages` is a ceiling for the crawl, not for each run: resuming a crawl
 that already covered some of those pages only fetches the remainder.
 
+A plain `protor crawl URL` always starts fresh — it forgets the queue of a
+previous crawl so it cannot silently do nothing, and the pages already saved to
+the output directory are left alone. `--resume` is what reuses them.
+
 ### analyze what you scraped
 
 ```bash

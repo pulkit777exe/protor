@@ -8,12 +8,18 @@ and the crawl state observer.
 
 The crawl state has exactly one home: ``crawl_queue.db``. It is opened on every
 run and committed in batches as pages are discovered and scraped, so it survives
-an interrupted run by itself — ``--resume`` is just a crawl that finds its
-predecessors' rows already on disk. The JSON checkpoint next to it is a
-*summary* of the run (start URL, budget, pages scraped) and is never used to
-reconstruct queue state. An earlier version mirrored the whole queue into both
-files and then replayed the JSON through a second connection on the same
-database: every URL was written twice and the two stores could disagree.
+an interrupted run by itself. The JSON checkpoint next to it is a *summary* of
+the run (start URL, budget, pages scraped) and is never used to reconstruct
+queue state. An earlier version mirrored the whole queue into both files and
+then replayed the JSON through a second connection on the same database: every
+URL was written twice and the two stores could disagree.
+
+Because that database is always open, its rows decide what a new crawl does, so
+the flag has to. Without ``resume`` a crawl clears the queue and the visited
+rows first — a second plain run then actually crawls instead of silently
+reporting success having requested nothing. Clearing the rows rather than the
+file leaves the saved pages, the manifests and the WAL sidecars alone.
+``--resume`` keeps them, and prices the page budget from the rows already there.
 
 Inspired by:
     - Crawl4AI: crash recovery with resume_state
@@ -62,6 +68,7 @@ from .theme import (
     bright,
     console,
     header_rule,
+    info,
     label,
     muted,
     safe,
@@ -295,6 +302,28 @@ class _CrawlQueue:
         row = self._conn.execute("SELECT COUNT(*) FROM visited WHERE success = 1").fetchone()
         return row[0] if row else 0
 
+    def has_state(self) -> bool:
+        """Whether this database holds queue or visited rows from a prior run."""
+        return bool(self._queued or self._visited)
+
+    def clear_state(self) -> int:
+        """
+        Forget a previous run's queue and visited rows, returning how many went.
+
+        Only the crawl *state* is discarded: the page files and manifests already
+        written stay on disk, and a crawl that revisits a page overwrites them.
+        Doing it by SQL rather than by deleting the database avoids disturbing
+        WAL sidecar files, and leaving the file itself keeps the path stable for
+        anyone watching it. Returns the number of visited rows dropped.
+        """
+        removed = self._visited
+        self._conn.execute("DELETE FROM queue")
+        self._conn.execute("DELETE FROM visited")
+        self._conn.commit()
+        self._queued = 0
+        self._visited = 0
+        return removed
+
     def close(self) -> None:
         """Flush and close. Idempotent, so repeated teardown is safe."""
         if self._closed:
@@ -450,7 +479,18 @@ class Crawler:
         self._queue = _CrawlQueue(db_path)
 
         checkpoint_path = self.output_dir / CHECKPOINT_FILENAME
-        if resume:
+        if not resume and self._queue.has_state():
+            # The queue database is opened whether or not --resume was passed, so
+            # an earlier run's rows used to suppress a fresh crawl silently: the
+            # user asked to crawl a site and got zero requests and no
+            # explanation. A plain `protor crawl URL` now means "crawl it", and
+            # continuing is what --resume is for.
+            dropped = self._queue.clear_state()
+            console.print(
+                f"  {warn('Starting a fresh crawl')}{muted(f' — cleared {dropped} pages of previous crawl state')}"
+            )
+            console.print(f"  {info('Use --resume to continue an interrupted crawl instead.')}")
+        elif resume:
             if checkpoint_path.exists():
                 self._report_checkpoint(checkpoint_path)
             # Price the remaining budget from the rows already on disk. This used

@@ -133,6 +133,13 @@ queue (43% slower than the two statements it replaced).
 
 ### Changed
 
+- **`protor crawl` starts fresh unless you pass `--resume`.** The queue database
+  is opened on every run, so a previous crawl's rows used to decide what the next
+  one did: running `protor crawl https://example.com` twice issued *zero* requests
+  the second time and reported success. A plain crawl now clears the queue and
+  visited rows first and says so; saved pages and manifests are untouched. Only
+  the crawl state is discarded, and by SQL rather than by deleting the file, so
+  the path stays stable and the WAL sidecars stay consistent.
 - `analyze` accepts `api_key`, and reports the backend's friendly display name
   ("LM Studio") rather than the raw flag value.
 - Unavailable runtimes raise `RuntimeUnavailableError`, carrying the URL and the
