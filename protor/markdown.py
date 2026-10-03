@@ -174,6 +174,37 @@ def _has_block_child(tag: Tag) -> bool:
     return any(isinstance(c, Tag) and c.name in _BLOCK_TAGS for c in tag.children)
 
 
+def _wraps_blocks(tag: Tag) -> bool:
+    """
+    True when any descendant of *tag* is a block element.
+
+    :data:`_BLOCK_TAGS` is an allowlist, so it cannot be exhaustive — real pages
+    wrap their content in tags nobody thought to list. Hacker News is built on
+    ``<center><table>``, and because ``center`` is not in the allowlist the block
+    renderer treated the whole page as one inline run, the inline renderer then
+    skipped the ``<table>`` inside it as block-level, and the two rules together
+    produced an **empty document** for a page whose text extraction worked fine.
+    The same shape silently emptied any page wrapped in ``<font>`` or ``<span>``.
+
+    Treating an unlisted tag as a transparent wrapper whenever it contains block
+    content closes that without an allowlist anyone has to keep extending.
+
+    The walk stops at the first block tag found and skips subtrees with no
+    element children, because the overwhelming majority of tags reach here as
+    empty inline elements (``<b>``, ``<a>``, ``<em>``) and cannot possibly
+    contain a block.
+    """
+    pending: list[Tag] = [tag]
+    while pending:
+        element = pending.pop()
+        for child in element.children:
+            if isinstance(child, Tag):
+                if child.name in _BLOCK_TAGS or child.name in _SCRIPT_TAGS:
+                    return True
+                pending.append(child)
+    return False
+
+
 def _render_inline_children(children: Iterable[PageElement], base_url: str, _depth: int = 0) -> str:
     """
     Render a run of inline nodes as a single Markdown string.
@@ -344,6 +375,10 @@ def _emit_block(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: int = 0
     Runs of inline content are buffered into a single line and flushed whenever a
     block child is reached. Emitting all inline text first and recursing after
     would hoist trailing links above earlier headings and paragraphs.
+
+    A child that is not in :data:`_BLOCK_TAGS` but *does* contain block
+    descendants is walked as a container rather than buffered as inline text —
+    see :func:`_wraps_blocks` for why skipping that case loses whole pages.
     """
     buffer: list[PageElement] = []
 
@@ -356,7 +391,9 @@ def _emit_block(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: int = 0
     for child in tag.children:
         if lines.capped:
             return
-        if isinstance(child, Tag) and child.name in _BLOCK_TAGS:
+        if isinstance(child, Tag) and (
+            child.name in _BLOCK_TAGS or _wraps_blocks(child)
+        ):
             flush()
             _process_element(child, base_url, lines, depth, _rd + 1)
         else:

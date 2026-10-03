@@ -152,7 +152,9 @@ that already covered some of those pages only fetches the remainder.
 
 A plain `protor crawl URL` always starts fresh — it forgets the queue of a
 previous crawl so it cannot silently do nothing, and the pages already saved to
-the output directory are left alone. `--resume` is what reuses them.
+the output directory are left alone. `--resume` is what reuses them, and it
+retries the pages the previous run failed on, since the ones that worked have
+nothing left to give.
 
 ### analyze what you scraped
 

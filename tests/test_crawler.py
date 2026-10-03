@@ -139,6 +139,66 @@ class TestCrawlQueue:
         assert q.dequeue() is None
         q.close()
 
+    def test_requeue_failed_only_requeues_failures(self, tmp_path):
+        q = _CrawlQueue(tmp_path / "test.db")
+        q.mark_visited("https://example.com/good", success=True)
+        q.mark_visited("https://example.com/bad", success=False)
+
+        assert q.requeue_failed() == 1
+        assert q.dequeue() == "https://example.com/bad"
+        assert q.dequeue() is None, "the page that worked is not queued again"
+        q.close()
+
+    def test_requeue_failed_returns_zero_when_nothing_failed(self, tmp_path):
+        q = _CrawlQueue(tmp_path / "test.db")
+        q.mark_visited("https://example.com/good", success=True)
+        assert q.requeue_failed() == 0
+        q.close()
+
+    def test_requeue_failed_is_idempotent(self, tmp_path):
+        """Called on a queue that already holds them must not double the rows."""
+        q = _CrawlQueue(tmp_path / "test.db")
+        q.mark_visited("https://example.com/bad", success=False)
+        assert q.requeue_failed() == 1
+        assert q.requeue_failed() == 0, "already queued"
+        assert q.queue_size == 1
+        q.close()
+
+    def test_requeue_failed_fixes_the_queue_size_counter(self, tmp_path):
+        """
+        The counter answers ``queue_size`` on every admission check, so a bulk
+        insert that does not move it leaves the live render and the budget
+        disagreeing with the table.
+        """
+        q = _CrawlQueue(tmp_path / "test.db")
+        for i in range(3):
+            q.mark_visited(f"https://example.com/{i}", success=False)
+        assert q.queue_size == 0
+
+        assert q.requeue_failed() == 3
+        assert q.queue_size == 3
+        q.close()
+
+    def test_a_requeued_failure_is_admitted_once_per_run(self, tmp_path):
+        """
+        One retry, not a loop.
+
+        A failure from an earlier run is re-admitted; the one this run just
+        recorded still sits behind ``_run_started``, so rediscovery cannot spin
+        on it.
+        """
+        path = tmp_path / "test.db"
+        q = _CrawlQueue(path)
+        q.mark_visited("https://example.com/bad", success=False)
+        q.close()
+
+        again = _CrawlQueue(path)
+        again.requeue_failed()
+        assert again.dequeue() == "https://example.com/bad"
+        again.mark_visited("https://example.com/bad", success=False)
+        assert again.enqueue("https://example.com/bad") is False, "retried twice in one run"
+        again.close()
+
     def test_deduplication(self, tmp_path):
         q = _CrawlQueue(tmp_path / "test.db")
         assert q.enqueue("https://example.com/") is True

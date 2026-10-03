@@ -134,6 +134,10 @@ class _Site:
     def fail(self, path: str, status: int) -> None:
         self.errors[path] = status
 
+    def heal(self, path: str) -> None:
+        """Stop failing *path*, so a later run gets the page it is asking for."""
+        self.errors.pop(path, None)
+
     def forbid(self, path: str) -> None:
         """Add a robots.txt rule disallowing *path*."""
         self.robots = f"User-agent: *\nDisallow: {path}\n"
@@ -665,6 +669,61 @@ class TestFreshVersusResume:
 
         assert resumed == 0, f"resume should find nothing to do, made {resumed} requests"
         assert fresh == len(TREE), f"a fresh crawl should re-crawl, made {fresh} requests"
+
+    async def test_a_page_that_failed_is_retried_on_resume(self, site, tmp_path):
+        """
+        The successes are done by definition, so a retry is all a resume has left.
+
+        A page that failed in an earlier run used to be unreachable again: it sat
+        in ``visited``, so no admission check would re-admit it, and the only way
+        back was for some other page to link to it. A 502 that has since healed
+        therefore stayed a failure forever.
+        """
+        _tree(site)
+        site.fail("/about.html", 502)
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path)
+        assert _visited(tmp_path)[site.url("/about.html")] == 0, "it failed first time"
+
+        site.heal("/about.html")
+        site.forget()
+        clear_cache()
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path, resume=True)
+
+        assert "/about.html" in site.page_requests, f"never retried: {site.page_requests}"
+        assert _visited(tmp_path)[site.url("/about.html")] == 1, "the retry did not take"
+
+    async def test_a_failure_is_retried_once_per_run_and_not_in_a_loop(self, site, tmp_path):
+        """
+        Still broken on the retry: one attempt this run, then the crawl moves on.
+
+        A 404 rather than a 502 on purpose — 502 is in the fetcher's retryable
+        set, so one crawl-level attempt would already be three requests on the
+        wire and this would be measuring the fetcher's policy, not the queue's.
+        """
+        _tree(site)
+        site.fail("/about.html", 404)
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path)
+        assert site.page_requests.count("/about.html") == 1
+
+        site.forget()
+        clear_cache()
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path, resume=True)
+
+        assert site.page_requests.count("/about.html") == 1, site.page_requests
+        assert _visited(tmp_path)[site.url("/about.html")] == 0
+        assert site.page_requests == ["/about.html"], "and nothing else was re-fetched"
+
+    async def test_resume_does_not_refetch_the_pages_that_worked(self, site, tmp_path):
+        """The retry is for failures, not a second pass over the successes."""
+        _tree(site)
+        site.fail("/about.html", 404)
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path)
+
+        site.forget()
+        clear_cache()
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path, resume=True)
+
+        assert site.page_requests == ["/about.html"], site.page_requests
 
     async def test_pages_from_the_earlier_crawl_are_still_on_disk(self, site, tmp_path):
         """Resetting the crawl state must not delete what was already saved."""

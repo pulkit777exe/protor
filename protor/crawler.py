@@ -302,6 +302,34 @@ class _CrawlQueue:
         row = self._conn.execute("SELECT COUNT(*) FROM visited WHERE success = 1").fetchone()
         return row[0] if row else 0
 
+    def requeue_failed(self) -> int:
+        """
+        Put every previously failed page back on the queue, returning how many.
+
+        :meth:`enqueue` already retries a failure once per run — a page this run
+        has just failed on is re-admittable, which is what lets a flaky link be
+        tried again from the same page that linked to it. The same rule across
+        runs is what a resume wants: a 502 or a timeout from an hour ago is
+        usually fine now, and a permanent 404 costs one request to find out
+        again. Without this a resumed crawl could never revisit a page that had
+        failed, so it silently accepted the first attempt as the answer.
+
+        The pages stay in ``visited`` — the failure is a fact about the past, and
+        ``mark_visited`` overwrites it when the retry lands. Their ``scraped_at``
+        stays behind this run's start, so an admission check inside *this* run
+        still rejects them: one retry, not a loop.
+        """
+        before = self._conn.total_changes
+        self._conn.execute(
+            "INSERT OR IGNORE INTO queue (url, priority, added_at) "
+            "SELECT url, 0, ? FROM visited WHERE success = 0",
+            (time.time(),),
+        )
+        added = self._conn.total_changes - before
+        self._queued += added
+        self._commit()
+        return added
+
     def has_state(self) -> bool:
         """Whether this database holds queue or visited rows from a prior run."""
         return bool(self._queued or self._visited)
@@ -504,6 +532,12 @@ class Crawler:
                 console.print(
                     f"  {OK} Resumed from checkpoint — {self._state.scraped} pages already scraped"
                 )
+            # A page that failed in an earlier run is the one thing a resume has
+            # left to offer: the successes are done by definition, so without
+            # this the second run could only repeat the first run's failures.
+            retrying = self._queue.requeue_failed()
+            if retrying:
+                console.print(f"  {info(f'Retrying {retrying} previously failed pages')}")
 
         # Always ensure start_url is queued (a no-op once it has been scraped)
         self._queue.enqueue(start_url)

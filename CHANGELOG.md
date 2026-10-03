@@ -140,6 +140,9 @@ queue (43% slower than the two statements it replaced).
   visited rows first and says so; saved pages and manifests are untouched. Only
   the crawl state is discarded, and by SQL rather than by deleting the file, so
   the path stays stable and the WAL sidecars stay consistent.
+- `--resume` also retries the pages the previous run failed on. They sat in
+  `visited`, so nothing could re-admit them and a 502 that had since healed was
+  a permanent failure; each is retried once per run, not once per rediscovery.
 - `analyze` accepts `api_key`, and reports the backend's friendly display name
   ("LM Studio") rather than the raw flag value.
 - Unavailable runtimes raise `RuntimeUnavailableError`, carrying the URL and the
