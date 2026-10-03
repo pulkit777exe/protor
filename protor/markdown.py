@@ -391,9 +391,7 @@ def _emit_block(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: int = 0
     for child in tag.children:
         if lines.capped:
             return
-        if isinstance(child, Tag) and (
-            child.name in _BLOCK_TAGS or _wraps_blocks(child)
-        ):
+        if isinstance(child, Tag) and (child.name in _BLOCK_TAGS or _wraps_blocks(child)):
             flush()
             _process_element(child, base_url, lines, depth, _rd + 1)
         else:
@@ -461,48 +459,133 @@ def _process_list(tag: Tag, base_url: str, lines: _Lines, depth: int) -> None:
     lines.append("")
 
 
+def _own_rows(table: Tag) -> list[Tag]:
+    """
+    The ``<tr>`` elements belonging to *table* itself.
+
+    ``find_all("tr")`` descends into nested tables, so on a layout table it
+    returns the outer rows *and* every row of the tables inside it. Hacker News
+    wraps its whole story list in a table, so its outer table reported 98 rows
+    against 4 of its own: the story list was rendered once through the outer
+    table's flattened rows and again when the inner table was walked normally.
+    A real story title appeared three times in the Markdown and once in the page.
+
+    A row belongs to this table when no ``<table>`` sits between it and here.
+    """
+    rows: list[Tag] = []
+    for row in table.find_all("tr"):
+        ancestor = row.parent
+        while ancestor is not None and ancestor is not table:
+            if isinstance(ancestor, Tag) and ancestor.name == "table":
+                break
+            ancestor = ancestor.parent
+        else:
+            rows.append(row)
+            continue
+    return rows
+
+
+def _text_excluding_nested_tables(node: Tag) -> str:
+    """
+    *node*'s text, skipping the contents of any table nested inside it.
+
+    ``get_text`` descends everywhere, so a layout ``<td>`` holding a whole story
+    list returns that list as one cell's text — and then the inner table is
+    walked as well and renders the same stories again. The outer table is a
+    frame, not content, and its cell should not restate what is inside it.
+    """
+    parts: list[str] = []
+
+    def walk(element: Tag) -> None:
+        for child in element.children:
+            if isinstance(child, Tag):
+                if child.name == "table":
+                    continue
+                walk(child)
+            else:
+                parts.append(str(child))
+
+    walk(node)
+    return _WHITESPACE.sub(" ", "".join(parts)).strip()
+
+
+def _own_cells(row: Tag) -> list[Tag]:
+    """
+    The ``<th>``/``<td>`` elements belonging to *row* itself.
+
+    Same rule as :func:`_own_rows`, one level down. Filtering the rows is not
+    enough on its own: a layout row holding the real content table yields every
+    cell inside that nested table, so the outer table re-rendered the inner one
+    — which is why the Hacker News story list came out as a single enormous row
+    while the table that actually holds those rows was never reached.
+    """
+    cells: list[Tag] = []
+    for cell in row.find_all(["th", "td"]):
+        ancestor = cell.parent
+        while ancestor is not None and ancestor is not row:
+            if isinstance(ancestor, Tag) and ancestor.name in ("tr", "table"):
+                break
+            ancestor = ancestor.parent
+        else:
+            cells.append(cell)
+    return cells
+
+
 def _process_table(tag: Tag, base_url: str, lines: _Lines) -> None:
-    """Convert HTML table to Markdown table."""
-    # A table is emitted whole or not at all: its column widths come from every
-    # row, so stopping part-way through would reflow the part that is kept.
+    """Convert an HTML table to a Markdown table."""
+    # A table is emitted whole or not at all: it was chosen for that reason when
+    # column widths were padded to match, and it still holds because a row that
+    # is dropped mid-table leaves a header with no body under it.
     if lines.capped:
         return
-    rows = tag.find_all("tr")
+    rows = _own_rows(tag)
     if not rows:
         return
 
     table_data: list[list[str]] = []
     for row in rows:
-        cells = row.find_all(["th", "td"])
-        table_data.append([c.get_text(strip=True) for c in cells])
+        row_data = [_text_excluding_nested_tables(c) for c in _own_cells(row)]
+        # A row can legitimately hold no cells (a spacer row used for layout),
+        # and a row whose every cell is empty carries no information either.
+        if any(row_data):
+            table_data.append(row_data)
 
-    if not table_data:
-        return
+    # A layout table can have nothing of its own to say — its only cells hold the
+    # table that has the content — so falling through to the nested tables below
+    # matters more than emitting anything here. Returning early instead left the
+    # whole page empty, because the table that held the text was never reached.
+    if table_data:
+        lines.append("")
+        lines.append("| " + " | ".join(table_data[0]) + " |")
+        # The separator describes the header, so it is sized from the header.
+        # Taking it from whichever row happened to come second gave a layout
+        # table a separator dozens of cells wide, under a header three across.
+        lines.append("| " + " | ".join("---" for _ in table_data[0]) + " |")
+        for row_data in table_data[1:]:
+            lines.append("| " + " | ".join(row_data) + " |")
+        lines.append("")
 
-    # Determine column widths
-    num_cols = max(len(r) for r in table_data)
-    col_widths = [0] * num_cols
-    for row_data in table_data:
-        for i, cell in enumerate(row_data):
-            if i < num_cols:
-                col_widths[i] = max(col_widths[i], len(cell))
-
-    # Normalize row lengths
-    for row_data in table_data:
-        while len(row_data) < num_cols:
-            row_data.append("")
-
-    lines.append("")
-    # Header
-    header = table_data[0]
-    lines.append("| " + " | ".join(c.ljust(col_widths[i]) for i, c in enumerate(header)) + " |")
-    lines.append("| " + " | ".join("-" * col_widths[i] for i in range(num_cols)) + " |")
-    # Body
-    for row_data in table_data[1:]:
-        lines.append(
-            "| " + " | ".join(c.ljust(col_widths[i]) for i, c in enumerate(row_data)) + " |"
-        )
-    lines.append("")
+    # Render the tables nested *directly* inside this one, which the walk would
+    # otherwise skip: a layout table's own rows are its frame, and the content it
+    # frames lives in a table of its own. Excluding nested rows and cells stops
+    # this table restating that content, but something still has to render it,
+    # and the ordinary descent cannot reach it from here.
+    #
+    # "Directly" matters: recursing into *every* descendant table makes each
+    # level render all of the levels below it, so thirty levels of nesting is
+    # two to the thirty. Taking only the tables whose nearest table ancestor is
+    # this one makes the walk linear, because each table is then rendered by
+    # exactly one parent.
+    for nested in tag.find_all("table"):
+        if nested is tag:
+            continue
+        ancestor = nested.parent
+        while ancestor is not None and ancestor is not tag:
+            if isinstance(ancestor, Tag) and ancestor.name == "table":
+                break
+            ancestor = ancestor.parent
+        else:
+            _process_table(nested, base_url, lines)
 
 
 def _clean_markdown(text: str) -> str:
