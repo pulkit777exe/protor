@@ -11,32 +11,75 @@ from protor.runtimes import (
     resolve_api_key,
     resolve_base_url,
     runtime_names,
+    shared_url_runtimes,
 )
+
+#: Every major local runtime protor claims to support, with the URL each one
+#: listens on by default. Ports are taken from each project's own documentation.
+EXPECTED_RUNTIMES = {
+    "ollama": "http://localhost:11434",
+    "lmstudio": "http://localhost:1234",
+    "llamacpp": "http://localhost:8080",
+    "vllm": "http://localhost:8000",
+    "localai": "http://localhost:8081",
+    "jan": "http://localhost:1337",
+    "llamafile": "http://localhost:8080",
+    "tabbyapi": "http://localhost:8080",
+    "cortex": "http://localhost:8080",
+    "gpt4all": "http://localhost:4891",
+    "koboldcpp": "http://localhost:5001",
+    "oobabooga": "http://localhost:5000",
+    "sglang": "http://localhost:30000",
+    "xinference": "http://localhost:9997",
+    "litellm": "http://localhost:4000",
+    "anythingllm": "http://localhost:3001",
+    "docker": "http://localhost:12434",
+}
 
 
 class TestRegistry:
     def test_known_runtimes_are_registered(self):
-        for key in ("ollama", "llamacpp", "lmstudio", "vllm", "localai", "jan"):
+        for key in EXPECTED_RUNTIMES:
             assert key in runtime_names()
 
-    def test_documented_default_urls(self):
+    @pytest.mark.parametrize(("key", "url"), sorted(EXPECTED_RUNTIMES.items()))
+    def test_documented_default_urls(self, key, url):
         # Values taken from each project's own documentation.
-        assert get_runtime("ollama").default_url == "http://localhost:11434"
-        assert get_runtime("llamacpp").default_url == "http://localhost:8080"
-        assert get_runtime("lmstudio").default_url == "http://localhost:1234"
-        assert get_runtime("vllm").default_url == "http://localhost:8000"
+        assert get_runtime(key).default_url == url
 
     def test_every_runtime_has_a_start_hint_and_docs(self):
         for runtime in RUNTIMES.values():
             assert runtime.start_hint
             assert runtime.docs.startswith("http")
 
+    def test_every_runtime_declares_its_endpoints(self):
+        """Endpoints are data, not assumptions — each runtime must supply them."""
+        for runtime in RUNTIMES.values():
+            assert runtime.health_path.startswith("/")
+            assert runtime.models_path.startswith("/")
+            assert runtime.chat_path.startswith("/")
+
+    def test_openai_compatible_runtimes_use_the_v1_api(self):
+        """Only Docker deviates, so anything else is a typo in the table."""
+        for runtime in RUNTIMES.values():
+            if runtime.api != "openai" or runtime.key == "docker":
+                continue
+            assert runtime.models_path == "/v1/models", runtime.key
+            assert runtime.chat_path == "/v1/chat/completions", runtime.key
+
+    def test_docker_model_runner_uses_the_engines_prefix(self):
+        """It is OpenAI-compatible, but not at /v1."""
+        runtime = get_runtime("docker")
+        assert runtime.models_path == "/engines/v1/models"
+        assert runtime.chat_path == "/engines/v1/chat/completions"
+        assert runtime.default_url == "http://localhost:12434"
+
     def test_only_ollama_uses_its_native_api(self):
         """Everything else is OpenAI-compatible, so they share one backend."""
         native = {r.key for r in RUNTIMES.values() if r.api == "ollama"}
         compat = {r.key for r in RUNTIMES.values() if r.api == "openai"}
         assert native == {"ollama"}
-        assert "llamacpp" in compat and "lmstudio" in compat and "vllm" in compat
+        assert compat == set(EXPECTED_RUNTIMES) - {"ollama"}
 
     @pytest.mark.parametrize(
         ("alias", "expected"),
@@ -49,10 +92,45 @@ class TestRegistry:
             ("vLLM", "vllm"),
             ("local-ai", "localai"),
             ("  Ollama  ", "ollama"),
+            ("gpt-4all", "gpt4all"),
+            ("GPT4All", "gpt4all"),
+            ("nomic", "gpt4all"),
+            ("kobold", "koboldcpp"),
+            ("kobold-cpp", "koboldcpp"),
+            ("ooba", "oobabooga"),
+            ("text-generation-webui", "oobabooga"),
+            ("webui", "oobabooga"),
+            ("tabby", "tabbyapi"),
+            ("llamafile", "llamafile"),
+            ("cortex.cpp", "cortex"),
+            ("sglang", "sglang"),
+            ("xinference", "xinference"),
+            ("lite-llm", "litellm"),
+            ("anything-llm", "anythingllm"),
+            ("model-runner", "docker"),
+            ("Docker-Model-Runner", "docker"),
+            ("dmr", "docker"),
         ],
     )
     def test_aliases_resolve(self, alias, expected):
         assert get_runtime(alias).key == expected
+
+    def test_every_runtime_key_has_an_alias(self):
+        """`--backend <key>` must work even if no alias entry exists for it."""
+        for key in runtime_names():
+            assert get_runtime(key).key == key
+
+    def test_no_alias_points_at_a_missing_runtime(self):
+        """A typo'd alias would only surface when a user typed it."""
+        from protor.runtimes import _ALIASES
+
+        for alias, target in _ALIASES.items():
+            assert target in RUNTIMES, f"{alias} -> {target}"
+
+    def test_env_var_names_are_unique(self):
+        """Two runtimes sharing a variable would silently fight over the URL."""
+        envs = [r.env_url for r in RUNTIMES.values() if r.env_url]
+        assert len(envs) == len(set(envs))
 
     def test_unknown_runtime_lists_valid_options(self):
         with pytest.raises(ValueError) as exc:
@@ -116,6 +194,57 @@ class TestDetection:
         detect_runtimes()
         assert len(calls) == len(set(calls))
 
+    def test_runtimes_sharing_a_url_are_all_reported(self, monkeypatch):
+        """
+        The llama.cpp family shares port 8080; one server answers for all of it.
+
+        Probing was deduplicated by URL, so only the first was ever reported —
+        the other three read as "stopped" while a working server sat on the port.
+        """
+        monkeypatch.setattr(
+            "protor.runtimes._probe",
+            lambda runtime, timeout: runtime.url == "http://localhost:8080",
+        )
+        detected = {r.key for r in detect_runtimes()}
+        assert {"llamacpp", "llamafile", "tabbyapi", "cortex"} <= detected
+
+    def test_shared_url_group_is_reported_once(self, monkeypatch):
+        calls: list[str] = []
+        monkeypatch.setattr(
+            "protor.runtimes._probe",
+            lambda runtime, timeout: calls.append(f"{runtime.url}{runtime.health_path}") or False,
+        )
+        detect_runtimes()
+        assert len(calls) == len(set(calls))
+
+    def test_env_overrides_split_a_shared_url(self, monkeypatch):
+        """Pointing TabbyAPI elsewhere must stop it inheriting llama.cpp's probe."""
+        monkeypatch.setenv("TABBY_API_URL", "http://localhost:7777")
+        monkeypatch.setattr(
+            "protor.runtimes._probe",
+            lambda runtime, timeout: runtime.url == "http://localhost:7777",
+        )
+        detected = {r.key for r in detect_runtimes()}
+        assert detected == {"tabbyapi"}
+
+
+class TestSharedUrlRuntimes:
+    def test_real_registry_exposes_the_llama_cpp_family_group(self):
+        """The 8080 group is real, not hypothetical — guard the footnote input."""
+        groups = {url: {r.key for r in rs} for url, rs in shared_url_runtimes()}
+        assert groups["http://localhost:8080"] == {"llamacpp", "llamafile", "tabbyapi", "cortex"}
+
+    def test_groups_runtimes_that_resolve_to_one_url(self, monkeypatch):
+        """Two runtimes pointed at the same server must be grouped, not deduped away."""
+        monkeypatch.setenv("VLLM_URL", "http://localhost:1234")
+        groups = {url: {r.key for r in rs} for url, rs in shared_url_runtimes()}
+        assert groups["http://localhost:1234"] == {"lmstudio", "vllm"}
+
+    def test_separate_ports_are_not_grouped(self, monkeypatch):
+        monkeypatch.setenv("VLLM_URL", "http://localhost:9999")
+        grouped = {url for url, _ in shared_url_runtimes()}
+        assert "http://localhost:9999" not in grouped
+
 
 class TestProbe:
     """The probe only reports 'something is listening', never auth details."""
@@ -151,6 +280,24 @@ class TestProbe:
         responses_lib.add(responses_lib.GET, "http://x:2/v1/models", json={"data": []}, status=200)
         assert _probe(get_runtime("lmstudio"), 1.0) is True
         assert str(responses_lib.calls[0].request.url) == "http://x:2/v1/models"
+
+    @responses_lib.activate
+    def test_probe_falls_back_to_the_base_url(self, monkeypatch):
+        """A runtime serving its API elsewhere is still 'running'."""
+        monkeypatch.setenv("LMSTUDIO_URL", "http://x:3")
+        responses_lib.add(responses_lib.GET, "http://x:3/v1/models", status=404)
+        responses_lib.add(responses_lib.GET, "http://x:3/", status=200)
+        assert _probe(get_runtime("lmstudio"), 1.0) is True
+
+    @responses_lib.activate
+    def test_probe_uses_the_runtime_specific_prefix(self, monkeypatch):
+        """Docker Model Runner does not serve /v1/models."""
+        monkeypatch.setenv("DOCKER_MODEL_RUNNER_URL", "http://x:4")
+        responses_lib.add(
+            responses_lib.GET, "http://x:4/engines/v1/models", json={"data": []}, status=200
+        )
+        assert _probe(get_runtime("docker"), 1.0) is True
+        assert str(responses_lib.calls[0].request.url) == "http://x:4/engines/v1/models"
 
 
 class TestUnavailableError:

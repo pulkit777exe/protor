@@ -5,11 +5,13 @@ import json
 import pytest
 import responses as responses_lib
 
+from protor.exceptions import ModelListUnavailableError
 from protor.llm_backends import (
     BACKEND_CHOICES,
     ModelInfo,
     OllamaBackend,
     OpenAICompatBackend,
+    _endpoint,
     _format_timestamp,
     _iter_sse_text,
     create_backend,
@@ -126,6 +128,46 @@ class TestTimestampFormatting:
 # ── OpenAI-compatible backend ────────────────────────────────────────────────
 
 
+class TestEndpointJoining:
+    """Base URLs are pasted from docs, and the docs disagree about the /v1."""
+
+    def test_appends_the_path(self):
+        assert _endpoint("http://localhost:1234", "/v1/models") == "http://localhost:1234/v1/models"
+
+    def test_trailing_slash_on_the_base_is_harmless(self):
+        assert _endpoint("http://localhost:1234/", "/v1/models") == "http://localhost:1234/v1/models"
+
+    def test_base_that_already_ends_in_the_prefix(self):
+        """KoboldCpp's docs say to use a base URL ending in /v1."""
+        assert (
+            _endpoint("http://localhost:5001/v1", "/v1/chat/completions")
+            == "http://localhost:5001/v1/chat/completions"
+        )
+
+    def test_overlap_matching_is_case_sensitive(self):
+        """HTTP paths are case-sensitive; /V1 is not /v1 on a real server."""
+        assert (
+            _endpoint("http://localhost:5001/V1", "/v1/models")
+            == "http://localhost:5001/V1/v1/models"
+        )
+
+    def test_overlap_must_start_at_a_segment_boundary(self):
+        """A base ending in '...v1' is not a prefix match for '/v1/...'."""
+        assert (
+            _endpoint("http://localhost:8080/myv1", "/v1/models")
+            == "http://localhost:8080/myv1/v1/models"
+        )
+
+    def test_docker_engines_prefix(self):
+        assert (
+            _endpoint("http://localhost:12434", "/engines/v1/chat/completions")
+            == "http://localhost:12434/engines/v1/chat/completions"
+        )
+
+    def test_root_path_is_left_alone(self):
+        assert _endpoint("http://localhost:1234", "") == "http://localhost:1234"
+
+
 class TestOpenAICompatBackend:
     def test_resolves_runtime_url(self, monkeypatch):
         monkeypatch.delenv("LMSTUDIO_URL", raising=False)
@@ -227,6 +269,85 @@ class TestOpenAICompatBackend:
         with pytest.raises(RuntimeError, match="API token"):
             list(backend.stream("hi"))
 
+    @responses_lib.activate
+    def test_check_available_survives_a_missing_models_endpoint(self):
+        """Chat can still work when a runtime does not implement /v1/models."""
+        responses_lib.add(responses_lib.GET, f"{OPENAI_URL}/v1/models", status=404)
+        responses_lib.add(responses_lib.GET, f"{OPENAI_URL}/", status=200)
+        assert OpenAICompatBackend("m", base_url=OPENAI_URL).check_available() is True
+
+    @responses_lib.activate
+    def test_missing_models_endpoint_is_explained(self):
+        responses_lib.add(responses_lib.GET, f"{OPENAI_URL}/v1/models", status=404)
+        with pytest.raises(ModelListUnavailableError, match="--model"):
+            OpenAICompatBackend("m", base_url=OPENAI_URL).list_models()
+
+    @responses_lib.activate
+    def test_unreachable_model_list_says_so(self):
+        responses_lib.add(
+            responses_lib.GET,
+            f"{OPENAI_URL}/v1/models",
+            body=ConnectionError("refused"),
+        )
+        with pytest.raises(RuntimeError, match="Could not reach"):
+            OpenAICompatBackend("m", base_url=OPENAI_URL).list_models()
+
+    @responses_lib.activate
+    def test_docker_runtime_uses_the_engines_prefix(self, monkeypatch):
+        monkeypatch.setenv("DOCKER_MODEL_RUNNER_URL", "http://localhost:12434")
+        responses_lib.add(
+            responses_lib.GET,
+            "http://localhost:12434/engines/v1/models",
+            json={"data": [{"id": "ai/smollm2"}]},
+            status=200,
+        )
+        backend = create_backend("docker", "ai/smollm2")
+        assert backend.check_available() is True
+        assert [m.name for m in backend.list_models()] == ["ai/smollm2"]
+
+    def test_docker_runtime_streams_from_the_engines_prefix(self, monkeypatch):
+        seen: dict[str, str] = {}
+
+        class Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def iter_lines(self):
+                yield from sse("ok")
+
+        def fake_post(url, **kwargs):
+            seen["url"] = url
+            return Resp()
+
+        monkeypatch.setattr("requests.post", fake_post)
+        backend = create_backend("docker", "ai/smollm2")
+        assert "".join(backend.stream("hi")) == "ok"
+        assert seen["url"] == "http://localhost:12434/engines/v1/chat/completions"
+
+    def test_base_url_already_ending_in_v1_is_not_doubled(self, monkeypatch):
+        """Users copy 'http://localhost:5001/v1' straight out of the docs."""
+        seen: dict[str, str] = {}
+
+        class Resp:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def iter_lines(self):
+                yield from sse("ok")
+
+        def fake_post(url, **kwargs):
+            seen["url"] = url
+            return Resp()
+
+        monkeypatch.setattr("requests.post", fake_post)
+        backend = create_backend("koboldcpp", "m", base_url="http://localhost:5001/v1")
+        assert "".join(backend.stream("hi")) == "ok"
+        assert seen["url"] == "http://localhost:5001/v1/chat/completions"
+
 
 # ── factory ───────────────────────────────────────────────────────────────────
 
@@ -235,11 +356,33 @@ class TestCreateBackend:
     def test_ollama_gets_the_native_backend(self):
         assert isinstance(create_backend("ollama", "llama3"), OllamaBackend)
 
-    @pytest.mark.parametrize("key", ["llamacpp", "lmstudio", "vllm", "localai", "jan"])
+    @pytest.mark.parametrize(
+        "key",
+        [
+            "llamacpp",
+            "lmstudio",
+            "vllm",
+            "localai",
+            "jan",
+            "llamafile",
+            "tabbyapi",
+            "cortex",
+            "gpt4all",
+            "koboldcpp",
+            "oobabooga",
+            "sglang",
+            "xinference",
+            "litellm",
+            "anythingllm",
+            "docker",
+        ],
+    )
     def test_openai_compatible_runtimes_share_one_class(self, key):
         assert isinstance(create_backend(key, "m"), OpenAICompatBackend)
 
-    @pytest.mark.parametrize("alias", ["llama.cpp", "llama-cpp", "LM-Studio", "vLLM"])
+    @pytest.mark.parametrize(
+        "alias", ["llama.cpp", "llama-cpp", "LM-Studio", "vLLM", "gpt-4all", "model-runner"]
+    )
     def test_aliases_work_through_the_factory(self, alias):
         assert isinstance(create_backend(alias, "m"), OpenAICompatBackend)
 
@@ -262,12 +405,44 @@ class TestCreateBackend:
         for key in ("ollama", "lmstudio", "vllm"):
             assert key in BACKEND_CHOICES
 
+    def test_every_registered_runtime_is_a_backend_choice(self):
+        """A runtime nobody can select with --backend is dead weight."""
+        from protor.runtimes import runtime_names
+
+        for key in runtime_names():
+            assert key in BACKEND_CHOICES
+
     def test_every_local_runtime_builds_without_credentials(self):
         """Local runtimes must never demand a cloud API key."""
-        for key in ("ollama", "llamacpp", "lmstudio", "vllm", "localai", "jan"):
+        from protor.runtimes import runtime_names
+
+        for key in runtime_names():
             backend = create_backend(key, "m")
             assert backend.model_name == "m"
             assert backend.start_hint()
+
+    @pytest.mark.parametrize("key", ["gpt4all", "koboldcpp", "docker", "llamafile"])
+    def test_model_not_found_hint_names_the_selected_runtime(self, key, monkeypatch):
+        """The suggested `protor models` command must use the runtime the user typed."""
+        monkeypatch.setattr("requests.post", lambda *a, **k: FakeStream([], status_code=404))
+        with pytest.raises(RuntimeError, match=f"--backend {key}"):
+            list(create_backend(key, "m").stream("hi"))
+
+    @pytest.mark.parametrize(
+        ("key", "label"),
+        [
+            ("llamacpp", "llama.cpp"),
+            ("lmstudio", "LM Studio"),
+            ("vllm", "vLLM"),
+            ("gpt4all", "GPT4All"),
+            ("koboldcpp", "KoboldCpp"),
+            ("oobabooga", "text-generation-webui"),
+            ("litellm", "LiteLLM proxy"),
+            ("docker", "Docker Model Runner"),
+        ],
+    )
+    def test_runtime_labels_are_user_facing(self, key, label):
+        assert create_backend(key, "m").display_name == label
 
 
 class TestListModelsHelper:

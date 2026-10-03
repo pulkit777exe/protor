@@ -57,3 +57,19 @@ class DataFileNotFoundError(ProtorError):
     def __init__(self, path: str) -> None:
         self.path = path
         super().__init__(f"Data file not found: {path!r}. Run: protor scrape <urls>")
+
+
+class ModelListUnavailableError(RuntimeError):
+    """
+    Raised when a runtime serves chat completions but exposes no model listing.
+
+    Distinct from a generic failure because the remedy is different: the model
+    name must be passed by hand rather than discovered.
+    """
+
+    def __init__(self, runtime: str, url: str) -> None:
+        self.runtime = runtime
+        self.url = url
+        super().__init__(
+            f"{runtime} does not expose a model list at {url}. Pass the model explicitly: --model <name>"
+        )

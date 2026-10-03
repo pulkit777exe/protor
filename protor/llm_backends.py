@@ -7,9 +7,10 @@ Two local-runtime backends and two hosted ones:
 
 * :class:`OllamaBackend` — Ollama's native newline-delimited API.
 * :class:`OpenAICompatBackend` — the ``/v1/chat/completions`` API that
-  llama.cpp, LM Studio, vLLM, LocalAI and Jan all implement. One
+  llama.cpp, LM Studio, vLLM, LocalAI, Jan, GPT4All, KoboldCpp, llamafile,
+  TabbyAPI, SGLang, LiteLLM and every other modern local runtime implement. One
   implementation covers all of them; :mod:`protor.runtimes` supplies the
-  per-runtime URL and start hints.
+  per-runtime URL and endpoint paths.
 * :class:`OpenAIBackend` / :class:`AnthropicBackend` — hosted APIs.
 
 Everything here uses ``requests`` rather than vendor SDKs, so pointing protor
@@ -29,8 +30,10 @@ import os
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
+from urllib.parse import urlsplit
 
 from .config import ANALYSIS_TIMEOUT, OLLAMA_CHECK_TIMEOUT
+from .exceptions import ModelListUnavailableError
 from .runtimes import get_runtime, resolve_api_key, resolve_base_url, runtime_names
 
 if TYPE_CHECKING:
@@ -121,6 +124,34 @@ def _auth_headers(api_key: str | None) -> dict[str, str]:
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
     return headers
+
+
+def _endpoint(base_url: str, path: str) -> str:
+    """
+    Join a base URL with an API path without duplicating the overlapping part.
+
+    Runtimes document their base URL inconsistently: some say ``http://host:port``
+    and some (KoboldCpp, LM Studio) say ``http://host:port/v1``. Naively appending
+    ``/v1/chat/completions`` to the latter yields a ``/v1/v1/...`` 404, so any path
+    segment already present at the end of the base is dropped from the API path.
+    """
+    base = base_url.rstrip("/")
+    if not path:
+        return base
+
+    base_path = urlsplit(base).path.rstrip("/")
+    if not base_path:
+        return f"{base}{path}"
+
+    # Longest suffix of the base path that also opens the API path wins.
+    segments = base_path.split("/")
+    for i in range(len(segments)):
+        overlap = "/".join(segments[i:])
+        if not overlap:
+            continue
+        if path == overlap or path.startswith(f"{overlap}/"):
+            return f"{base}{path[len(overlap) :]}"
+    return f"{base}{path}"
 
 
 class OllamaBackend(LLMBackend):
@@ -222,11 +253,19 @@ class OpenAICompatBackend(LLMBackend):
     """
     Any runtime speaking the OpenAI chat-completions API.
 
-    Serves llama.cpp, LM Studio, vLLM, LocalAI and Jan — they all implement the
-    same ``POST /v1/chat/completions`` SSE contract, so they share this class and
-    differ only in URL. Pass *runtime* to pick one by key; otherwise supply
-    *base_url* directly.
+    Serves llama.cpp, LM Studio, vLLM, LocalAI, Jan, GPT4All, KoboldCpp,
+    llamafile, TabbyAPI, SGLang, LiteLLM and the rest — they all implement the
+    same ``POST /v1/chat/completions`` SSE contract, so they share this class.
+    Pass *runtime* to pick one by key; otherwise supply *base_url* directly.
+
+    The endpoints come from the runtime record rather than being hardcoded, which
+    is what lets Docker Model Runner work: it is OpenAI-compatible but serves
+    ``/engines/v1/...`` instead of ``/v1/...``.
     """
+
+    #: Used when no runtime is named and the caller only gave a bare URL.
+    _DEFAULT_MODELS_PATH = "/v1/models"
+    _DEFAULT_CHAT_PATH = "/v1/chat/completions"
 
     def __init__(
         self,
@@ -241,14 +280,18 @@ class OpenAICompatBackend(LLMBackend):
         self._model = model
         self._runtime_key = runtime
         if runtime is not None:
-            resolved_key = get_runtime(runtime).key
-            self._base_url = resolve_base_url(resolved_key, base_url)
-            self._api_key = resolve_api_key(resolved_key, api_key)
-            self._label = label or get_runtime(resolved_key).label
+            record = get_runtime(runtime)
+            self._base_url = resolve_base_url(record.key, base_url)
+            self._api_key = resolve_api_key(record.key, api_key)
+            self._label = label or record.label
+            self._models_path = record.models_path
+            self._chat_path = record.chat_path
         else:
             self._base_url = (base_url or "").rstrip("/")
             self._api_key = api_key
             self._label = label or "OpenAI-compatible"
+            self._models_path = self._DEFAULT_MODELS_PATH
+            self._chat_path = self._DEFAULT_CHAT_PATH
         self._timeout = timeout
 
     @property
@@ -269,29 +312,48 @@ class OpenAICompatBackend(LLMBackend):
         return get_runtime(self._runtime_key).start_hint
 
     def check_available(self) -> bool:
+        """
+        Report whether the runtime is reachable.
+
+        A missing ``/models`` endpoint is not treated as "down": the chat
+        endpoint is the one that matters, and a 404 on the listing would
+        otherwise block analysis for runtimes that simply do not implement one.
+        """
         import requests
 
         if not self._base_url:
             return False
-        try:
-            resp = requests.get(
-                f"{self._base_url}/v1/models",
-                headers=_auth_headers(self._api_key),
-                timeout=OLLAMA_CHECK_TIMEOUT,
-            )
-            status: int = resp.status_code
-            return status < 500
-        except Exception:
-            return False
+        for path in (self._models_path, ""):
+            try:
+                resp = requests.get(
+                    _endpoint(self._base_url, path),
+                    headers=_auth_headers(self._api_key),
+                    timeout=OLLAMA_CHECK_TIMEOUT,
+                )
+                status: int = resp.status_code
+            except Exception:
+                continue
+            if status < 500:
+                return True
+        return False
 
     def list_models(self) -> list[ModelInfo]:
         import requests
 
-        resp = requests.get(
-            f"{self._base_url}/v1/models",
-            headers=_auth_headers(self._api_key),
-            timeout=OLLAMA_CHECK_TIMEOUT,
-        )
+        try:
+            resp = requests.get(
+                _endpoint(self._base_url, self._models_path),
+                headers=_auth_headers(self._api_key),
+                timeout=OLLAMA_CHECK_TIMEOUT,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"Could not reach {self._label} at {self._base_url}: {exc}"
+            ) from exc
+        if resp.status_code == 404:
+            raise ModelListUnavailableError(
+                self._label, _endpoint(self._base_url, self._models_path)
+            )
         resp.raise_for_status()
         payload: dict[str, Any] = resp.json()
         models: list[ModelInfo] = []
@@ -313,7 +375,7 @@ class OpenAICompatBackend(LLMBackend):
             raise RuntimeError(f"No base URL configured for {self._label}")
 
         resp = requests.post(
-            f"{self._base_url}/v1/chat/completions",
+            _endpoint(self._base_url, self._chat_path),
             json={
                 "model": self._model,
                 "messages": [{"role": "user", "content": prompt}],
@@ -568,9 +630,9 @@ def create_backend(backend: str, model: str, **kwargs: Any) -> LLMBackend:
     """
     Create a backend by name.
 
-    Accepts a runtime key (``ollama``, ``llamacpp``, ``lmstudio``, ``vllm``,
-    ``localai``, ``jan`` and aliases like ``llama.cpp``), the generic
-    ``openai-compatible``, or a hosted ``openai`` / ``anthropic``.
+    Accepts any runtime key or alias (``ollama``, ``llamacpp``, ``lmstudio``,
+    ``vllm``, ``localai``, ``jan``, ``gpt4all``, ``koboldcpp``, ``docker`` …),
+    the generic ``openai-compatible``, or a hosted ``openai`` / ``anthropic``.
     """
     name = backend.strip().lower()
     cls = _HOSTED.get(name)
