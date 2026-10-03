@@ -633,3 +633,134 @@ class TestCrawlRender:
         group = _render(state, "/tmp/out")
         rendered = "\n".join(str(getattr(c, "text", c)) for c in getattr(group, "renderables", []))
         assert len(rendered) < 2000
+
+
+# ── malformed / hostile page structure ───────────────────────────────────────
+
+
+class TestHostileMarkup:
+    @pytest.mark.parametrize(
+        "html",
+        [
+            "<html><body><aside><div class='widget'>ad</div></aside><p>keep</p></body></html>",
+            "<html><body><nav><ul><li class='nav-item'>m</li></ul></nav><p>keep</p></body></html>",
+            "<html><body><nav><script>x()</script></nav><p>keep</p></body></html>",
+            "<html><body><header><footer>f</footer></header><p>keep</p></body></html>",
+        ],
+    )
+    def test_nested_noise_does_not_crash(self, html):
+        """
+        Decomposing a parent clears its descendants' __dict__, so a later
+        _is_noise() saw attrs=None and raised. Any page with a <nav> holding a
+        <script>, or an <aside> holding a .widget, failed entirely.
+        """
+        from protor.parser import parse_html
+
+        _, page = parse_html(html, "https://e.com/")
+        assert "keep" in page.markdown_content
+        assert "widget" not in page.markdown_content
+
+    @pytest.mark.parametrize("depth", [200, 1500, 6000])
+    def test_deep_nesting_degrades_instead_of_crashing(self, depth):
+        """The recursive renderer blew the stack past 494 nested elements."""
+        from protor.parser import parse_html
+
+        html = (
+            "<html><body>" + "<div>" * depth + "<p>DEEP</p>" + "</div>" * depth + "</body></html>"
+        )
+        _, page = parse_html(html, "https://e.com/")
+        assert "DEEP" in page.text_content
+
+    def test_decomposed_check_is_not_quadratic(self):
+        """getattr(tag,'decomposed') walks the subtree per tag via bs4 __getattr__."""
+        import time
+
+        from bs4 import BeautifulSoup
+
+        from protor.markdown import _is_decomposed
+
+        deep = BeautifulSoup("<div>" * 600 + "<p>x</p>" + "</div>" * 600, "lxml")
+        tags = deep.find_all(True)
+        start = time.perf_counter()
+        for t in tags:
+            _is_decomposed(t)
+        per_tag = (time.perf_counter() - start) / len(tags)
+        assert per_tag < 5e-6, f"{per_tag * 1e6:.2f} us/tag is too slow (was ~625 ms/page)"
+
+
+# ── robots.txt semantics ─────────────────────────────────────────────────────
+
+
+class TestRobotsPolicySemantics:
+    @pytest.mark.asyncio
+    async def test_server_error_is_not_remembered_as_allow_all(self, fake_session):
+        """
+        A 5xx means the site failed, not that it declined to publish rules.
+        Caching "allow everything" let one bad response wave a whole run past
+        robots.txt for the rest of its life.
+        """
+        from protor import robots
+        from tests.conftest import FakeResponse
+
+        session = fake_session(routes={"https://e.com/robots.txt": FakeResponse(status=500)})
+
+        robots.clear_cache()
+        for i in range(3):
+            await robots.check_robots(f"https://e.com/p{i}", session)
+        assert len(session.requested) == 3, "each page should re-ask after a 5xx"
+        robots.clear_cache()
+
+    @pytest.mark.asyncio
+    async def test_missing_robots_txt_is_remembered(self, fake_session):
+        """RFC 9309: an unavailable robots.txt means no restrictions, and it is a
+        real answer worth remembering."""
+        from protor import robots
+        from tests.conftest import FakeResponse
+
+        session = fake_session(routes={"https://e.com/robots.txt": FakeResponse(status=404)})
+        robots.clear_cache()
+        for i in range(3):
+            await robots.check_robots(f"https://e.com/p{i}", session)
+        assert len(session.requested) == 1, "a 404 is a final answer, fetched once"
+        robots.clear_cache()
+
+
+# ── scrape output must explain failures ──────────────────────────────────────
+
+
+class TestFailureReasonsAreReported:
+    def test_reasons_are_grouped_and_shown(self, monkeypatch, capsys):
+        """The table showed "✗ error" and the summary "3 failed", never why."""
+        import io
+
+        from rich.console import Console
+
+        from protor.scraper import _print_failure_reasons
+
+        monkeypatch.setattr("protor.scraper.console", Console(file=io.StringIO(), width=100))
+        rows = [
+            {"status": "error", "note": "Fetch failed for 'https://a.com/': timeout"},
+            {"status": "error", "note": "Fetch failed for 'https://b.com/': timeout"},
+            {"status": "error", "note": "Fetch failed for 'https://c.com/': HTTP 403"},
+            {"status": "blocked", "note": "blocked by robots.txt"},
+            {"status": "done", "note": None},
+        ]
+        buf = io.StringIO()
+        monkeypatch.setattr("protor.scraper.console", Console(file=buf, width=100))
+        _print_failure_reasons(rows)
+        out = buf.getvalue()
+        assert "timeout" in out and "2" in out, "grouped the repeated cause"
+        assert "robots.txt" in out
+        assert "<url>" in out, "per-URL detail collapsed so causes group"
+
+    def test_nothing_printed_when_everything_succeeded(self, monkeypatch):
+        import io
+
+        from rich.console import Console
+
+        from protor.scraper import _print_failure_reasons
+
+        buf = io.StringIO()
+        monkeypatch.setattr("protor.scraper.console", Console(file=buf, width=100))
+        _print_failure_reasons([{"status": "done", "note": None}])
+        assert buf.getvalue() == ""

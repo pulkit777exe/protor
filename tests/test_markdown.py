@@ -183,3 +183,49 @@ def test_heading_levels():
     for i in range(1, 7):
         md = html_to_markdown(f"<h{i}>H{i}</h{i}>")
         assert f"{'#' * i} H{i}" in md
+
+
+# ── clean_soup ────────────────────────────────────────────────────────────────
+
+
+def test_nested_noise_elements_do_not_crash_clean_soup():
+    """
+    A noise element containing other elements used to raise AttributeError.
+
+    decompose() clears the __dict__ of everything inside the removed element, so
+    the next tag in the pre-materialised list had attrs=None and the noise check
+    raised - which the engine recorded as a scrape error. Real pages hit this on
+    every <nav>, <header>, <footer> and <aside>.
+    """
+    html = (
+        "<html><body>"
+        "<header><div><span>brand</span></div></header>"
+        "<nav><a href='/a'>menu</a></nav>"
+        "<main><h1>Title</h1><p>Real content.</p></main>"
+        "<aside><b>promo</b></aside>"
+        "<footer><div>colophon</div></footer>"
+        "<script>track()</script>"
+        "</body></html>"
+    )
+    md = html_to_markdown(html)
+    assert "Real content." in md
+    assert "track()" not in md
+
+
+def test_deeply_nested_noise_is_removed():
+    html = "<nav><div><ul><li><a href='/deep'>x</a></li></ul></div></nav><p>kept</p>"
+    md = html_to_markdown(html)
+    assert "kept" in md
+    assert "deep" not in md
+
+
+def test_clean_soup_is_idempotent():
+    from bs4 import BeautifulSoup
+
+    from protor.markdown import clean_soup
+
+    soup = BeautifulSoup("<nav><a href='/a'>menu</a></nav><p>kept</p>", "html.parser")
+    clean_soup(soup)
+    first = soup.get_text()
+    clean_soup(soup)
+    assert soup.get_text() == first

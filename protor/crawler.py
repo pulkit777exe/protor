@@ -6,6 +6,15 @@ checkpoint/resume, and auto-scaling concurrency. The crawl loop itself lives in
 :mod:`protor.engine`; this module supplies the persistent queue, the live render,
 and the crawl state observer.
 
+The crawl state has exactly one home: ``crawl_queue.db``. It is opened on every
+run and committed in batches as pages are discovered and scraped, so it survives
+an interrupted run by itself — ``--resume`` is just a crawl that finds its
+predecessors' rows already on disk. The JSON checkpoint next to it is a
+*summary* of the run (start URL, budget, pages scraped) and is never used to
+reconstruct queue state. An earlier version mirrored the whole queue into both
+files and then replayed the JSON through a second connection on the same
+database: every URL was written twice and the two stores could disagree.
+
 Inspired by:
     - Crawl4AI: crash recovery with resume_state
     - Crawlee: persistent request queue
@@ -63,19 +72,31 @@ __all__ = ["Crawler"]
 # ── SQLite-backed crawl queue ────────────────────────────────────────────────
 # Inspired by Crawlee's persistent request queue
 
+#: "Have we already seen this URL?", answered in one round trip. ``enqueue`` is
+#: on the hot path (once per discovered link) and the two tables it consulted
+#: made no difference to the caller: either one means "reject".
+_SEEN_SQL = (
+    "SELECT 1 FROM visited WHERE url = ? UNION ALL SELECT 1 FROM queue WHERE url = ? LIMIT 1"
+)
+
 
 class _CrawlQueue:
     """
     Persistent SQLite-backed URL queue with deduplication.
 
-    Supports BFS ordering, visited tracking, and checkpoint serialization.
+    This database is the crawl's state of record: queue membership, which pages
+    are done, and the counters the live render reports all live here, so a run
+    that dies mid-flight loses nothing beyond the pages that were in flight.
+
+    Supports BFS ordering and visited tracking.
 
     Writes are deferred: mutating calls mark the connection dirty and the
     transaction is committed in batches (and on close). The previous version
     committed per operation, fsyncing three times per page on the event loop —
     ~765 us per page of pure blocking I/O, all of it serialized against fetches.
     In-memory counters answer the ``empty``/``queue_size`` questions that used
-    to run ``COUNT(*)`` on every admission check.
+    to run ``COUNT(*)`` on every admission check, and a counter only ever moves
+    when the statement that changed a row actually changed one.
     """
 
     #: Mutations between automatic commits.
@@ -127,9 +148,17 @@ class _CrawlQueue:
         return int(row[0]) if row else 0
 
     def enqueue(self, url: str, priority: int = 0) -> bool:
-        """Add URL to queue if not already queued or visited. Returns True if added."""
+        """
+        Add URL to queue if not already queued or visited. Returns True if added.
+
+        This runs once per discovered link on every page, making it the most
+        frequently called method in the crawler — and every microsecond here is
+        event-loop time. So it canonicalises once (``canonicalize_url`` is
+        idempotent, so re-running it inside the existence probes was wasted work)
+        and then answers the one question that matters with one statement.
+        """
         url = canonicalize_url(url)
-        if self.is_visited(url) or self.is_queued(url):
+        if self._conn.execute(_SEEN_SQL, (url, url)).fetchone() is not None:
             return False
         self._conn.execute(
             "INSERT INTO queue (url, priority, added_at) VALUES (?, ?, ?)",
@@ -165,12 +194,29 @@ class _CrawlQueue:
         return row is not None
 
     def mark_visited(self, url: str, success: bool = True) -> None:
+        """
+        Record *url* as processed, counting it only if the row is genuinely new.
+
+        ``INSERT OR REPLACE`` always reports a change, so incrementing on its
+        result counted a repeated mark as another page: ``visited_count`` drifted
+        away from ``COUNT(*)`` — the number reopening the database computes — and
+        a resumed crawl reported more pages scraped than existed. Insert-if-absent
+        first, then refresh the row on the rare repeat: the last outcome still
+        wins, but the counter only ever counts rows.
+        """
         url = canonicalize_url(url)
-        self._conn.execute(
-            "INSERT OR REPLACE INTO visited (url, scraped_at, success) VALUES (?, ?, ?)",
-            (url, time.time(), int(success)),
-        )
-        self._visited += 1
+        now = time.time()
+        inserted = self._conn.execute(
+            "INSERT OR IGNORE INTO visited (url, scraped_at, success) VALUES (?, ?, ?)",
+            (url, now, int(success)),
+        ).rowcount
+        if inserted:
+            self._visited += 1
+        else:
+            self._conn.execute(
+                "UPDATE visited SET scraped_at = ?, success = ? WHERE url = ?",
+                (now, int(success), url),
+            )
         self._commit()
 
     @property
@@ -187,32 +233,9 @@ class _CrawlQueue:
 
     @property
     def success_count(self) -> int:
+        """Successful pages. A full scan, so this is a resume-time question only."""
         row = self._conn.execute("SELECT COUNT(*) FROM visited WHERE success = 1").fetchone()
         return row[0] if row else 0
-
-    def to_checkpoint(self) -> dict:
-        """Serialize queue state for checkpoint/resume."""
-        self._commit(force=True)
-        queued = [
-            row[0]
-            for row in self._conn.execute("SELECT url FROM queue ORDER BY added_at ASC").fetchall()
-        ]
-        visited = [
-            row[0]
-            for row in self._conn.execute("SELECT url FROM visited WHERE success = 1").fetchall()
-        ]
-        return {"queued": queued, "visited": visited}
-
-    @classmethod
-    def from_checkpoint(cls, checkpoint: dict, db_path: Path) -> _CrawlQueue:
-        """Restore queue from a checkpoint."""
-        q = cls(db_path)
-        for url in checkpoint.get("visited", []):
-            q.mark_visited(url, success=True)
-        for url in checkpoint.get("queued", []):
-            q.enqueue(url)
-        q._commit(force=True)
-        return q
 
     def close(self) -> None:
         """Flush and close. Idempotent, so repeated teardown is safe."""
@@ -225,6 +248,15 @@ class _CrawlQueue:
 
 # ── crawl state ──────────────────────────────────────────────────────────────
 
+
+#: Shortest gap, in scraped pages, between two checkpoint writes. Closer than
+#: this and the summary says nothing an interrupted crawl could not recompute.
+_CHECKPOINT_MIN_INTERVAL = 5
+
+#: How many checkpoint writes a crawl may spend, whatever its size: the interval
+#: is derived from the page budget so writes stay roughly this many per run
+#: instead of growing with the crawl.
+_CHECKPOINT_WRITES = 20
 
 #: Entries kept in the live log. The view only renders the most recent slice,
 #: so retaining every page of a large crawl grew memory for nothing.
@@ -346,36 +378,46 @@ class Crawler:
         self._state = _State(max_pages=max_pages)
         self._log_index: dict[str, _CrawlLog] = {}
 
-        # SQLite queue
+        # The queue database *is* the crawl state, and it is opened whether or
+        # not --resume was passed: an interrupted run committed its rows in
+        # batches, so the next run finds them whether or not it was asked to.
         db_path = self.output_dir / "crawl_queue.db"
         self._queue = _CrawlQueue(db_path)
 
-        # Load checkpoint if resuming
         checkpoint_path = self.output_dir / CHECKPOINT_FILENAME
-        if resume and checkpoint_path.exists():
-            original = self._queue
-            try:
-                cp = json.loads(checkpoint_path.read_text(encoding="utf-8"))
-                restored = _CrawlQueue.from_checkpoint(cp, db_path)
-            except Exception as exc:
-                # Previously swallowed with `pass`: the user asked to resume and
-                # silently got a fresh crawl, with no clue why. Also leaked the
-                # original connection when the restore failed part-way.
-                console.print(
-                    f"  {warn(f'Could not resume from checkpoint: {exc}')}\n"
-                    f"  {muted('Starting a fresh crawl instead.')}"
-                )
-                restored = None
-            if restored is not None:
-                original.close()
-                self._queue = restored
-                self._state.scraped = self._queue.success_count
+        if resume:
+            if checkpoint_path.exists():
+                self._report_checkpoint(checkpoint_path)
+            # Price the remaining budget from the rows already on disk. This used
+            # to be read out of the JSON summary and then *replayed* into a brand
+            # new connection on this same database, so every URL was written
+            # twice, a visited URL could be pushed back into the queue, and the
+            # two counters could disagree.
+            scraped = self._queue.success_count
+            if scraped:
+                self._state.scraped = scraped
                 console.print(
                     f"  {OK} Resumed from checkpoint — {self._state.scraped} pages already scraped"
                 )
 
-        # Always ensure start_url is queued
+        # Always ensure start_url is queued (a no-op once it has been scraped)
         self._queue.enqueue(start_url)
+
+    def _report_checkpoint(self, checkpoint_path: Path) -> None:
+        """
+        Parse the run summary, reporting a damaged file rather than swallowing it.
+
+        Silently starting over when the checkpoint was unreadable left the user
+        with no clue why their ``--resume`` appeared to do nothing. The crawl
+        carries on either way, from the queue database.
+        """
+        try:
+            json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        except Exception as exc:
+            console.print(
+                f"  {warn(f'Could not resume from checkpoint: {exc}')}\n"
+                f"  {muted('Continuing from the queue database instead.')}"
+            )
 
     # ── public ────────────────────────────────────────────────────────────────
 
@@ -406,14 +448,24 @@ class Crawler:
         console.print()
 
     def _save_checkpoint(self) -> None:
-        """Save crawl state to checkpoint file."""
-        cp = self._queue.to_checkpoint()
-        cp["start_url"] = self.start_url
-        cp["max_pages"] = self.max_pages
-        cp["scraped"] = self._state.scraped
-        cp["timestamp"] = time.time()
-        checkpoint_path = self.output_dir / CHECKPOINT_FILENAME
-        save_json(cp, checkpoint_path)
+        """
+        Write a summary of the run beside the queue database.
+
+        Constant time by construction: the previous version re-serialised every
+        queued and visited URL into this file, so each write cost two full table
+        scans plus a JSON encode of the entire crawl history (1.1 MB by 40,000
+        pages) — all of which resume then discarded in favour of the rows the
+        database had kept anyway.
+        """
+        cp = {
+            "start_url": self.start_url,
+            "max_pages": self.max_pages,
+            "scraped": self._state.scraped,
+            "queued": self._queue.queue_size,
+            "visited": self._queue.visited_count,
+            "timestamp": time.time(),
+        }
+        save_json(cp, self.output_dir / CHECKPOINT_FILENAME)
 
     # ── internal ──────────────────────────────────────────────────────────────
 
@@ -422,17 +474,33 @@ class Crawler:
         if self.auto_scale:
             scaler = AutoScaler(initial=CRAWLER_CONCURRENCY)
 
+        # --max-pages is a ceiling for the whole crawl, not for each run. On resume
+        # the queue already holds pages scraped by earlier runs, so handing the
+        # engine a fresh budget of max_pages let a resumed crawl finish with up to
+        # twice the requested pages (and a progress bar pinned at 100%).
+        max_targets = max(0, self.max_pages - self._state.scraped)
+
         engine = CrawlEngine(
             queue=self._queue,
             link_source=RecursiveSource(),
             output_dir=self.output_dir,
-            max_targets=self.max_pages,
+            max_targets=max_targets,
             concurrency=CRAWLER_CONCURRENCY,
             auto_scaler=scaler,
             allowed_domain=self._base_domain,
             check_robots=True,
             rate_limiter=DomainRateLimiter(delay=CRAWLER_DELAY),
-            checkpoint_interval=5,
+            # A checkpoint is written from the crawl loop, so every one of them is
+            # event-loop stall — and a fixed interval made the bill grow twice
+            # over: more checkpoints as the crawl got longer, and dearer ones as
+            # the history they serialised grew. Budgeting about _CHECKPOINT_WRITES
+            # writes for the whole run keeps that flat; a 40,000-page crawl drops
+            # from ~8,000 checkpoints to ~20.
+            #
+            # Replaying the lost interval costs little because the queue database,
+            # not the checkpoint file, holds the state: a resumed crawl restarts
+            # from the last committed rows rather than from the last summary.
+            checkpoint_interval=max(_CHECKPOINT_MIN_INTERVAL, max_targets // _CHECKPOINT_WRITES),
             on_checkpoint=self._save_checkpoint,
             on_status=self._on_status,
             live_render=lambda: _render(self._state, str(self.output_dir)),
@@ -441,7 +509,10 @@ class Crawler:
 
     def _on_status(self, status: str, url: str, row: dict) -> None:
         """Keep crawl state in sync with engine events for the live render."""
-        domain = urlparse(url).netloc
+        # The engine already parsed this URL to scope the request — that parse is
+        # where row["domain"] comes from — so re-parsing on every status event
+        # bought nothing. Fall back to parsing for a row that arrives without one.
+        domain = row.get("domain") or urlparse(url).netloc
         self._state.queue_n = self._queue.queue_size
 
         if status == "fetching":

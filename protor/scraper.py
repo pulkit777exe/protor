@@ -15,6 +15,7 @@ Public API
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -43,6 +44,46 @@ __all__ = ["extract_links", "scrape_multiple", "scrape_site_async"]
 
 
 # ── live-table helpers ────────────────────────────────────────────────────────
+
+
+#: Distinct failure reasons to show, so a run against 500 dead URLs stays readable.
+MAX_REASONS_SHOWN = 6
+
+_FAILED_STATES = ("error", "blocked", "skipped")
+
+
+def _print_failure_reasons(rows: list[dict]) -> None:
+    """
+    Summarise why pages failed.
+
+    The engine records a reason on every non-success row, but the live table has
+    no room for it, so a run could only report "3 failed" — leaving the user to
+    guess between DNS failure, HTTP 403, a timeout and robots.txt. Groups by
+    cause, since a handful of reasons usually explains a whole batch.
+    """
+    reasons: dict[str, int] = {}
+    for row in rows:
+        if row.get("status") not in _FAILED_STATES:
+            continue
+        note = str(row.get("note", "")).strip() or "no reason recorded"
+        # Collapse per-URL and per-status detail so one cause is one group.
+        key = re.sub(r"https?://\S+", "<url>", note)
+        key = re.sub(r"HTTP \d+", "HTTP <code>", key)
+        key = re.sub(r"\s+", " ", key).strip()
+        reasons[key] = reasons.get(key, 0) + 1
+
+    if not reasons:
+        return
+
+    ranked = sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0]))
+    shown = ranked[:MAX_REASONS_SHOWN]
+    hidden = len(ranked) - len(shown)
+
+    console.print()
+    for reason, count in shown:
+        console.print(f"  {ERR} {count:>5}  {muted(reason)}")
+    if hidden > 0:
+        console.print(f"  {muted(f'+ {hidden} more distinct reason(s)')}")
 
 
 def _build_table(rows: list[dict]) -> Table:
@@ -265,6 +306,7 @@ def scrape_multiple(
         + (f"{ERR} {bright(str(error_count))} failed  " if error_count else "")
         + f"{muted(human_bytes(total) + ' total')}  {muted(f'avg {avg_ms}ms')}"
     )
+    _print_failure_reasons(rows)
 
     index = out / "sites_index.json"
     save_json([m.to_dict() for m in manifests], index)
