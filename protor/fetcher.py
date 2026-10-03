@@ -177,9 +177,16 @@ async def fetch(
     cache: HTTPCache | None = None,
     hooks: dict[str, list[Callable[..., Any]]] | None = None,
     allow_internal_redirects: bool = False,
+    user_agent: str | None = None,
 ) -> FetchResult:
     """
     Fetch *url* with retry logic and conditional caching.
+
+    *user_agent* pins the identity for this request. It exists so a caller that
+    has already asked robots.txt about a particular agent can send that same one:
+    evaluating the ``User-agent: *`` group while transmitting a browser string
+    asks the site about a policy it never agreed to. Omitted, the rotation pool
+    picks one as before, so callers with no robots concern are unaffected.
 
     Each request carries a fresh User-Agent from the rotation pool, so callers
     never mutate a shared session to rotate UAs.
@@ -206,7 +213,7 @@ async def fetch(
         with contextlib.suppress(Exception):
             hook(url, hook_ctx)
 
-    headers = {**_conditional_headers(entry), "User-Agent": random_user_agent()}
+    headers = {**_conditional_headers(entry), "User-Agent": user_agent or random_user_agent()}
     last_exc: Exception | None = None
 
     for attempt in range(max_retries):

@@ -859,3 +859,48 @@ class TestResumeDoesNotRequeueFilteredUrls:
         await _crawl(site, max_pages=len(TREE), output_dir=tmp_path, resume=True)
 
         assert "/about.html" in site.page_requests, "the fetch failure lost its retry"
+
+
+class TestRobotsIsEvaluatedAgainstTheSentAgent:
+    """
+    The rules are asked about the identity the request then uses.
+
+    ``check_robots`` documents that the ``user_agent`` it is given must be the
+    string the request actually sends: evaluating the ``*`` group while
+    transmitting a browser User-Agent asks the site about a policy it never
+    agreed to. urllib reduces the argument to the token before the first "/", so
+    the full browser string scores as ``mozilla`` — matching a ``User-agent:
+    Mozilla`` group, never a ``User-agent: Googlebot`` one, and leaving a
+    ``User-agent: * Disallow:`` site gated by the wrong group.
+
+    The agent is pinned rather than drawn from the rotation pool: fifteen real
+    browser strings would make the outcome depend on which one the crawl picked.
+    """
+
+    async def test_a_group_specific_disallow_is_honoured(self, site, tmp_path, monkeypatch):
+        import protor.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "random_user_agent", lambda: "TestAgent/1.0")
+        # The site allows its own named agent nothing and everyone else /.
+        site.robots = "User-agent: TestAgent\nDisallow: /private.html\n\nUser-agent: *\nAllow: /\n"
+        site.add("/", "Index", ["/private.html"])
+        site.add("/private.html", "Private")
+
+        await _crawl(site, max_pages=10, output_dir=tmp_path)
+
+        assert "/private.html" not in site.page_requests, (
+            f"fetched despite the rule for the agent it sent: {site.page_requests}"
+        )
+
+    async def test_a_page_the_sent_agent_is_allowed_is_fetched(self, site, tmp_path, monkeypatch):
+        """The guard must not have become a blanket refusal."""
+        import protor.engine as engine_mod
+
+        monkeypatch.setattr(engine_mod, "random_user_agent", lambda: "TestAgent/1.0")
+        site.robots = "User-agent: TestAgent\nAllow: /\n"
+        site.add("/", "Index", ["/public.html"])
+        site.add("/public.html", "Public")
+
+        await _crawl(site, max_pages=10, output_dir=tmp_path)
+
+        assert "/public.html" in site.page_requests, site.page_requests

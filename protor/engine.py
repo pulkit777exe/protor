@@ -36,7 +36,7 @@ from urllib.parse import urlparse
 import aiohttp
 
 from . import config
-from .fetcher import download_file, fetch
+from .fetcher import download_file, fetch, random_user_agent
 from .models import SiteManifest
 from .parser import parse_html
 from .progress import live_display
@@ -437,7 +437,14 @@ class CrawlEngine:
             self._block(stats, row, url, "blocked by the ad/analytics blocklist")
             return []
 
-        if self._check_robots and not await check_robots(url, session):
+        # One identity for both the question and the request. check_robots
+        # documents that it must be the string the request will actually send:
+        # evaluating the "*" group while transmitting a browser User-Agent asks
+        # the site about a policy it never agreed to, so a `User-agent: Mozilla`
+        # Disallow is not consulted and a `User-agent: Googlebot` one is not
+        # mistaken for ours. Rotation still happens — once per page, decided here.
+        user_agent = random_user_agent()
+        if self._check_robots and not await check_robots(url, session, user_agent):
             self._block(stats, row, url, "blocked by robots.txt")
             return []
 
@@ -456,6 +463,7 @@ class CrawlEngine:
                 cache=self._cache,
                 hooks=self._hooks,
                 allow_internal_redirects=self._allow_internal_redirects,
+                user_agent=user_agent,
             )
         except Exception as exc:
             self._fail(stats, row, url, str(exc))
