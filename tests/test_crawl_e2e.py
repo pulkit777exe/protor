@@ -103,6 +103,7 @@ class _Site:
     def __init__(self) -> None:
         self.pages: dict[str, str] = {}
         self.errors: dict[str, int] = {}
+        self.delays: dict[str, float] = {}
         self.robots = "User-agent: *\nAllow: /\n"
         self.requests: list[str] = []
         self.page_requests: list[str] = []
@@ -142,6 +143,15 @@ class _Site:
         """Add a robots.txt rule disallowing *path*."""
         self.robots = f"User-agent: *\nDisallow: {path}\n"
 
+    def slow(self, path: str, seconds: float) -> None:
+        """
+        Hold *path* open, so another page finishes while it is still in flight.
+
+        That window is the only place the crawl can decide whether a page it
+        already has in hand gets fetched a second time.
+        """
+        self.delays[path] = seconds
+
     # ── the log ──
 
     def count(self, path: str) -> int:
@@ -164,6 +174,9 @@ class _Site:
         path = request.path
         self.requests.append(path)
         self.page_requests.append(path)
+        delay = self.delays.get(path)
+        if delay:
+            await asyncio.sleep(delay)
         if path in self.errors:
             return web.Response(status=self.errors[path], text=f"{path} is broken")
         body = self.pages.get(path)
@@ -692,13 +705,18 @@ class TestFreshVersusResume:
         assert "/about.html" in site.page_requests, f"never retried: {site.page_requests}"
         assert _visited(tmp_path)[site.url("/about.html")] == 1, "the retry did not take"
 
-    async def test_a_failure_is_retried_once_per_run_and_not_in_a_loop(self, site, tmp_path):
+    async def test_a_failure_is_retried_on_the_next_run_and_not_in_a_loop(self, site, tmp_path):
         """
-        Still broken on the retry: one attempt this run, then the crawl moves on.
+        One retry on the following run, then the crawl moves on.
 
         A 404 rather than a 502 on purpose — 502 is in the fetcher's retryable
         set, so one crawl-level attempt would already be three requests on the
         wire and this would be measuring the fetcher's policy, not the queue's.
+
+        The loop half is the point: within the resumed run the failure is
+        recorded again and nothing links it back in, so it is requested once and
+        the crawl finishes. Without the run cutoff in ``_SEEN_SQL`` a page that
+        links to itself would be re-queued by every page that links to it.
         """
         _tree(site)
         site.fail("/about.html", 404)
@@ -736,3 +754,61 @@ class TestFreshVersusResume:
         await _crawl(site, max_pages=len(TREE), output_dir=tmp_path)
         after = sorted(p.name for p in site_dir.glob("*.html"))
         assert after == before, "a fresh crawl must not delete what was already saved"
+
+
+class TestInflightDeduplication:
+    """
+    A page already in flight must not be fetched again because of how a link spelled it.
+
+    A dispatched page leaves the queue, so it is in neither `queue` nor `visited`
+    while it is being fetched. The engine keeps its own set of in-flight URLs to
+    close that window; the set holds the canonical URLs the queue handed out, so
+    the comparison has to be canonical too. `/docs/index.html` and `/docs/` are
+    the same page, and a raw string comparison found no overlap between them —
+    an extra request, and a crawl reporting one more page than the site has.
+    """
+
+    async def test_one_page_spelled_two_ways_is_fetched_once(self, site, tmp_path):
+        site.add("/", "Index", ["/docs/", "/other/"])
+        site.add("/docs/", "Docs")
+        site.add("/other/", "Other", ["/docs/index.html"])
+        # Long enough that /other/ finishes while /docs/ is still in flight.
+        site.slow("/docs/", 0.3)
+
+        await _crawl(site, max_pages=10, output_dir=tmp_path)
+
+        assert site.count("/docs/") == 1, (
+            f"/docs/ was fetched {site.count('/docs/')} times: {site.page_requests}"
+        )
+        assert site.count("/docs/index.html") == 0, site.page_requests
+        assert len(site.page_requests) == len(set(site.page_requests)), (
+            f"a page was requested twice: {site.page_requests}"
+        )
+
+
+class TestDomainFilter:
+    """A host is case-insensitive, and the queue canonicalises it as such."""
+
+    async def test_a_mixed_case_host_is_not_treated_as_off_domain(self, site, tmp_path):
+        """
+        ``canonicalize_url`` lowercases the host; the allowed domain came from
+        ``urlparse`` of the URL as typed, so it kept the case.
+
+        Compared raw, a seed of ``https://EXAMPLE.com/`` was measured against its
+        own canonical form, rejected as off-domain, and the crawl reported zero
+        pages scraped beside a single "off-domain" row — the seed skipping itself,
+        with nothing to suggest why.
+        """
+        site.add("/", "Index", ["/about.html"])
+        site.add("/about.html", "About")
+
+        start = f"http://{site.netloc.upper()}/"
+
+        def run() -> None:
+            # Off the event loop, as _crawl does: crawl() owns its own.
+            Crawler(start, max_pages=5, output_dir=tmp_path, live=False).crawl()
+
+        await asyncio.to_thread(run)
+
+        summary = _summary(tmp_path)
+        assert summary["scraped"] == 2, f"the seed skipped itself: {summary}"

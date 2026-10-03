@@ -42,7 +42,14 @@ from .parser import parse_html
 from .progress import live_display
 from .robots import check_robots
 from .theme import console
-from .utils import manifest_filename, page_filename, safe_filename, save_json, timestamp
+from .utils import (
+    canonicalize_url,
+    manifest_filename,
+    page_filename,
+    safe_filename,
+    save_json,
+    timestamp,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -235,7 +242,11 @@ class CrawlEngine:
         self._allow_internal_redirects = allow_internal_redirects
         self._rate_limiter = rate_limiter
         self._auto_scaler = auto_scaler
-        self._allowed_domain = allowed_domain
+        # Lowercased because the queue canonicalises the host while this arrives from
+        # urlparse(), which keeps the case the user typed. Compared raw, a seed of
+        # https://EXAMPLE.com/ was rejected as off-domain by its own canonical
+        # form and the crawl reported zero pages with no explanation.
+        self._allowed_domain = allowed_domain.lower() if allowed_domain else allowed_domain
         self._check_robots = check_robots
         self._checkpoint_interval = checkpoint_interval
         self._on_checkpoint = on_checkpoint
@@ -361,7 +372,15 @@ class CrawlEngine:
                     # that is mid-fetch is in neither `queue` nor `visited`
                     # yet — without this it is re-admitted, fetched twice, and
                     # charged twice against --max-pages.
-                    if link in fetching:
+                    #
+                    # Compared canonically, because `fetching` holds the URLs
+                    # the queue handed out and those are canonical while a
+                    # discovered link is however the page spelled it. A site
+                    # linking `/docs/index.html` while `/docs/` was in flight
+                    # spells the same page two ways, and comparing raw strings
+                    # fetched it twice: one extra request, and the crawl
+                    # reported one more page than the site has.
+                    if canonicalize_url(link) in fetching:
                         continue
                     self._queue.enqueue(link)
 
@@ -402,7 +421,7 @@ class CrawlEngine:
         domain = parsed.netloc or url
         row["domain"] = domain
 
-        if self._allowed_domain and parsed.netloc != self._allowed_domain:
+        if self._allowed_domain and parsed.netloc.lower() != self._allowed_domain:
             # Counted and reported like any other non-fetch, so off-domain links
             # dropped by the domain filter are visible instead of vanishing.
             self._skip(stats, row, url, f"off-domain ({parsed.netloc})")
@@ -467,16 +486,21 @@ class CrawlEngine:
                     js_dir = site_dir / "js"
                     js_dir.mkdir(parents=True, exist_ok=True)
                     taken: set[str] = set()
-                    tasks = [
+                    # The index travels with its task. asyncio.wait() returns a
+                    # *set*, so numbering the results afterwards paired whatever
+                    # order the set happened to iterate with whatever script sat
+                    # at that index — the manifest then claimed files that had
+                    # 404'd and silently dropped files that were really written.
+                    tasks = {
                         asyncio.create_task(
                             download_file(
                                 session,
                                 jurl,
                                 js_dir / self._js_filename(i, jurl, taken),
                             )
-                        )
+                        ): i
                         for i, jurl in enumerate(js_links)
-                    ]
+                    }
                     # Bound the whole group, not just each download. A page whose
                     # only script pointed at a blackholed CDN stalled for the full
                     # per-file timeout (measured 15.5 s) before the page could
@@ -489,7 +513,8 @@ class CrawlEngine:
                     if pending_js:
                         await asyncio.gather(*pending_js, return_exceptions=True)
                     ok_flags: dict[int, bool] = {}
-                    for i, task in enumerate(done):
+                    for task in done:
+                        i = tasks[task]
                         if not task.cancelled() and task.exception() is None:
                             ok_flags[i] = bool(task.result())
                     js_downloaded = [u for i, u in enumerate(js_links) if ok_flags.get(i)]

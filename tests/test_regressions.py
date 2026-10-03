@@ -1130,3 +1130,111 @@ class TestFailedPagesStayRetryable:
         later.mark_visited(retried, success=True)
         assert later.enqueue(retried) is False
         later.close()
+
+
+class TestJsFilesNameWhatLanded:
+    """
+    `js_files` in the manifest must name the files that are actually on disk.
+
+    `asyncio.wait()` returns a *set*, and the results were numbered with
+    `enumerate(done)` — so each download was paired with whatever script happened
+    to sit at that index in set-iteration order. The manifest then claimed files
+    the server had 404'd and silently omitted files that had really been
+    written: the artefact and its own index disagreed.
+    """
+
+    async def test_claimed_files_are_the_downloaded_ones(self, tmp_path, monkeypatch):
+        import asyncio
+
+        import protor.engine as engine_mod
+
+        scripts = [f"https://cdn.example.com/s{i}.js" for i in range(8)]
+        # Alternating success, so any mispairing shows up in both directions.
+        failed = {scripts[1], scripts[4], scripts[6]}
+
+        async def fake_download(session, jurl, dest, **kwargs):
+            await asyncio.sleep(0)
+            if jurl in failed:
+                return False
+            dest.write_text(f"// {jurl}")
+            return True
+
+        async def fake_fetch(session, url, **kwargs):
+            body = (
+                "<html><body>"
+                + "".join(f"<script src={u!r}></script>" for u in scripts)
+                + "</body></html>"
+            )
+            from protor.fetcher import FetchResult
+
+            return FetchResult(text=body, nbytes=len(body))
+
+        monkeypatch.setattr(engine_mod, "download_file", fake_download)
+        monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+
+        engine = CrawlEngine(
+            queue=StaticQueue(["https://ex.com/"]),
+            link_source=StaticSource(),
+            output_dir=tmp_path,
+            max_targets=5,
+            download_js=True,
+        )
+        await engine.arun()
+
+        [manifest] = engine.manifests
+        claimed = set(manifest.js_files)
+        on_disk = {
+            f"https://cdn.example.com/{p.name}" for p in (tmp_path / "ex.com" / "js").glob("*.js")
+        }
+        expected = {u for u in scripts if u not in failed}
+
+        assert claimed == expected, (
+            f"manifest claims files that 404'd: {claimed - expected};"
+            f" omits files on disk: {expected - claimed}"
+        )
+        assert len(on_disk) == len(expected)
+        assert not (claimed & failed), "a 404 was reported as downloaded"
+        assert len(claimed) == 5
+
+
+class TestDomainFilterIsCaseInsensitive:
+    """
+    A host is case-insensitive, and the queue canonicalises it that way.
+
+    ``canonicalize_url`` lowercases the host, but the allowed domain came from
+    ``urlparse`` of the URL as the user typed it, which keeps the case. Compared
+    raw, the crawl rejected each URL as off-domain against its own canonical
+    form and reported zero pages scraped beside one "off-domain" row.
+    """
+
+    async def _scrape_with(self, tmp_path, monkeypatch, allowed_domain):
+        import protor.engine as engine_mod
+        from protor.fetcher import FetchResult
+
+        body = "<html><body>hi</body></html>"
+
+        async def fake_fetch(session, url, **kwargs):
+            return FetchResult(text=body, nbytes=len(body))
+
+        monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+        engine = CrawlEngine(
+            queue=StaticQueue(["https://example.com/"]),
+            link_source=StaticSource(),
+            output_dir=tmp_path,
+            max_targets=5,
+            allowed_domain=allowed_domain,
+        )
+        return await engine.arun()
+
+    async def test_an_uppercase_allowed_domain_still_matches(self, tmp_path, monkeypatch):
+        stats = await self._scrape_with(tmp_path, monkeypatch, "EXAMPLE.com")
+        assert stats.scraped == 1, "the seed was rejected as off-domain by itself"
+
+    async def test_the_lowercase_spelling_still_works(self, tmp_path, monkeypatch):
+        stats = await self._scrape_with(tmp_path, monkeypatch, "example.com")
+        assert stats.scraped == 1
+
+    async def test_a_genuinely_other_domain_is_still_refused(self, tmp_path, monkeypatch):
+        """Case-insensitivity must not turn the filter off."""
+        stats = await self._scrape_with(tmp_path, monkeypatch, "other.com")
+        assert stats.scraped == 0

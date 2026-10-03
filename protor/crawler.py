@@ -97,8 +97,10 @@ __all__ = ["Crawler"]
 #:
 #: The current-run cutoff is what keeps that from becoming a loop. Without it, a
 #: page that links to itself and keeps failing — a 404 in a nav footer, say —
-#: would be re-queued by every page that links to it, on every pass. Comparing
-#: against the run's start time allows one retry per run and no more.
+#: would be re-queued by every page that links to it, on every pass. The cutoff
+#: makes the retry happen on the *next* run, once: a failure recorded during this
+#: run counts as attempted and is refused, which is what stops the loop, and the
+#: same URL is free again once the next run starts.
 _SEEN_SQL = (
     "SELECT 1 FROM visited WHERE url = ?"
     " AND (success = 1 OR scraped_at IS NULL OR scraped_at >= ?)"
@@ -131,7 +133,7 @@ class _CrawlQueue:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
         #: Marks the boundary between "this run" and earlier attempts, so a
-        #: failure is retried once per run rather than on every rediscovery.
+        #: failure is retried on the next run rather than on every rediscovery.
         self._run_started = time.time()
         self._conn = self._connect(db_path)
         self._closed = False
@@ -306,18 +308,21 @@ class _CrawlQueue:
         """
         Put every previously failed page back on the queue, returning how many.
 
-        :meth:`enqueue` already retries a failure once per run — a page this run
-        has just failed on is re-admittable, which is what lets a flaky link be
-        tried again from the same page that linked to it. The same rule across
-        runs is what a resume wants: a 502 or a timeout from an hour ago is
-        usually fine now, and a permanent 404 costs one request to find out
-        again. Without this a resumed crawl could never revisit a page that had
-        failed, so it silently accepted the first attempt as the answer.
+        :meth:`enqueue` refuses a URL whose last attempt was during *this* run,
+        which is what keeps a failing page from being rediscovered in a loop — so
+        a failure recorded a moment ago is not re-admittable, and saying
+        otherwise here would describe a retry that does not happen. What it does
+        allow is the retry a resume exists for: a 502 or a timeout from an hour
+        ago is usually fine now, and a permanent 404 costs one request to find
+        out again. Left to ``enqueue`` alone, a resumed crawl found those pages
+        already "seen" and never looked at them again, silently accepting the
+        first attempt as the answer.
 
         The pages stay in ``visited`` — the failure is a fact about the past, and
         ``mark_visited`` overwrites it when the retry lands. Their ``scraped_at``
         stays behind this run's start, so an admission check inside *this* run
-        still rejects them: one retry, not a loop.
+        still rejects them if something links to them again: one retry, not a
+        loop.
         """
         before = self._conn.total_changes
         self._conn.execute(
