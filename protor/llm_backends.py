@@ -45,6 +45,7 @@ from .exceptions import (
     ModelListUnavailableError,
     ModelNotFoundError,
     OllamaModelNotFoundError,
+    RuntimeHTTPError,
     RuntimeUnavailableError,
 )
 from .runtimes import get_runtime, resolve_api_key, resolve_base_url, runtime_names
@@ -138,6 +139,34 @@ def _auth_headers(api_key: str | None) -> dict[str, str]:
     return headers
 
 
+def _check_status(resp: Any, runtime: str, url: str = "") -> None:
+    """
+    Turn any non-2xx response into a typed error.
+
+    A drop-in for ``resp.raise_for_status()``, which raises a
+    ``requests.exceptions.HTTPError`` — not a ``ProtorError`` — so ``cli.cli()``
+    does not catch it and the user gets a traceback instead of a message. Local
+    runtimes return 5xx routinely (out of memory, still loading, request shape
+    rejected by the build), so this is a normal path, not a corner case.
+
+    The statuses with a specific remedy are mapped by the callers before this
+    runs, so anything reaching here has no better diagnosis than the status
+    itself. The first part of the body is included because a runtime's error
+    page usually names the actual problem.
+    """
+    if resp.status_code < 400:
+        return
+    detail = ""
+    # getattr rather than attribute access: this is also handed the duck-typed
+    # stand-ins the tests use, and a missing .text must not mask the status.
+    body = getattr(resp, "text", "") or ""
+    if body.strip():
+        detail = " ".join(body.split())[:200]
+    raise RuntimeHTTPError(
+        runtime, resp.status_code, url or str(getattr(resp, "url", "") or ""), detail
+    )
+
+
 def _endpoint(base_url: str, path: str) -> str:
     """
     Join a base URL with an API path without duplicating the overlapping part.
@@ -146,6 +175,13 @@ def _endpoint(base_url: str, path: str) -> str:
     and some (KoboldCpp, LM Studio) say ``http://host:port/v1``. Naively appending
     ``/v1/chat/completions`` to the latter yields a ``/v1/v1/...`` 404, so any path
     segment already present at the end of the base is dropped from the API path.
+
+    The overlap is looked for as a *suffix of the base path* that opens the API
+    path, longest first, so ``http://gw/api/v1`` keeps its ``/api`` prefix and
+    still drops the ``/v1``. Comparing against ``"api/v1"`` instead of
+    ``"/api/v1"`` silently found no overlap for anything but the whole base path,
+    which sent every request to ``/api/v1/v1/...`` and reported a working runtime
+    as having no such model.
     """
     base = base_url.rstrip("/")
     if not path:
@@ -155,12 +191,12 @@ def _endpoint(base_url: str, path: str) -> str:
     if not base_path:
         return f"{base}{path}"
 
-    # Longest suffix of the base path that also opens the API path wins.
-    segments = base_path.split("/")
+    # Longest suffix of the base path that also opens the API path wins. Empty
+    # segments are dropped first: an absolute path splits with a leading "", and
+    # keeping it would make the suffix "/api/v1" compare as "//api/v1".
+    segments = [segment for segment in base_path.split("/") if segment]
     for i in range(len(segments)):
-        overlap = "/".join(segments[i:])
-        if not overlap:
-            continue
+        overlap = "/" + "/".join(segments[i:])
         if path == overlap or path.startswith(f"{overlap}/"):
             return f"{base}{path[len(overlap) :]}"
     return f"{base}{path}"
@@ -219,7 +255,7 @@ class OllamaBackend(LLMBackend):
             headers=_auth_headers(self._api_key),
             timeout=OLLAMA_CHECK_TIMEOUT,
         )
-        resp.raise_for_status()
+        _check_status(resp, "Ollama", f"{self._base_url}/api/tags")
         return [
             ModelInfo(
                 name=str(m.get("name", "?")),
@@ -252,7 +288,7 @@ class OllamaBackend(LLMBackend):
 
         if resp.status_code == 404:
             raise OllamaModelNotFoundError(self._model)
-        resp.raise_for_status()
+        _check_status(resp, "Ollama", f"{self._base_url}/api/generate")
 
         for line in resp.iter_lines():
             if not line:
@@ -374,7 +410,7 @@ class OpenAICompatBackend(LLMBackend):
             raise ModelListUnavailableError(
                 self._label, _endpoint(self._base_url, self._models_path)
             )
-        resp.raise_for_status()
+        _check_status(resp, self._label, _endpoint(self._base_url, self._models_path))
         payload: dict[str, Any] = resp.json()
         models: list[ModelInfo] = []
         for entry in payload.get("data", []):
@@ -438,9 +474,9 @@ class OpenAICompatBackend(LLMBackend):
             )
         if resp.status_code in (401, 403):
             raise AuthError(self._label, resp.status_code)
-        resp.raise_for_status()
+        _check_status(resp, self._label, _endpoint(self._base_url, self._chat_path))
 
-        yield from _iter_sse_text(resp)
+        yield from _yield_text(resp, self._label)
 
 
 def _iter_sse_text(resp: Any) -> Iterator[str]:
@@ -497,6 +533,32 @@ def _iter_sse_text(resp: Any) -> Iterator[str]:
                     yield part["text"]
 
 
+def _yield_text(resp: Any, runtime: str) -> Iterator[str]:
+    """
+    Stream assistant text, turning a broken connection into a typed error.
+
+    The status check covers the response *header*, but the body is read lazily as
+    it arrives: a runtime that dies mid-generation, or a proxy that drops the
+    connection, raises out of ``iter_lines`` as a ``requests`` exception long
+    after the request was accepted — and often after tokens have been paid for
+    and shown. Untyped, that reached the user as a traceback from inside a
+    generator. The partial text is not salvaged: silently ending the stream
+    would report a truncated answer as a complete one.
+    """
+    import requests
+
+    try:
+        yield from _iter_sse_text(resp)
+    except requests.RequestException as exc:
+        request = getattr(exc, "request", None)
+        raise RuntimeHTTPError(
+            runtime,
+            getattr(getattr(exc, "response", None), "status_code", 0),
+            getattr(request, "url", "") or "",
+            f"the connection failed mid-response ({exc.__class__.__name__})",
+        ) from exc
+
+
 # ── hosted APIs ───────────────────────────────────────────────────────────────
 
 
@@ -548,7 +610,7 @@ class OpenAIBackend(LLMBackend):
             headers=_auth_headers(self._api_key),
             timeout=OLLAMA_CHECK_TIMEOUT,
         )
-        resp.raise_for_status()
+        _check_status(resp, "OpenAI", f"{self._base_url}/models")
         return [ModelInfo(name=str(m.get("id", "?"))) for m in resp.json().get("data", [])]
 
     def stream(self, prompt: str) -> Iterator[str]:
@@ -579,8 +641,8 @@ class OpenAIBackend(LLMBackend):
             raise AuthError("OpenAI", resp.status_code, "Invalid OpenAI API key")
         if resp.status_code == 404:
             raise ModelNotFoundError(self._model, "OpenAI")
-        resp.raise_for_status()
-        yield from _iter_sse_text(resp)
+        _check_status(resp, "OpenAI")
+        yield from _yield_text(resp, "OpenAI")
 
 
 class AnthropicBackend(LLMBackend):
@@ -640,7 +702,7 @@ class AnthropicBackend(LLMBackend):
             headers={"x-api-key": self._api_key, "anthropic-version": "2023-06-01"},
             timeout=OLLAMA_CHECK_TIMEOUT * 2,
         )
-        resp.raise_for_status()
+        _check_status(resp, "Anthropic", "https://api.anthropic.com/v1/models")
         return [
             ModelInfo(name=str(m.get("id", "?")), modified=_format_timestamp(m.get("created_at")))
             for m in resp.json().get("data", [])
@@ -679,27 +741,38 @@ class AnthropicBackend(LLMBackend):
                 raise AuthError("Anthropic", resp.status_code, "Invalid Anthropic API key")
             if resp.status_code == 404:
                 raise ModelNotFoundError(self._model, "Anthropic")
-            resp.raise_for_status()
+            _check_status(resp, "Anthropic")
 
-            for raw in resp.iter_lines():
-                if not raw:
-                    continue
-                line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
-                line = line.strip()
-                if line.startswith("data:"):
-                    line = line[5:].strip()
-                if not line or line == "[DONE]":
-                    continue
-                try:
-                    event = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-                # Anthropic streams named events; only content deltas matter.
-                if event.get("type") != "content_block_delta":
-                    continue
-                text = (event.get("delta") or {}).get("text", "")
-                if text:
-                    yield text
+            try:
+                for raw in resp.iter_lines():
+                    if not raw:
+                        continue
+                    line = raw.decode("utf-8", errors="replace") if isinstance(raw, bytes) else raw
+                    line = line.strip()
+                    if line.startswith("data:"):
+                        line = line[5:].strip()
+                    if not line or line == "[DONE]":
+                        continue
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    # Anthropic streams named events; only content deltas matter.
+                    if event.get("type") != "content_block_delta":
+                        continue
+                    text = (event.get("delta") or {}).get("text", "")
+                    if text:
+                        yield text
+            except requests.RequestException as exc:
+                # The status check above only saw the response header; a
+                # connection dropped mid-generation raises out of iter_lines,
+                # usually after tokens have been paid for and shown.
+                raise RuntimeHTTPError(
+                    "Anthropic",
+                    getattr(getattr(exc, "response", None), "status_code", 0),
+                    "https://api.anthropic.com/v1/messages",
+                    f"the connection failed mid-response ({exc.__class__.__name__})",
+                ) from exc
 
 
 # ── factory ───────────────────────────────────────────────────────────────────

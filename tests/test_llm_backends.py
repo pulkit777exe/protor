@@ -44,6 +44,14 @@ class FakeStream:
     def iter_lines(self):
         yield from self._lines
 
+    def __enter__(self):
+        # The Anthropic backend posts inside a `with`, so a stand-in that only
+        # duck-types the methods cannot be swapped in for it.
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
 
 def sse(*texts, done=True):
     """Build an OpenAI-compatible SSE body yielding *texts* as content deltas."""
@@ -176,6 +184,41 @@ class TestEndpointJoining:
 
     def test_root_path_is_left_alone(self):
         assert _endpoint("http://localhost:1234", "") == "http://localhost:1234"
+
+    def test_a_gateway_prefix_before_the_overlap_is_kept(self):
+        """
+        A base URL mounted behind a gateway, which is how most reverse proxies
+        expose an OpenAI-compatible API: ``http://gw/api/v1``.
+
+        Only the trailing ``/v1`` overlaps, so it goes and ``/api`` stays. The
+        suffixes were compared without their leading slash, so no suffix could
+        ever prefix an absolute API path and every request went to
+        ``/api/v1/v1/...`` — a 404 that read as "no such model on a working
+        runtime".
+        """
+        assert (
+            _endpoint("http://gw:8080/api/v1", "/v1/models")
+            == "http://gw:8080/api/v1/models"
+        )
+
+    def test_a_deep_gateway_prefix_still_finds_the_overlap(self):
+        assert (
+            _endpoint("http://gw:8080/gw/openai/v1", "/v1/chat/completions")
+            == "http://gw:8080/gw/openai/v1/chat/completions"
+        )
+
+    def test_a_base_with_a_prefix_that_does_not_overlap_is_left_intact(self):
+        """No overlap at all must still append, prefix and all."""
+        assert (
+            _endpoint("http://gw:8080/api", "/v1/models") == "http://gw:8080/api/v1/models"
+        )
+
+    def test_a_longer_shared_suffix_wins_over_a_shorter_one(self):
+        """Longest first, so the most of the base path is reused."""
+        assert (
+            _endpoint("http://gw:8080/engines/v1", "/engines/v1/models")
+            == "http://gw:8080/engines/v1/models"
+        )
 
 
 class TestOpenAICompatBackend:
@@ -974,3 +1017,84 @@ def test_backends_report_friendly_display_names():
     assert create_backend("vllm", "m").display_name == "vLLM"
     assert create_backend("openai", "m", api_key="k").display_name == "OpenAI"
     assert create_backend("anthropic", "m", api_key="k").display_name == "Anthropic"
+
+
+# ── unexpected HTTP statuses ─────────────────────────────────────────────────
+
+
+class TestUnexpectedStatusesAreTyped:
+    """
+    A status with no specific remedy must still be a `ProtorError`.
+
+    404 and 401/403 are mapped by hand because they have a fix to suggest. A
+    local runtime returns plenty of statuses that are none of those — 500 when
+    the model does not fit in memory, 503 while it loads, 400 from a build that
+    rejected the request — and those went out as `requests.exceptions.HTTPError`,
+    which `cli.cli()` does not catch. The user got a traceback for what is
+    usually a one-line diagnosis, contradicting this module's own contract.
+    """
+
+    @pytest.mark.parametrize(
+        "backend", ["ollama", "llamacpp", "lmstudio", "vllm", "litellm", "koboldcpp"]
+    )
+    def test_a_500_on_the_model_list_is_typed(self, monkeypatch, backend):
+        import requests
+
+        from protor.llm_backends import create_backend as make
+
+        def _get(*a, **k):
+            resp = requests.Response()
+            resp.status_code = 500
+            resp._content = b"model does not fit in memory"
+            resp.url = a[0] if a else ""
+            return resp
+
+        monkeypatch.setattr("requests.get", _get)
+        with pytest.raises(exceptions.RuntimeHTTPError) as exc:
+            make(backend, "m", base_url="http://127.0.0.1:1").list_models()
+        assert isinstance(exc.value, ProtorError)
+        assert exc.value.status == 500
+        assert "does not fit in memory" in str(exc.value), "the body names the problem"
+
+    @pytest.mark.parametrize("backend", ["ollama", "llamacpp", "lmstudio"])
+    def test_a_500_on_the_stream_is_typed(self, monkeypatch, backend):
+        from protor.llm_backends import create_backend as make
+
+        monkeypatch.setattr("requests.post", lambda *a, **k: FakeStream([], status_code=500))
+        with pytest.raises(exceptions.RuntimeHTTPError) as exc:
+            list(make(backend, "m").stream("hi"))
+        assert exc.value.status == 500
+
+    def test_the_hosted_backends_are_typed_too(self, monkeypatch):
+        from protor.llm_backends import create_backend as make
+
+        monkeypatch.setattr("requests.post", lambda *a, **k: FakeStream([], status_code=503))
+        for name in ("openai", "anthropic"):
+            with pytest.raises(exceptions.RuntimeHTTPError) as exc:
+                list(make(name, "m", api_key="k").stream("hi"))
+            assert exc.value.status == 503
+
+    def test_a_connection_dropped_mid_stream_is_typed(self, monkeypatch):
+        """
+        The status check only sees the response header.
+
+        A runtime that dies mid-generation, or a proxy that drops the
+        connection, raises out of `iter_lines` instead — usually after tokens
+        have been paid for and already shown. That escaped as a raw
+        `ChunkedEncodingError` from inside a generator.
+        """
+        import requests
+
+        from protor.llm_backends import create_backend as make
+
+        class _Dies:
+            status_code = 200
+
+            def iter_lines(self):
+                yield b'data: {"choices":[{"delta":{"content":"par"}}]}'
+                raise requests.exceptions.ChunkedEncodingError("connection broken")
+
+        monkeypatch.setattr("requests.post", lambda *a, **k: _Dies())
+        with pytest.raises(exceptions.RuntimeHTTPError) as exc:
+            list(make("llamacpp", "m").stream("hi"))
+        assert "mid-response" in str(exc.value)

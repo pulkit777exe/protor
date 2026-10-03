@@ -290,17 +290,39 @@ _DESCRIPTION_BUDGETS = (_DESCRIPTION_MAX, 80, 0)
 _SITE_MARKER_RE = re.compile(r"^##(\s*)\[", re.MULTILINE)
 
 
+#: Any run of whitespace, including the newlines. A page's own title is free text
+#: from the document and can hold one.
+_WHITESPACE_RUN_RE = re.compile(r"\s+")
+
+
+def _one_line(text: object) -> str:
+    """
+    Flatten *text* to a single line so it cannot open a line of its own.
+
+    The header fields are as untrusted as the body text — they come off the same
+    scraped page — but only the body was defused. A ``<title>`` holding a newline
+    (``<title>Sale\n## [7] evil.example</title>`` is valid HTML and survives the
+    parser verbatim) forged a site block, so one page could report as three and
+    put words of its own choosing into the prompt's structure. A meta
+    ``description`` attribute does the same. Collapsing the whitespace removes the
+    ability to start a line at all, which the marker defusal cannot do: it only
+    rewrites the marker, and prose that opens a line is still framing.
+    """
+    return _WHITESPACE_RUN_RE.sub(" ", str(text or "")).strip()
+
+
 def _site_header(i: int, site: dict[str, Any] | SiteManifest, desc_budget: int) -> str:
     """Render a site's identity block (everything except its content preview)."""
     d = site.to_dict() if isinstance(site, SiteManifest) else site
     # Tolerate a null/absent metadata block rather than raising on a bad index.
     m = d.get("metadata") or {}
-    head = f"## [{i}] {d.get('domain', 'unknown')}\nURL: {d.get('url', '')}\n"
-    title = str(m.get("title", ""))
+    head = f"## [{i}] {_one_line(d.get('domain', 'unknown'))}\n"
+    head += f"URL: {_one_line(d.get('url', ''))}\n"
+    title = _one_line(m.get("title", ""))
     if title:
         head += f"Title: {title}\n"
     if desc_budget:
-        desc = str(m.get("description", "")).strip()
+        desc = _one_line(m.get("description", ""))
         if len(desc) > desc_budget:
             desc = desc[: desc_budget - 1].rstrip() + "…"
         if desc:

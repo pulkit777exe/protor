@@ -192,6 +192,30 @@ class ModelListUnavailableError(ProtorError):
         )
 
 
+class RuntimeHTTPError(ProtorError):
+    """
+    Raised when a runtime answers a request with an unexpected HTTP status.
+
+    The statuses that have a specific remedy — 404 on the model, 401/403 on the
+    token — are mapped before this one. What lands here is everything else, and
+    a local runtime produces plenty of it: a 500 when the model does not fit in
+    memory, a 503 while it loads, a 400 from a build that rejected the request.
+
+    It used to reach the user as a ``requests.exceptions.HTTPError`` traceback,
+    which contradicts this module's contract that every user-facing failure is a
+    ``ProtorError`` the CLI renders as a message plus a hint. The status is kept
+    on the exception so a caller can still branch on it.
+    """
+
+    def __init__(self, runtime: str, status: int, url: str = "", detail: str = "") -> None:
+        self.runtime = runtime
+        self.status = status
+        self.url = url
+        where = f" for {url}" if url else ""
+        extra = f" Response: {detail}" if detail else ""
+        super().__init__(f"{runtime} returned HTTP {status}{where}.{extra}")
+
+
 class InvalidSelectorError(ProtorError):
     """
     Raised when a schema's CSS selector cannot be parsed.
