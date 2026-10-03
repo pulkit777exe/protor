@@ -34,12 +34,12 @@ from typing import TYPE_CHECKING, Any, Protocol
 from urllib.parse import urlparse
 
 import aiohttp
-from rich.live import Live
 
 from . import config
 from .fetcher import download_file, fetch
 from .models import SiteManifest
 from .parser import parse_html
+from .progress import live_display
 from .robots import check_robots
 from .theme import console
 from .utils import manifest_filename, page_filename, safe_filename, save_json, timestamp
@@ -186,7 +186,7 @@ class CrawlEngine:
     on_checkpoint:
         Called every *checkpoint_interval* successful scrapes (0 disables).
     live_render:
-        When provided, the engine renders it inside a rich Live view.
+        When provided, the engine renders it inside a live display.
     session:
         Optional pre-built session to reuse. The engine will not close it.
     """
@@ -215,6 +215,7 @@ class CrawlEngine:
         on_checkpoint: Callable[[], None] | None = None,
         on_status: Callable[[str, str, dict[str, Any]], None] | None = None,
         live_render: Callable[[], Any] | None = None,
+        live: bool = True,
         session: aiohttp.ClientSession | None = None,
     ) -> None:
         self._queue = queue
@@ -238,6 +239,7 @@ class CrawlEngine:
         self._on_checkpoint = on_checkpoint
         self._on_status = on_status
         self._live_render = live_render
+        self._live = live
         self._session = session
 
         self._manifests: list[SiteManifest] = []
@@ -275,16 +277,22 @@ class CrawlEngine:
             return await self._rendered(session)
 
     async def _rendered(self, session: aiohttp.ClientSession) -> CrawlStats:
-        """Run the loop, rendering through rich Live when a render fn is set."""
+        """
+        Run the loop with progress rendered in place.
+
+        The render callback fires once per completed page and building the table
+        costs time proportional to the number of rows, so honouring every tick
+        made the display quadratic in the batch size — measured at 8.4 ms of
+        blocking render per tick with 3,000 rows, about 25 s of event-loop stall
+        over such a run, slowing the very crawl it was reporting on. Throttling
+        is invisible to a human: 10 Hz is far past the rate at which progress
+        reads as "live".
+        """
         render = self._live_render
         if render is None:
             return await self._start(session)
-        with Live(console=console, refresh_per_second=10) as live:
-
-            def tick() -> None:
-                live.update(render())
-
-            return await self._start(session, on_tick=tick)
+        with live_display(render, console=console, transient=False, enabled=self._live) as display:
+            return await self._start(session, on_tick=display.update)
 
     def _connector_limit(self) -> int:
         """Connection-pool ceiling: static for batch, scaler-aware for crawls."""
@@ -297,6 +305,9 @@ class CrawlEngine:
         pending: set[asyncio.Task] = set()
         rows = list(self._rows)
         checkpointed = 0
+        # Which page each in-flight task is working on, so a failure that escapes
+        # the task can be reported against the right row.
+        in_flight: dict[asyncio.Task, tuple[str, dict[str, Any]]] = {}
 
         def spawn() -> None:
             # stats.total counts every dispatched page, so failures and blocked
@@ -311,18 +322,26 @@ class CrawlEngine:
                     break
                 row = rows.pop(0) if rows else {}
                 stats.dispatched += 1
-                pending.add(asyncio.create_task(self._process_one(session, url, row, stats)))
+                task = asyncio.create_task(self._process_one(session, url, row, stats))
+                in_flight[task] = (url, row)
+                pending.add(task)
 
         spawn()
         while pending:
             done, pending = await asyncio.wait(pending, return_when=asyncio.FIRST_COMPLETED)
             for task in done:
+                url, row = in_flight.pop(task, ("", {}))
                 try:
                     discovered = task.result()
                 except asyncio.CancelledError:
                     raise
-                except Exception:
-                    stats.errors += 1
+                except Exception as exc:
+                    # _process_one handles its own failures and routes them
+                    # through _fail. Reaching here means a bug (a TypeError in a
+                    # hook, a bad manifest field) rather than a bad page, and
+                    # swallowing it left the user a row stuck on "fetching" with
+                    # no explanation plus a re-fetch on every resumed crawl.
+                    self._fail(stats, row, url, f"internal error: {exc!r}")
                     continue
                 for link in discovered:
                     self._queue.enqueue(link)
@@ -429,15 +448,31 @@ class CrawlEngine:
                     js_dir.mkdir(parents=True, exist_ok=True)
                     taken: set[str] = set()
                     tasks = [
-                        download_file(
-                            session,
-                            jurl,
-                            js_dir / self._js_filename(i, jurl, taken),
+                        asyncio.create_task(
+                            download_file(
+                                session,
+                                jurl,
+                                js_dir / self._js_filename(i, jurl, taken),
+                            )
                         )
                         for i, jurl in enumerate(js_links)
                     ]
-                    results = await asyncio.gather(*tasks)
-                    js_downloaded = [u for u, ok in zip(js_links, results, strict=False) if ok]
+                    # Bound the whole group, not just each download. A page whose
+                    # only script pointed at a blackholed CDN stalled for the full
+                    # per-file timeout (measured 15.5 s) before the page could
+                    # finish, holding its concurrency slot the whole time.
+                    # Whatever landed in time is kept; the rest are simply not
+                    # downloaded, which is best-effort by design.
+                    done, pending_js = await asyncio.wait(tasks, timeout=config.JS_GROUP_TIMEOUT)
+                    for task in pending_js:
+                        task.cancel()
+                    if pending_js:
+                        await asyncio.gather(*pending_js, return_exceptions=True)
+                    ok_flags: dict[int, bool] = {}
+                    for i, task in enumerate(done):
+                        if not task.cancelled() and task.exception() is None:
+                            ok_flags[i] = bool(task.result())
+                    js_downloaded = [u for i, u in enumerate(js_links) if ok_flags.get(i)]
 
             extracted = None
             if self._extraction_schema is not None:

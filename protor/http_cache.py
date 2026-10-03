@@ -36,6 +36,12 @@ class CacheEntry:
     #: the validators and every "conditional" request silently degrades into a
     #: full re-download.
     stale_ttl: int = 86_400
+    #: Byte length of the body as stored. Recorded so a body file that vanished
+    #: from disk is distinguishable from a response that really was empty:
+    #: without it a missing file was served as a successful empty page.
+    #: Indexes written before this field existed load with 0, which simply
+    #: disables the check for them.
+    nbytes: int = 0
     body: str = field(default="", repr=False)
 
     @property
@@ -60,6 +66,7 @@ class CacheEntry:
             "timestamp": self.timestamp,
             "ttl": self.ttl,
             "stale_ttl": self.stale_ttl,
+            "nbytes": self.nbytes,
         }
 
     @classmethod
@@ -114,19 +121,39 @@ class HTTPCache:
         point of a disk cache and can OOM a large crawl. Bodies are now read
         lazily by :meth:`get` and dropped again, so only what is actually
         requested is in memory.
+
+        A damaged or non-object index yields an empty cache but sets
+        ``self._index_readable = False``. That matters: an empty index is
+        indistinguishable from a *truncated* one, and letting :meth:`prune`
+        reconcile against a failed read deleted every body file on disk —
+        one interrupted write destroyed the whole cache.
         """
+        self._index_readable = True
         path = self._index_path()
         if not path.exists():
             return {}
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
+            raw_text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError):
+            self._index_readable = False
+            return {}
+        try:
+            data = json.loads(raw_text)
         except json.JSONDecodeError:
+            self._index_readable = False
+            return {}
+        if not isinstance(data, dict):
+            # Valid JSON of the wrong shape (null, a list, a string) is as
+            # unusable as a parse error, and used to raise AttributeError.
+            self._index_readable = False
             return {}
         entries: dict[str, CacheEntry] = {}
-        for url, raw in data.items():
+        for url, raw_entry in data.items():
+            if not isinstance(url, str) or not isinstance(raw_entry, dict):
+                continue
             try:
-                entry = CacheEntry.from_dict(raw)
-            except TypeError:
+                entry = CacheEntry.from_dict(raw_entry)
+            except (TypeError, ValueError):
                 continue
             if not self._body_path(url).exists():
                 # Index points at a body that is gone; drop the entry rather
@@ -151,20 +178,26 @@ class HTTPCache:
         Discard entries past their retention window, plus their body files.
 
         Stale-but-retained entries are kept so conditional requests still work;
-        only entries older than ``ttl + stale_ttl`` go. Also sweeps body files
-        whose index entry no longer exists, which is what previously let the
-        cache grow without bound. Returns the number of entries removed.
+        only entries older than ``ttl + stale_ttl`` go. Body files with no index
+        entry are swept too, which is what previously let the cache grow without
+        bound.
+
+        The orphan sweep is skipped when the index could not be read: an
+        unreadable index looks exactly like an empty one, and reconciling
+        against it deleted every cached body on disk. Returns the number of
+        entries removed.
         """
         doomed = [url for url, entry in self._index.items() if not entry.is_retained]
         for url in doomed:
             del self._index[url]
             self._drop_body(url)
 
-        live = {self._body_path(url).name for url in self._index}
-        for body in self._bodies_dir.glob("*.body"):
-            if body.name not in live:
-                with contextlib.suppress(OSError):
-                    body.unlink()
+        if self._index_readable:
+            live = {self._body_path(url).name for url in self._index}
+            for body in self._bodies_dir.glob("*.body"):
+                if body.name not in live:
+                    with contextlib.suppress(OSError):
+                        body.unlink()
 
         if doomed:
             self._dirty = True
@@ -247,6 +280,7 @@ class HTTPCache:
         entry.timestamp = time.time()
         entry.ttl = self._ttl
         entry.stale_ttl = self._stale_ttl
+        entry.nbytes = len(entry.body.encode("utf-8"))
         self._bodies_dir.mkdir(parents=True, exist_ok=True)
         self._body_path(url).write_text(entry.body, encoding="utf-8")
         self._index[url] = entry

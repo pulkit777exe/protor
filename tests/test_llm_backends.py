@@ -135,7 +135,9 @@ class TestEndpointJoining:
         assert _endpoint("http://localhost:1234", "/v1/models") == "http://localhost:1234/v1/models"
 
     def test_trailing_slash_on_the_base_is_harmless(self):
-        assert _endpoint("http://localhost:1234/", "/v1/models") == "http://localhost:1234/v1/models"
+        assert (
+            _endpoint("http://localhost:1234/", "/v1/models") == "http://localhost:1234/v1/models"
+        )
 
     def test_base_that_already_ends_in_the_prefix(self):
         """KoboldCpp's docs say to use a base URL ending in /v1."""

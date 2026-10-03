@@ -347,9 +347,7 @@ class OpenAICompatBackend(LLMBackend):
                 timeout=OLLAMA_CHECK_TIMEOUT,
             )
         except Exception as exc:
-            raise RuntimeError(
-                f"Could not reach {self._label} at {self._base_url}: {exc}"
-            ) from exc
+            raise RuntimeError(f"Could not reach {self._label} at {self._base_url}: {exc}") from exc
         if resp.status_code == 404:
             raise ModelListUnavailableError(
                 self._label, _endpoint(self._base_url, self._models_path)
@@ -424,14 +422,35 @@ def _iter_sse_text(resp: Any) -> Iterator[str]:
             chunk = json.loads(line)
         except json.JSONDecodeError:
             continue
+        if not isinstance(chunk, dict):
+            # Valid JSON of a non-object shape. Runtimes emit `data: null` as a
+            # keepalive during long generations, and assuming a mapping here
+            # raised AttributeError and killed the whole analysis mid-stream.
+            continue
 
         choices = chunk.get("choices") or []
-        if not choices:
+        if not isinstance(choices, list) or not choices:
             continue
-        delta = choices[0].get("delta") or {}
-        text = delta.get("content") or ""
-        if text:
+        first = choices[0]
+        if not isinstance(first, dict):
+            continue
+        delta = first.get("delta")
+        if not isinstance(delta, dict):
+            # `delta: null` appears on the first and last frames of a stream.
+            continue
+        text = delta.get("content")
+        # Content is normally a string, but some proxies emit it as a list of
+        # fragments; joining anything else would raise rather than skip.
+        if isinstance(text, str) and text:
             yield text
+        elif isinstance(text, list):
+            # Some gateways send content as an array of fragments, either bare
+            # strings or {"type":"text","text":...} objects.
+            for part in text:
+                if isinstance(part, str) and part:
+                    yield part
+                elif isinstance(part, dict) and isinstance(part.get("text"), str) and part["text"]:
+                    yield part["text"]
 
 
 # ── hosted APIs ───────────────────────────────────────────────────────────────

@@ -128,11 +128,19 @@ class _Harvest:
         """Record every link, script and metadata tag in *soup*, in document order."""
         self._base_url = base_url
         self._base_domain = urlparse(base_url).netloc
+        self._add_title(soup)
+        self.walk(soup)
+        return self
 
+    def walk(self, soup: BeautifulSoup) -> None:
+        """
+        Visit every tag in *soup* once, dispatching on the tag name.
+
+        Iterating the live tree rather than ``find_all(True)`` avoids
+        materialising every tag in the document at once; a 213 KiB page peaked at
+        2,258 KiB of transient list and attribute objects that way.
+        """
         for tag in soup.descendants:
-            # Iterating the live tree rather than find_all(True) avoids
-            # materialising every tag in the document at once; a 213 KiB page
-            # peaked at 2,258 KiB of transient list and attribute objects that way.
             if not isinstance(tag, Tag):
                 continue
             name = tag.name
@@ -142,8 +150,6 @@ class _Harvest:
                 self._add_script(tag)
             elif name == "meta":
                 self._add_meta(tag)
-        self._add_title(soup)
-        return self
 
     def _add_link(self, tag: Tag) -> None:
         href = tag.get("href")
@@ -205,9 +211,7 @@ def _extract_js_links(soup: BeautifulSoup, base_url: str) -> list[str]:
 
 def _extract_internal_links(soup: BeautifulSoup, base_url: str) -> list[str]:
     """Extract de-duplicated links on the same domain as *base_url*."""
-    harvested = _Harvest()
-    harvested.harvest(soup, base_url)
-    return harvested.links
+    return _Harvest().harvest(soup, base_url).links
 
 
 def _extract_text(soup: BeautifulSoup, max_chars: int = MAX_TEXT_CHARS) -> str:

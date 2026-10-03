@@ -2,6 +2,7 @@
 
 import contextlib
 import json
+import os
 import sqlite3
 from unittest.mock import AsyncMock, patch
 
@@ -12,6 +13,11 @@ from protor.crawler import Crawler, _CrawlLog, _CrawlQueue, _render, _State
 from protor.engine import CrawlEngine
 from protor.fetcher import FetchResult
 from protor.utils import canonicalize_url
+
+#: Disable in-place rendering: these tests cover crawl behaviour, not
+#: display, and driving the real no-live path keeps them honest about
+#: piped/CI output.
+NO_LIVE = patch.dict(os.environ, {"PROTOR_NO_LIVE": "1"})
 
 ROBOTS_PATCH = patch("protor.engine.check_robots", new_callable=AsyncMock, return_value=True)
 
@@ -40,7 +46,7 @@ def stubbed_network(fetched):
     with (
         patch("protor.engine.aiohttp.ClientSession"),
         patch("protor.engine.fetch", new_callable=AsyncMock, side_effect=fake_fetch),
-        patch("protor.engine.Live"),
+        NO_LIVE,
         ROBOTS_PATCH,
         NO_DELAY,
     ):
@@ -591,7 +597,7 @@ class TestCrawlerCrawl:
         with (
             patch("protor.engine.aiohttp.ClientSession"),
             patch("protor.engine.fetch", new_callable=AsyncMock) as mock_fetch,
-            patch("protor.engine.Live"),
+            NO_LIVE,
             ROBOTS_PATCH,
             NO_DELAY,
         ):
@@ -624,7 +630,7 @@ class TestCrawlerCrawl:
         with (
             patch("protor.engine.aiohttp.ClientSession"),
             patch("protor.engine.fetch", new_callable=AsyncMock) as mock_fetch,
-            patch("protor.engine.Live"),
+            NO_LIVE,
             ROBOTS_PATCH,
             NO_DELAY,
         ):

@@ -113,7 +113,16 @@ async def fetch(
     # validators that make a conditional request — and a 304 — possible at all.
     entry = cache.entry_for(url) if cache is not None else None
     if entry is not None and not entry.is_expired:
-        return _from_cache(entry)
+        body = entry.body
+        if entry.nbytes and len(body.encode("utf-8")) != entry.nbytes:
+            # The index says this entry holds a body, but reading it produced a
+            # different amount — the file was deleted or truncated behind our
+            # back. Serving that as a hit returned an empty page marked
+            # successful, which is worse than re-fetching. Fall through and get
+            # the real content.
+            entry = None
+        else:
+            return _from_cache(entry)
 
     hook_ctx: dict[str, Any] = {"url": url, "headers": {}}
     for hook in (hooks or {}).get("before_fetch", []):

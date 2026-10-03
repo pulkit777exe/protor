@@ -157,6 +157,11 @@ def _is_noise(tag: Tag) -> bool:
     return bool(_NOISE_PATTERN.search(f"{classes} {ids}"))
 
 
+def _has_block_child(tag: Tag) -> bool:
+    """True if *tag* contains a block-level child element."""
+    return any(isinstance(c, Tag) and c.name in _BLOCK_TAGS for c in tag.children)
+
+
 def _render_inline_children(children, base_url: str, _depth: int = 0) -> str:
     """
     Render a run of inline nodes as a single Markdown string.
@@ -287,11 +292,20 @@ def _process_element(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: in
 
     # Blockquotes
     if name == "blockquote":
-        text = _render_inline(tag, base_url).strip()
-        if text:
+        # A blockquote may wrap block elements (<blockquote><p>…</p>), which
+        # inline rendering skips entirely — that silently dropped the whole
+        # quotation. Render the children, then prefix every line.
+        nested = _Lines()
+        if _has_block_child(tag):
+            _emit_block(tag, base_url, nested, depth, _rd + 1)
+        else:
+            text = _render_inline(tag, base_url).strip()
+            if text:
+                nested.append(text)
+        if nested:
             lines.append("")
-            for ln in text.splitlines():
-                lines.append(f"> {ln}")
+            for ln in "\n".join(nested).splitlines():
+                lines.append(f"> {ln}" if ln.strip() else ">")
             lines.append("")
         return
 
@@ -338,6 +352,40 @@ def _emit_block(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: int = 0
     flush()
 
 
+def _render_li_body(item: Tag, base_url: str) -> list[str]:
+    """
+    Render one ``<li>``'s own content, excluding any nested list.
+
+    An item may hold block content — ``<li><p>…</p></li>`` is ordinary markup,
+    and so is a definition or paragraph inside a list entry — and inline
+    rendering skips block elements, so the whole item used to vanish from the
+    output. The nested list is deliberately excluded: the caller emits it
+    itself, indented, on its own lines.
+    """
+    if not _has_block_child(item):
+        text = _render_inline(item, base_url).strip()
+        return [text] if text else []
+
+    scratch = _Lines()
+    buffer: list = []
+
+    def flush() -> None:
+        text = _render_inline_children(buffer, base_url).strip()
+        buffer.clear()
+        if text:
+            scratch.append(text)
+
+    for child in item.children:
+        if isinstance(child, Tag) and (child.name in _BLOCK_TAGS or child.name in ("ul", "ol")):
+            flush()
+            if child.name not in ("ul", "ol"):
+                _process_element(child, base_url, scratch, 0)
+        else:
+            buffer.append(child)
+    flush()
+    return [ln for ln in scratch if ln.strip()]
+
+
 def _process_list(tag: Tag, base_url: str, lines: _Lines, depth: int) -> None:
     """Process ul/ol elements into Markdown lists."""
     is_ordered = tag.name == "ol"
@@ -352,16 +400,15 @@ def _process_list(tag: Tag, base_url: str, lines: _Lines, depth: int) -> None:
         indent = "  " * depth
         nested = item.find(("ul", "ol"), recursive=False)
 
+        # The first line carries the marker; any further lines from block
+        # content inside the item are indented under it as continuations.
+        body = _render_li_body(item, base_url)
+        if body:
+            lines.append(f"{indent}{prefix} {body[0]}")
+            lines.extend(f"{indent}  {ln}" for ln in body[1:])
+
         if nested:
-            # Emit the item's own inline text, then the nested list indented.
-            text = _render_inline(item, base_url).strip()
-            if text:
-                lines.append(f"{indent}{prefix} {text}")
             _process_list(nested, base_url, lines, depth + 1)
-        else:
-            text = _render_inline(item, base_url).strip()
-            if text:
-                lines.append(f"{indent}{prefix} {text}")
     lines.append("")
 
 

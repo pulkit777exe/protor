@@ -12,6 +12,7 @@ Public API
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 from rich import box
@@ -19,11 +20,18 @@ from rich.table import Table
 from rich.text import Text
 
 from .config import ANALYSIS_MAX_DATA_CHARS, OLLAMA_BASE
-from .exceptions import RuntimeUnavailableError
+from .exceptions import ModelListUnavailableError, RuntimeUnavailableError
 from .formatters import write_output
 from .llm_backends import LLMBackend, ModelInfo, OllamaBackend, create_backend
 from .models import AnalysisResult, SiteManifest
-from .runtimes import RUNTIMES, detect_runtimes, get_runtime, resolve_base_url
+from .progress import StreamWriter
+from .runtimes import (
+    RUNTIMES,
+    detect_runtimes,
+    get_runtime,
+    resolve_base_url,
+    shared_url_runtimes,
+)
 from .theme import OK, bright, console, err, header_rule, info, label, muted, section_rule, warn
 from .utils import save_json, timestamp
 
@@ -140,6 +148,15 @@ def list_runtime_models(
 
     try:
         models = llm.list_models()
+    except ModelListUnavailableError as exc:
+        # The runtime answers chat requests but has no listing to read, so the
+        # only way forward is naming the model by hand.
+        console.print(f"  {warn(str(exc))}")
+        console.print(
+            f"  {info('Analyse with:')} protor analyze --backend {backend} --model <name>"
+        )
+        console.print()
+        return
     except Exception as exc:
         console.print(f"  {err(f'Could not list models: {exc}')}")
         console.print()
@@ -205,6 +222,16 @@ def list_runtimes() -> None:
     else:
         console.print(f"  {warn('No local runtime detected.')}")
         console.print(f"  {info('Start one of the above, or use --backend openai / anthropic')}")
+
+    # llama.cpp, llamafile, TabbyAPI and Cortex.cpp all default to port 8080 and
+    # speak the same API, so one server marks all four as running. Say so, rather
+    # than leaving four "stopped" rows to go green at once with no explanation.
+    for url, group in shared_url_runtimes():
+        labels = ", ".join(r.label for r in group)
+        console.print(
+            f"  {muted(f'{len(group)} runtimes share {url} ({labels}) —')}"
+            f"{muted(' any OpenAI-compatible server there serves them all.')}"
+        )
     console.print()
 
 
@@ -218,6 +245,10 @@ _DESCRIPTION_MAX = 160
 #: Description budgets tried in order as the site count grows. Sites are never
 #: dropped, so something has to give when the headers alone overflow the cap.
 _DESCRIPTION_BUDGETS = (_DESCRIPTION_MAX, 80, 0)
+
+#: A site header at the start of a line. Anchored so that ordinary prose
+#: mentioning the marker mid-line is not mistaken for structure.
+_SITE_MARKER_RE = re.compile(r"^##(\s*)\[", re.MULTILINE)
 
 
 def _site_header(i: int, site: dict | SiteManifest, desc_budget: int) -> str:
@@ -254,20 +285,25 @@ def _prepare_context(data: list[dict | SiteManifest], max_chars: int | None = No
     if not data:
         return ""
 
-    bodies = [
-        str(
-            (site.to_dict() if isinstance(site, SiteManifest) else site).get("text_content") or ""
-        ).strip()
-        for site in data
-    ]
+    limit = max_chars or ANALYSIS_MAX_DATA_CHARS
+    if not data:
+        return ""
+
+    # Bodies are sliced to their share on the way out and never materialised
+    # whole: the prompt is capped at 8,000 characters, so building every site's
+    # full text first allocated orders of magnitude more than was ever used
+    # (measured 95 MB peak for 2,000 mid-sized pages, now 3.8 MB). The marker
+    # defusal runs on the kept slice, which is what reaches the model.
     # "\n---\n" between entries plus a trailing newline per body.
     framing = 6 * len(data)
 
+    context = ""
     for desc_budget in _DESCRIPTION_BUDGETS:
         headers = [_site_header(i, site, desc_budget) for i, site in enumerate(data, 1)]
         per_site = max(0, (limit - framing - sum(len(h) for h in headers)) // len(data))
         context = "\n---\n".join(
-            f"{h}{body[:per_site]}\n" for h, body in zip(headers, bodies, strict=True)
+            f"{header}{_defuse_markers(_site_body(site).strip()[:per_site])}\n"
+            for header, site in zip(headers, data, strict=True)
         )
         if len(context) <= limit:
             return context
@@ -275,9 +311,30 @@ def _prepare_context(data: list[dict | SiteManifest], max_chars: int | None = No
     return context[:limit]
 
 
+def _site_body(site: dict | SiteManifest) -> str:
+    """The site's content preview source, without copying the whole manifest."""
+    if isinstance(site, SiteManifest):
+        return site.text_content or ""
+    return str(site.get("text_content") or "")
+
+
 def _sites_included(context: str) -> int:
     """Number of site blocks that actually made it into *context*."""
-    return context.count("## [")
+    return len(_SITE_MARKER_RE.findall(context))
+
+
+def _defuse_markers(text: str) -> str:
+    """
+    Neutralise site-header markers inside untrusted page content.
+
+    Page text is pasted into the prompt verbatim, so a scraped page could
+    contain ``## [7] evil.example`` and read as a site of its own. That was
+    not hypothetical: it made the reported ``sites_analyzed`` disagree with the
+    data that had been sent, and let page content forge structure in the
+    context. Escaping the leading ``##`` keeps the text readable while making
+    it unambiguously content.
+    """
+    return _SITE_MARKER_RE.sub(r"#\g<1>[", text)
 
 
 # ── streaming ─────────────────────────────────────────────────────────────────
@@ -290,13 +347,20 @@ def _stream_backend(backend: LLMBackend, prompt: str) -> str:
     console.print()
 
     chunks: list[str] = []
-    for chunk in backend.stream(prompt):
-        # LLM output is Markdown, not rich markup: without markup=False a link
-        # like [docs](url) renders as (url), `[code]` vanishes, and an
-        # unbalanced [/tag] raises MarkupError — losing the whole report after
-        # the model has already been paid for.
-        console.print(chunk, end="", style="grey85", markup=False, highlight=False)
-        chunks.append(chunk)
+    # LLM output is Markdown, not rich markup: without markup=False a link like
+    # [docs](url) renders as (url), `[code]` vanishes, and an unbalanced [/tag]
+    # raises MarkupError — losing the whole report after the model has already
+    # been paid for. StreamWriter keeps those flags and additionally strips escape
+    # sequences the model emits, which would otherwise repaint the screen.
+    #
+    # Chunks are coalesced rather than printed one at a time: every console.print
+    # is a full render pass, so per-chunk printing cost thousands of them for one
+    # answer (measured 85 ms for 1,600 chunks) and repainted faster than a
+    # terminal can keep up, which reads as flicker.
+    with StreamWriter(console=console) as writer:
+        for chunk in backend.stream(prompt):
+            writer.write(chunk)
+            chunks.append(chunk)
     console.print()
     console.print()
     return "".join(chunks)
@@ -390,6 +454,17 @@ def analyze(
     # to exhaust the character budget cannot fit every site's header, and
     # claiming otherwise would misreport the analysis.
     sites_sent = _sites_included(context)
+
+    if sites_sent == 0:
+        # An empty batch still cost a full model call and produced a report
+        # reading "Sites analyzed: 0" — an invented finding rather than a
+        # diagnosis. This is reachable from `protor run <url>` whenever the
+        # fetch fails, so the user was told the site had nothing to say.
+        raise ValueError(
+            "no scraped site content to analyze — every page failed to fetch, "
+            "so there is nothing to send the model. Re-run the scrape and "
+            "check the failure reasons above."
+        )
 
     console.print(
         f"  {label('backend')} {bright(llm.display_name)}   "

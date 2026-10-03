@@ -208,6 +208,7 @@ def scrape_multiple(
     hooks: dict[str, list[Callable[..., Any]]] | None = None,
     block_ads: bool = False,
     auto_scale: bool = False,
+    live: bool = True,
 ) -> str:
     """
     Scrape *urls* concurrently and write a ``sites_index.json`` index file.
@@ -287,12 +288,15 @@ def scrape_multiple(
         check_robots=True,
         on_status=on_progress,
         live_render=lambda: _build_table(rows),
+        live=live,
     )
-    if cache is not None:
+    try:
         stats = engine.run()
-        cache.flush()
-    else:
-        stats = engine.run()
+    finally:
+        # A crashed run must still persist what it fetched, or every conditional
+        # request from the next run starts cold.
+        if cache is not None:
+            cache.flush()
 
     manifests = engine.manifests
     ok_n = sum(1 for m in manifests if m.success)

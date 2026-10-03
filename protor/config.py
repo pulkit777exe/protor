@@ -16,6 +16,12 @@ MAX_TEXT_CHARS: int = 10_000
 #: value let one long page add ~119k characters to every manifest.
 MAX_MARKDOWN_CHARS: int = 40_000
 JS_DOWNLOAD_TIMEOUT: int = 15
+#: Ceiling on the JS batch for a *single page*, regardless of per-file timeout.
+#: Script assets are best-effort extras, but a page referencing one unreachable
+#: CDN held its concurrency slot for the full JS_DOWNLOAD_TIMEOUT and delayed the
+#: whole run — measured 15.5 s for one page whose only script was dead. Anything
+#: still running when this expires is dropped.
+JS_GROUP_TIMEOUT: int = 8
 RATE_LIMIT_DELAY: float = 0.5
 
 # ── crawler ───────────────────────────────────────────────────────────────────
