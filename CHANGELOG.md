@@ -1,9 +1,9 @@
 # Changelog
 
-## Unreleased
+## v2.9.0 - 2026-10-03
 
-Everything below landed after `v2.8.0`. Nothing here is released yet — the
-version number and date are a maintainer's call.
+Eleven more local runtimes, a crawl that starts fresh instead of silently
+doing nothing, and the largest performance pass the codebase has had.
 
 ### New Features
 
