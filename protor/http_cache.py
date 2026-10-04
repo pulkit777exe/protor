@@ -16,7 +16,7 @@ import json
 import os
 import tempfile
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
@@ -163,6 +163,19 @@ class HTTPCache:
         return cached
 
     # ── persistence ──────────────────────────────────────────────────────────
+
+    def _with_body(self, url: str, entry: CacheEntry) -> CacheEntry:
+        """
+        *entry* with its body read from disk, leaving the indexed entry alone.
+
+        A copy rather than the stored object, so the body lives exactly as long
+        as the caller's reference. Attaching it to the indexed entry is what the
+        docstring above says no longer happens — the read is lazy, but it was
+        never dropped, which is the half that matters.
+        """
+        if entry.body:
+            return entry
+        return replace(entry, body=self._read_body(url))
 
     def _load_index(self) -> dict[str, CacheEntry]:
         """
@@ -368,9 +381,7 @@ class HTTPCache:
         entry = self._index.get(url)
         if entry is None or entry.is_expired:
             return None
-        if not entry.body:
-            entry.body = self._read_body(url)
-        return entry
+        return self._with_body(url, entry)
 
     def entry_for(self, url: str) -> CacheEntry | None:
         """
@@ -381,9 +392,7 @@ class HTTPCache:
         refers to.
         """
         entry = self._index.get(url)
-        if entry is not None and not entry.body:
-            entry.body = self._read_body(url)
-        return entry
+        return self._with_body(url, entry) if entry is not None else None
 
     #: Retained as an alias for :meth:`entry_for`.
     lookup = entry_for
@@ -403,7 +412,11 @@ class HTTPCache:
         entry.nbytes = len(entry.body.encode("utf-8"))
         self._bodies_dir.mkdir(parents=True, exist_ok=True)
         self._body_path(url).write_text(entry.body, encoding="utf-8")
-        self._index[url] = entry
+        # Metadata only. Attaching the body to the indexed entry made the cache
+        # fully resident in RAM again — measured 11.4 MiB held across 500 entries
+        # of 24 kB, and it was never released, since nothing cleared it. The
+        # caller's copy keeps the body it passed in; the index does not.
+        self._index[url] = replace(entry, body="")
         self._dirty = True
 
     def conditional_headers(self, url: str) -> dict[str, str]:

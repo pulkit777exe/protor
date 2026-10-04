@@ -747,6 +747,10 @@ class Crawler:
             allow_internal_redirects=self._allow_internal_redirects,
             download_js=self._download_js,
             cache=self._cache,
+            # Nothing here reads engine.manifests; keeping one per page cost
+            # ~49 KiB of retained text and markdown per page for a crawl that
+            # never asked. The manifests are still written to disk.
+            collect_manifests=False,
         )
         try:
             await engine.arun()

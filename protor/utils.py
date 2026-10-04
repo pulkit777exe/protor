@@ -40,6 +40,15 @@ def safe_filename(name: str) -> str:
 def canonicalize_url(url: str) -> str:
     """Return a stable deduplication key for *url*.
 
+    Memoising this with ``lru_cache`` was tried and reverted: it makes a repeat
+    call ~100x cheaper (0.04 us against 4.1 us), and the engine really does
+    canonicalise the same string twice per discovered link. But a crawl's URLs
+    are overwhelmingly *distinct*, so in exchange the cache grows without bound
+    and starts evicting — which made the project's own scaling gate report
+    ``canonicalize_url`` superlinear (17x per-item cost at 80,000 distinct URLs),
+    and holding 200k entries resident would cost tens of megabytes against a
+    codebase whose site index was brought down to 0.58 MiB. Not worth 4 us a link.
+
     Lowercases the scheme and host, drops the fragment, and normalises
     ``index.html`` page paths to their directory, so ``/index.html`` and ``/``
     collapse into a single crawl target. Querystrings are preserved.

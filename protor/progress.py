@@ -234,7 +234,17 @@ def live_display(
         _render=render, _live=None, _throttle=Throttle(per_second), _enabled=True, _console=con
     )
     try:
-        with Live(console=con, refresh_per_second=per_second, transient=transient) as live:
+        # auto_refresh=False, so the Throttle above is the *only* thing that
+        # repaints. Rich's background refresh thread repaints the retained
+        # renderable on its own schedule, which is not the schedule the throttle
+        # governs: measured on a 300-row table, 35 throttled renders produced 70
+        # prints. For the batch scraper that unthrottled half dominated the run.
+        with Live(
+            console=con,
+            refresh_per_second=per_second,
+            transient=transient,
+            auto_refresh=False,
+        ) as live:
             display._live = live
             display.update(force=True)
             yield display

@@ -1410,3 +1410,74 @@ class TestNonPagesAreNotScraped:
         q.mark_visited("https://ex.com/manual.pdf", success=False, attempted=False)
         assert q.requeue_failed() == 0, "a non-page is queued again on every resume"
         q.close()
+
+
+class TestTheCrawlerDoesNotRetainManifests:
+    """
+    `Crawler` never reads `engine.manifests`; it reports `CrawlStats`.
+
+    The engine accumulated one manifest per page anyway, each carrying the page's
+    text and markdown — measured at ~49 KiB of retained strings per page, so a
+    40,000-page crawl held roughly 1.9 GB that nothing ever read. They are still
+    written to disk; only the in-memory retention is gone.
+    """
+
+    async def test_a_crawl_keeps_no_manifests_in_memory(self, tmp_path, monkeypatch):
+        """Captures the engine the crawler builds, and looks at what it kept."""
+        import protor.crawler as crawler_mod
+        import protor.engine as engine_mod
+        from protor.fetcher import FetchResult
+
+        html = (
+            "<html><head><title>Page</title></head><body>"
+            + "<p>filler</p>" * 200
+            + "</body></html>"
+        )
+        built: list[object] = []
+
+        async def fake_fetch(session, url, **kwargs):
+            return FetchResult(text=html, nbytes=len(html), status=200, content_type="text/html")
+
+        class _Recording(engine_mod.CrawlEngine):
+            def __init__(self, *a, **kw):
+                super().__init__(*a, **kw)
+                built.append(self)
+
+        monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+        monkeypatch.setattr(crawler_mod, "CrawlEngine", _Recording)
+
+        crawler = crawler_mod.Crawler(
+            "https://ex.com/", max_pages=5, output_dir=tmp_path, live=False
+        )
+        await crawler._run()
+
+        assert crawler._state.scraped == 1, "the crawl should still have run"
+        assert built, "the crawler built no engine to inspect"
+        assert built[0].manifests == [], "the crawl retained manifests nothing reads"
+        assert list(tmp_path.rglob("*.json")), "but they were still written to disk"
+
+    def test_the_batch_scraper_still_collects_them(self, tmp_path):
+        """The scraper does read them — the flag must not have broken that path."""
+        from protor.engine import CrawlEngine, StaticQueue, StaticSource
+
+        engine = CrawlEngine(
+            queue=StaticQueue(["https://ex.com/"]),
+            link_source=StaticSource(),
+            output_dir=tmp_path,
+            max_targets=1,
+            collect_manifests=True,
+        )
+        assert engine._collect_manifests is True
+
+    def test_an_engine_can_be_told_not_to(self, tmp_path):
+        from protor.engine import CrawlEngine, StaticQueue, StaticSource
+
+        engine = CrawlEngine(
+            queue=StaticQueue(["https://ex.com/"]),
+            link_source=StaticSource(),
+            output_dir=tmp_path,
+            max_targets=1,
+            collect_manifests=False,
+        )
+        assert engine._collect_manifests is False
+        assert engine.manifests == []

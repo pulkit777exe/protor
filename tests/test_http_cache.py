@@ -1,6 +1,8 @@
 """Tests for protor.http_cache module."""
 
 import json
+import pathlib
+import tempfile
 import time
 
 import pytest
@@ -226,3 +228,51 @@ class TestHTTPCache:
         reloaded = HTTPCache(cache_dir=tmp_path / "http_cache")
         assert reloaded.get("https://example.com") is None
         assert reloaded._load_index() == {}
+
+
+class TestTheIndexStaysMetadataOnly:
+    """
+    A disk-backed cache must not become a memory-resident one.
+
+    The docstring claimed bodies were "read lazily by `get` and dropped again, so
+    only what is actually requested is in memory". The read was lazy; the drop
+    never happened — `get` and `entry_for` attached the body to the *indexed*
+    entry, which then held it for the life of the instance, and `put` stored the
+    entry with its body attached. Measured 11.4 MiB retained across 500 entries
+    of 24 kB, after reading every one of them.
+    """
+
+    def _fill(self, count: int = 200, size: int = 24000) -> tuple[HTTPCache, pathlib.Path]:
+        cache_dir = pathlib.Path(tempfile.mkdtemp()) / "c"
+        cache = HTTPCache(cache_dir=cache_dir)
+        body = "x" * size
+        for i in range(count):
+            cache.put(f"https://x.example/{i}", CacheEntry(etag=f'"{i}"', body=body))
+        cache.flush()  # a fresh cache over this directory needs the index on disk
+        return cache, cache_dir
+
+    def test_put_does_not_retain_the_body(self):
+        cache, _ = self._fill()
+        assert sum(len(e.body) for e in cache._index.values()) == 0
+
+    def test_reading_every_body_retains_nothing(self):
+        cache, _ = self._fill()
+        for i in range(200):
+            entry = cache.entry_for(f"https://x.example/{i}")
+            assert entry is not None and entry.body == "x" * 24000, "body not served"
+        assert sum(len(e.body) for e in cache._index.values()) == 0
+
+    def test_the_body_is_still_served(self):
+        """Released, not lost: a fresh cache over the same directory serves it."""
+        cache, cache_dir = self._fill()
+        assert cache.entry_for("https://x.example/7").body == "x" * 24000
+        fresh = HTTPCache(cache_dir=cache_dir)
+        assert fresh.get("https://x.example/7").body == "x" * 24000
+
+    def test_validators_still_survive(self):
+        """Releasing the body must not cost the ETag a revalidation needs."""
+        cache, cache_dir = self._fill()
+        cache.flush()
+        fresh = HTTPCache(cache_dir=cache_dir)
+        assert fresh.entry_for("https://x.example/3").etag == '"3"'
+        assert fresh.conditional_headers("https://x.example/3") == {"If-None-Match": '"3"'}

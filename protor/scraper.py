@@ -87,6 +87,17 @@ def _print_failure_reasons(rows: list[dict[str, Any]]) -> None:
         console.print(f"  {muted(f'+ {hidden} more distinct reason(s)')}")
 
 
+#: How many rows the live batch table shows. The crawler bounds its log the same
+#: way; the batch path never got the same treatment, so every row — including the
+#: ones still ``waiting`` — was rebuilt and repainted on every tick.
+#:
+#: Measured on Rich's own render of the resulting table: 300 rows 27ms, 1,000
+#: 587ms, 3,000 1,839ms. On a real 300-URL batch, rendering the progress bar was
+#: 67% of the wall clock; at 600 URLs, 89%. The durable summary printed at the end
+#: still carries every row.
+_TABLE_VIEW = 25
+
+
 def _build_table(rows: list[dict[str, Any]]) -> Table:
     t = Table(
         box=box.SIMPLE,
@@ -102,7 +113,9 @@ def _build_table(rows: list[dict[str, Any]]) -> Table:
     t.add_column("Time", style="grey74", width=7, justify="right")
     t.add_column("JS", style="grey50", width=4, justify="right")
 
-    for r in rows:
+    shown = rows[-_TABLE_VIEW:] if len(rows) > _TABLE_VIEW else rows
+    hidden = len(rows) - len(shown)
+    for r in shown:
         status = r.get("status", "waiting")
         if status == "done":
             s = Text(f"  {OK} done", style="green")
@@ -127,6 +140,16 @@ def _build_table(rows: list[dict[str, Any]]) -> Table:
             human_bytes(r["bytes"]) if r.get("bytes") else "—",
             f"{r['ms']}ms" if r.get("ms") else "—",
             str(r["js"]) if r.get("js") else "—",
+        )
+
+    if hidden:
+        t.add_row(
+            "",
+            muted(f"… {hidden} earlier {'row' if hidden == 1 else 'rows'}"),
+            "",
+            "",
+            "",
+            "",
         )
     return t
 

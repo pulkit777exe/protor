@@ -304,3 +304,89 @@ class TestDisabledDisplayStillPrintsTheResult:
         console.file = io.StringIO()
         with live_display(boom, console=console, enabled=False):
             pass  # must not raise
+
+
+class TestTheBatchLiveTableIsBounded:
+    """
+    The batch progress table rebuilt and repainted every row on every tick.
+
+    Rich's own render of the resulting table measured 27 ms at 300 rows, 587 ms at
+    1,000 and 1,839 ms at 3,000. On a real 300-URL batch, rendering the progress
+    bar was 67% of the wall clock; at 600 URLs, 89%. The crawler bounded its log
+    to the last 20 rows; the batch path never got the same treatment, and had no
+    cap at all.
+
+    The durable summary printed at the end still carries every row — this is only
+    about what is repainted while work is in flight.
+    """
+
+    def test_a_huge_batch_renders_a_bounded_table(self):
+        from protor.scraper import _TABLE_VIEW, _build_table
+
+        rows = [
+            {
+                "idx": i,
+                "domain": f"site{i}.example",
+                "status": "done",
+                "bytes": 10,
+                "ms": 1,
+                "js": 0,
+            }
+            for i in range(3000)
+        ]
+        out = io.StringIO()
+        console = Console(file=out, width=120, force_terminal=False, legacy_windows=False)
+        console.print(_build_table(rows))
+
+        text = out.getvalue()
+        assert text.count("site") <= _TABLE_VIEW, f"{text.count('site')} rows rendered"
+        assert "2975 earlier rows" in text, "the elision is not reported"
+
+    def test_a_small_batch_is_not_truncated(self):
+        from protor.scraper import _build_table
+
+        rows = [
+            {
+                "idx": i,
+                "domain": f"site{i}.example",
+                "status": "done",
+                "bytes": 10,
+                "ms": 1,
+                "js": 0,
+            }
+            for i in range(5)
+        ]
+        out = io.StringIO()
+        Console(file=out, width=120, force_terminal=False, legacy_windows=False).print(
+            _build_table(rows)
+        )
+        text = out.getvalue()
+        assert text.count("site") == 5
+        assert "earlier" not in text
+
+    def test_rendering_a_huge_batch_is_fast(self):
+        """Bounded work, so the render cost stops tracking the batch size."""
+        import time
+
+        from protor.scraper import _build_table
+
+        rows = [
+            {
+                "idx": i,
+                "domain": f"site{i}.example",
+                "status": "done",
+                "bytes": 10,
+                "ms": 1,
+                "js": 0,
+            }
+            for i in range(3000)
+        ]
+        out = io.StringIO()
+        console = Console(file=out, width=120, force_terminal=False, legacy_windows=False)
+        start = time.perf_counter()
+        console.print(_build_table(rows))
+        elapsed = time.perf_counter() - start
+
+        # Unbounded this measured 8,760 ms for 3,000 rows. A generous bound
+        # still catches a regression to rendering everything.
+        assert elapsed < 1.0, f"rendering 3,000 rows took {elapsed * 1e3:.0f}ms"
