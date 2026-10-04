@@ -21,7 +21,7 @@ from bs4 import BeautifulSoup, Tag
 from soupsieve import SelectorSyntaxError
 from soupsieve import compile as compile_selector
 
-from .exceptions import InvalidSelectorError
+from .exceptions import ConfigurationError, InvalidSelectorError
 
 __all__ = [
     "ExtractionSchema",
@@ -31,6 +31,11 @@ __all__ = [
     "extract_from_html",
     "extract_from_soup",
 ]
+
+
+#: The extraction types a schema field may declare. Validated on load so a typo
+#: is refused rather than quietly falling through to plain text.
+FIELD_TYPES = frozenset({"text", "html", "attribute", "href", "src", "regex"})
 
 
 def _compile_checked(selector: str, *, where: str) -> None:
@@ -58,9 +63,11 @@ class FieldSchema:
     selector:
         CSS selector to find the element.
     type:
-        Extraction type: "text", "html", "attribute", "href", "src".
+        Extraction type. One of ``text``, ``html``, ``attribute``, ``href``,
+        ``src`` or ``regex``.
     attribute:
-        Attribute name when type is "attribute".
+        Attribute name when type is ``attribute``; the pattern when it is
+        ``regex``, which reuses this field rather than adding another.
     multiple:
         If True, extract all matches as a list.
     default:
@@ -143,7 +150,21 @@ class ExtractionSchema:
         if self.base_selector:
             _compile_checked(self.base_selector, where=f"base_selector in schema {self.name!r}")
         for f in self.fields:
-            _compile_checked(f.selector, where=f"field {f.name!r} in schema {self.name!r}")
+            where = f"field {f.name!r} in schema {self.name!r}"
+            _compile_checked(f.selector, where=where)
+            if f.type not in FIELD_TYPES:
+                # Checked here for the same reason as the selector: a typo like
+                # "hrefs" used to fall through every branch and quietly extract
+                # the element's *text* instead, so the run reported success with
+                # the wrong data — a link's URL replaced by its label.
+                # ConfigurationError, not InvalidSelectorError: the selector
+                # compiled fine, and its message would have said otherwise. It is
+                # also what the CLI renders with a hint, which is the right
+                # outcome for a schema that cannot work.
+                raise ConfigurationError(
+                    f"{where}: unknown type {f.type!r}; "
+                    f"expected one of {', '.join(sorted(FIELD_TYPES))}"
+                )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -171,7 +192,14 @@ def _extract_field_value(element: Tag, field: FieldSchema, base_url: str) -> Any
         return str(element)
     elif field.type == "attribute" and field.attribute:
         val = element.get(field.attribute, field.default)
-        return str(val) if val is not None else field.default
+        if val is None:
+            return field.default
+        # bs4 returns a *list* for multi-valued attributes (class, rel, headers,
+        # accept-charset, accesskey, dropzone), and str() on that wrote a Python
+        # repr into the JSON: "['product-title']". Join them instead.
+        if isinstance(val, list):
+            return " ".join(str(v) for v in val)
+        return str(val)
     elif field.type == "href":
         href = element.get("href", "")
         return urljoin(base_url, str(href)) if href else field.default
@@ -183,9 +211,16 @@ def _extract_field_value(element: Tag, field: FieldSchema, base_url: str) -> Any
         pattern = field.attribute  # reuse attribute for regex pattern
         if pattern:
             match = re.search(pattern, text)
-            return match.group(1) if match else field.default
+            if match is None:
+                return field.default
+            # A pattern with no capture group raised IndexError out of the
+            # extractor — a traceback after the page was already fetched, and in
+            # `scrape --schema` a recorded page failure. Fall back to the whole
+            # match, which is what an author who wrote no group almost always
+            # meant.
+            return match.group(1) if match.re.groups else match.group(0)
         return text
-    return element.get_text(strip=True)
+    raise ValueError(f"field {field.name!r} has unknown type {field.type!r}")
 
 
 class Extractor:

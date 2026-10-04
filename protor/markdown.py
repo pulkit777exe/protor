@@ -351,7 +351,12 @@ def _process_element(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: in
         # inline rendering skips entirely — that silently dropped the whole
         # quotation. Render the children, then prefix every line.
         nested = _Lines()
-        if _has_block_child(tag):
+        # Deep, not shallow: an unlisted wrapper (center, font, span, a) around
+        # the block content is transparent, exactly as it is in _emit_block. The
+        # shallow check could not see it, so <blockquote><center><p>x</p> fell
+        # through to inline rendering, which skips the <p>, and the quotation
+        # vanished.
+        if _wraps_blocks(tag):
             _emit_block(tag, base_url, nested, depth, _rd + 1)
         else:
             text = _render_inline(tag, base_url).strip()
@@ -421,7 +426,12 @@ def _render_li_body(item: Tag, base_url: str) -> list[str]:
     output. The nested list is deliberately excluded: the caller emits it
     itself, indented, on its own lines.
     """
-    if not _has_block_child(item):
+    # Deep, for the same reason as the blockquote branch above — and this one
+    # loses more: <li><a href><div class="card">…</div></a></li> is how Bootstrap
+    # and Tailwind build a product list, and every card rendered as an empty
+    # item, because `a` is not in _BLOCK_TAGS so the shallow check saw no block
+    # child and inline rendering then skipped the div.
+    if not _wraps_blocks(item):
         text = _render_inline(item, base_url).strip()
         return [text] if text else []
 
@@ -435,7 +445,14 @@ def _render_li_body(item: Tag, base_url: str) -> list[str]:
             scratch.append(text)
 
     for child in item.children:
-        if isinstance(child, Tag) and (child.name in _BLOCK_TAGS or child.name in ("ul", "ol")):
+        # A child that *wraps* blocks counts as block content even when its own
+        # tag is not in the allowlist. Buffering it as inline is what lost
+        # <li><a href><div class="card">…</div></a></li>: `a` is not a block tag, so
+        # it went into the inline buffer, and inline rendering skips the div
+        # inside it — an entire product list, rendered as nothing.
+        if isinstance(child, Tag) and (
+            child.name in _BLOCK_TAGS or child.name in ("ul", "ol") or _wraps_blocks(child)
+        ):
             flush()
             if child.name not in ("ul", "ol"):
                 _process_element(child, base_url, scratch, 0)

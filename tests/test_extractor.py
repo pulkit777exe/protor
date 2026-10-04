@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+from bs4 import BeautifulSoup
 
 from protor.exceptions import ProtorError
 from protor.extractor import (
@@ -299,3 +300,207 @@ def test_bundled_schemas_are_valid():
     assert files, "no bundled schemas found"
     for path in files:
         ExtractionSchema.from_json(path).validate()
+
+
+def _schema_with(field_type: str, attribute: str = "") -> ExtractionSchema:
+    """A one-field schema in the ordinary container-then-field shape."""
+    return ExtractionSchema.from_dict(
+        {
+            "name": "probe",
+            "base_selector": ".row",
+            "fields": [
+                {"name": "v", "selector": ".row > *", "type": field_type, "attribute": attribute}
+            ],
+        }
+    )
+
+
+def extract(soup: BeautifulSoup, schema: ExtractionSchema) -> list[dict]:
+    from protor.extractor import extract_from_soup
+
+    return extract_from_soup(soup, schema, base_url="https://x.example/")
+
+
+class TestSchemaTyposAreRefusedNotGuessed:
+    """
+    A schema that cannot work is rejected at load, not guessed at per page.
+
+    An unrecognised ``type`` used to fall through every branch and quietly
+    extract the element's *text*: a field declared ``"hrefs"`` returned the link's
+    label where its URL belonged, and the run reported success.
+    """
+
+    @pytest.mark.parametrize("field_type", ["text", "html", "href", "src", "regex"])
+    def test_every_supported_type_is_accepted(self, field_type):
+        schema = ExtractionSchema.from_dict(
+            {
+                "name": "ok",
+                "base_selector": "a",
+                "fields": [{"name": "v", "selector": "a", "type": field_type, "attribute": "x"}],
+            }
+        )
+        assert schema.fields[0].type == field_type
+
+    @pytest.mark.parametrize("field_type", ["hrefs", "attribte", "", "TEXT", "regexes"])
+    def test_an_unknown_type_is_refused_at_load(self, field_type):
+        from protor.exceptions import ConfigurationError
+
+        with pytest.raises(ConfigurationError) as exc:
+            ExtractionSchema.from_dict(
+                {
+                    "name": "typo",
+                    "base_selector": "a",
+                    "fields": [{"name": "v", "selector": "a", "type": field_type}],
+                }
+            )
+        assert field_type in str(exc.value) or field_type == ""
+
+    def test_the_message_names_the_supported_types(self):
+        from protor.exceptions import ConfigurationError
+
+        with pytest.raises(ConfigurationError) as exc:
+            ExtractionSchema.from_dict(
+                {
+                    "name": "typo",
+                    "base_selector": "a",
+                    "fields": [{"name": "v", "selector": "a", "type": "hrefs"}],
+                }
+            )
+        message = str(exc.value)
+        assert "regex" in message and "attribute" in message, message
+
+
+class TestFieldValuesThatUsedToBeWrong:
+    def test_a_multi_valued_attribute_is_joined_not_repred(self):
+        """bs4 returns a list for `class`, `rel`, `headers`, and str() leaked it."""
+        soup = BeautifulSoup(
+            '<div class="row"><a class="product-title special" href="/buy/42">Buy</a></div>',
+            "lxml",
+        )
+        result = extract(soup, _schema_with("attribute", "class"))
+        assert result[0]["v"] == "product-title special"
+
+    def test_a_regex_without_a_capture_group_returns_the_match(self):
+        """It raised IndexError — a traceback after the page was already fetched."""
+        soup = BeautifulSoup('<div class="row"><p>Order 12345 shipped</p></div>', "lxml")
+        result = extract(soup, _schema_with("regex", r"Order \d+"))
+        assert result[0]["v"] == "Order 12345"
+
+    def test_a_regex_with_a_group_still_returns_the_group(self):
+        soup = BeautifulSoup('<div class="row"><p>Order 12345 shipped</p></div>', "lxml")
+        result = extract(soup, _schema_with("regex", r"Order (\d+)"))
+        assert result[0]["v"] == "12345"
+
+    def test_a_regex_that_does_not_match_falls_back_to_the_default(self):
+        soup = BeautifulSoup('<div class="row"><p>nothing here</p></div>', "lxml")
+        result = extract(soup, _schema_with("regex", r"Order (\d+)"))
+        assert result[0]["v"] is None
+
+
+class TestOutputPathIsConfinedToTheOutputDirectory:
+    """
+    The output filename is built from the schema name and the URL's stem.
+
+    Both come from outside, so both go through ``safe_filename``: a schema named
+    ``"../../pwned"`` wrote the file two directories above the directory that was
+    asked for, and an absolute path in the name raised instead of being written.
+    """
+
+    @pytest.mark.parametrize("name", ["../../pwned", "/etc/passwd", "a/b", "..", "."])
+    def test_a_hostile_schema_name_stays_inside(self, name, tmp_path):
+        from protor.utils import safe_filename
+
+        out_dir = tmp_path / "out"
+        out_dir.mkdir()
+        out_file = out_dir / f"{safe_filename(name)}_{safe_filename('page')}.json"
+
+        assert out_file.parent == out_dir, f"{name!r} escaped to {out_file.parent}"
+        assert out_file.resolve().is_relative_to(out_dir.resolve())
+
+    def test_the_real_command_writes_inside_the_output_directory(self, tmp_path):
+        """End to end through `protor extract`, with a traversal name."""
+        import json
+        import threading
+        from http.server import BaseHTTPRequestHandler, HTTPServer
+
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                body = b"<html><body><p>hello</p></body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+        server = HTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+        try:
+            from protor.cli import _build_parser, _cmd_extract
+
+            schema_path = tmp_path / "schema.json"
+            schema_path.write_text(
+                json.dumps(
+                    {
+                        "name": "../../pwned",
+                        "base_selector": "body",
+                        "fields": [{"name": "t", "selector": "p"}],
+                    }
+                ),
+                encoding="utf-8",
+            )
+            out_dir = tmp_path / "out"
+            url = f"http://127.0.0.1:{server.server_port}/page.html"
+            args = _build_parser().parse_args(
+                ["extract", url, str(schema_path), "--output", str(out_dir)]
+            )
+            _cmd_extract(args)
+        finally:
+            server.shutdown()
+
+        written = list(out_dir.rglob("*.json"))
+        assert written, "nothing was written"
+        for path in written:
+            assert path.resolve().is_relative_to(out_dir.resolve()), path
+        assert not list(tmp_path.parent.glob("pwned*.json")), "wrote outside the output dir"
+
+
+class TestBlocklistSeesTheRealHost:
+    """
+    The domain check must read the host, not the netloc.
+
+    ``netloc`` keeps any userinfo, so ``https://user@doubleclick.net/pixel``
+    compared as ``user@doubleclick.net`` — matching no tracker — and a hostile
+    page's script walked straight through a blocklist meant to stop exactly
+    that. The hand-rolled port strip also mangled IPv6.
+    """
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://doubleclick.net/pixel",
+            "https://user@doubleclick.net/pixel",
+            "https://user:pass@doubleclick.net/pixel",
+            "https://doubleclick.net:443/pixel",
+        ],
+    )
+    def test_a_tracker_is_blocked_however_it_is_spelled(self, url):
+        from protor.blocklist import Blocklist
+
+        assert Blocklist().is_url_blocked(url) is True, url
+
+    @pytest.mark.parametrize(
+        ("url", "blocked"),
+        [
+            # The host really is cdn.example; the tracker name is userinfo.
+            ("https://doubleclick.net@cdn.example/pixel", False),
+            ("https://example.com/page", False),
+            ("http://[::1]:8080/x", False),
+        ],
+    )
+    def test_ordinary_urls_are_not_blocked(self, url, blocked):
+        from protor.blocklist import Blocklist
+
+        assert Blocklist().is_url_blocked(url) is blocked, url

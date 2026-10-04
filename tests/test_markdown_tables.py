@@ -202,3 +202,85 @@ class TestRegressionShape:
 
         ratio = sizes[1] / sizes[0]
         assert ratio < 8, f"4x the rows produced {ratio:.1f}x the output: {sizes}"
+
+
+class TestBlockContentBehindUnlistedWrappersEverywhere:
+    """
+    The wrapper rule has to hold at every block-dispatch site, not just one.
+
+    ``_BLOCK_TAGS`` is an allowlist, so it cannot be exhaustive: real pages wrap
+    their content in tags nobody listed. ``_wraps_blocks`` treats an unlisted tag
+    as transparent, which is why a Hacker News page wrapped in ``<center>`` used
+    to render as an empty document — fixed once, in ``_emit_block``.
+
+    The list-item and blockquote paths kept the shallow check, so the same markup
+    still vanished there. An ``<li>`` wrapping an anchor around a card is how
+    Bootstrap and Tailwind build a product list, and every card rendered as an
+    empty item: a whole page of real content, gone, reported as a successful
+    scrape.
+    """
+
+    @pytest.mark.parametrize(
+        ("label", "html", "expected"),
+        [
+            (
+                "a bootstrap card inside a list item",
+                '<ul><li><a href="/p/1"><div class="card"><h3>Post title</h3>'
+                "<p>Description</p></div></a></li></ul>",
+                "Post title",
+            ),
+            (
+                "center inside a list item",
+                "<ul><li><center><p>x</p></center></li></ul>",
+                "x",
+            ),
+            (
+                "nested spans inside a list item",
+                "<ul><li><span><span><p>x</p></span></span></li></ul>",
+                "x",
+            ),
+            (
+                "center inside a blockquote",
+                "<blockquote><center><p>quoted</p></center></blockquote>",
+                "quoted",
+            ),
+            (
+                "a link wrapping a div inside a blockquote",
+                '<blockquote><a href="/x"><div><p>quoted</p></div></a></blockquote>',
+                "quoted",
+            ),
+        ],
+    )
+    def test_the_content_survives(self, label, html, expected):
+        out = html_to_markdown(html, "https://example.com/")
+        assert expected in out, f"{label}: rendered as {out!r}"
+
+    @pytest.mark.parametrize(
+        ("label", "html", "expected"),
+        [
+            ("a plain block item", "<ul><li><p>plain</p></li></ul>", "plain"),
+            ("a plain inline item", "<ul><li>inline item</li></ul>", "inline item"),
+            (
+                "a nested list stays nested",
+                "<ul><li><p>a</p><ul><li><p>b</p></li></ul></li></ul>",
+                "b",
+            ),
+        ],
+    )
+    def test_the_ordinary_cases_are_unchanged(self, label, html, expected):
+        out = html_to_markdown(html, "https://example.com/")
+        assert expected in out, f"{label}: rendered as {out!r}"
+
+    def test_a_product_list_keeps_every_card(self):
+        """The shape that made this worth fixing, at realistic size."""
+        items = "".join(
+            f'<li><a href="/product/{i}"><div class="card">'
+            f"<h3>Widget {i}</h3><p>A sturdy widget, number {i}.</p>"
+            "</div></a></li>"
+            for i in range(12)
+        )
+        out = html_to_markdown(f"<html><body><ul>{items}</ul></body></html>", "https://e.example/")
+
+        for i in range(12):
+            assert f"Widget {i}" in out, f"card {i} vanished"
+            assert f"number {i}" in out, f"card {i}'s description vanished"

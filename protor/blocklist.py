@@ -208,11 +208,14 @@ class Blocklist:
     def is_url_blocked(self, url: str) -> bool:
         """Check if a URL should be blocked based on domain or pattern rules."""
         parsed = urlparse(url)
-        domain = parsed.netloc.lower()
-
-        # Strip port
-        if ":" in domain:
-            domain = domain.rsplit(":", 1)[0]
+        # hostname, not netloc: netloc keeps the userinfo, so
+        # `https://doubleclick.net@cdn.example/pixel` reads as cdn.example —
+        # correct — while `https://user@doubleclick.net/pixel` reads as
+        # "user@doubleclick.net", which matches no tracker and lets a hostile
+        # page's script through a blocklist that was supposed to stop exactly
+        # that. It also strips the port and unwraps IPv6 brackets, which the
+        # hand-rolled rsplit(":") got wrong for `[::1]:8080`.
+        domain = (parsed.hostname or "").lower()
 
         if self.is_domain_blocked(domain):
             return True

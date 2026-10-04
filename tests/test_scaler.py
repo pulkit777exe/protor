@@ -91,7 +91,10 @@ class TestAutoScaler:
         scaler._last_scale = time.monotonic() - 100
         for _ in range(3):
             scaler.record(True)
-        scaler.maybe_scale()
-        # Second call should be in cooldown
-        result = scaler.maybe_scale()
-        assert result == scaler.concurrency
+        # The first call scales 4 -> 6; the second is inside the cooldown.
+        assert scaler.maybe_scale() == 6
+        # Asserting `result == scaler.concurrency` proved nothing: maybe_scale()
+        # returns self.concurrency on every path, so it held whether or not the
+        # cooldown did anything.
+        assert scaler.maybe_scale() == 6, "the cooldown did not hold concurrency"
+        assert scaler.concurrency == 6

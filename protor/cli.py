@@ -46,7 +46,7 @@ from .runtimes import RUNTIMES, get_runtime, runtime_names
 from .scraper import scrape_multiple
 from .theme import ERR, console, err, info, safe
 from .updater import check_for_update, perform_update
-from .utils import get_default_output_dir, load_json, validate_url
+from .utils import get_default_output_dir, load_json, safe_filename, validate_url
 
 if TYPE_CHECKING:
     from .models import SiteManifest
@@ -254,7 +254,11 @@ def _cmd_extract(args: argparse.Namespace) -> None:
     # Output
     out_dir = Path(args.output) if args.output else get_default_output_dir() / "extractions"
     out_dir.mkdir(parents=True, exist_ok=True)
-    out_file = out_dir / f"{schema.name}_{Path(args.url).stem}.json"
+    # Both halves of the filename come from outside — the schema and the URL —
+    # so both go through safe_filename. A schema named "../../pwned" otherwise
+    # wrote the file two directories above the directory that was asked for, and
+    # an absolute path in the name raised instead.
+    out_file = out_dir / f"{safe_filename(schema.name)}_{safe_filename(Path(args.url).stem)}.json"
     out_file.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
     console.print(f"  {label('saved')} {muted(str(out_file))}")
     console.print()
