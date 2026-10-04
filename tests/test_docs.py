@@ -181,3 +181,19 @@ class TestHelpEnvironmentBlock:
             if not token or token in flags:
                 continue
             assert token in known, f"--help documents {token}, which no runtime reads"
+
+    def test_the_heading_appears_exactly_once(self, capsys):
+        """
+        `_runtime_env_help` supplies the heading, and the epilog supplied a second.
+
+        The literal "Environment:\\n" sat in the parser's epilog immediately before
+        the generated block, which begins with the same string — so the heading was
+        printed twice. It happened by accident rather than by intent, and nothing
+        asserted either count, so it could have gone back unnoticed.
+        """
+        from protor.cli import _build_parser
+
+        with pytest.raises(SystemExit):
+            _build_parser().parse_args(["--help"])
+        out = capsys.readouterr().out
+        assert out.count("Environment:") == 1, out[out.find("Environment:") - 40 :][:200]

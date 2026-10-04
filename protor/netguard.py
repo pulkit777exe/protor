@@ -102,7 +102,7 @@ def describe_block(url: str) -> str | None:
         return f"it redirects to the unsupported scheme {scheme or '(none)'!r}"
 
     host = parsed.hostname or ""
-    if False:
+    if is_metadata_host(host):
         return "it redirects to a cloud instance-metadata endpoint"
 
     addr = _address_of(host)
