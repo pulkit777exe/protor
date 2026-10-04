@@ -68,6 +68,7 @@ from .theme import (
     OK_STYLED,
     SKIP,
     SPIN,
+    WARN_STYLED,
     bright,
     console,
     content,
@@ -637,15 +638,26 @@ class Crawler:
             + (f"\n  {label('auto-scale')} {bright('enabled')}" if self.auto_scale else "")
         )
         console.print()
+        interrupted = False
         try:
             asyncio.run(self._run())
+        except KeyboardInterrupt:
+            # Ctrl-C is the most common way a crawl ends, and it used to print
+            # nothing: no page count, no output path, no mention that the
+            # checkpoint just written is what `--resume` picks up. Everything the
+            # summary says is already true at this point.
+            interrupted = True
         finally:
             self._save_checkpoint()
             self._queue.close()
         console.print()
+        headline = (
+            f"{WARN_STYLED} crawl stopped at {bright(str(self._state.scraped))} pages"
+            if interrupted
+            else f"{OK_STYLED} crawl complete — {bright(str(self._state.scraped))} pages scraped"
+        )
         console.print(
-            f"  {OK_STYLED} crawl complete — "
-            f"{bright(str(self._state.scraped))} pages scraped"
+            f"  {headline}"
             + (f" ({muted(str(self._state.unchanged))} unchanged)" if self._state.unchanged else "")
             + (f", {self._state.errors} errors" if self._state.errors else "")
             + (f", {self._state.blocked} blocked" if self._state.blocked else "")
@@ -657,6 +669,11 @@ class Crawler:
         # for it, so without this a crawl could report "6 errors" and leave the
         # user to guess between DNS failure, HTTP 403, a timeout and robots.txt.
         print_failure_reasons(self._state.reasons)
+        if interrupted:
+            console.print(f"  {info(f'Continue with: protor crawl {self.start_url} --resume')}\n")
+            # Re-raised so the CLI still exits 130. Swallowing it here would report
+            # a partial crawl as a successful one to anything checking the exit code.
+            raise KeyboardInterrupt
 
     def _save_checkpoint(self) -> None:
         """

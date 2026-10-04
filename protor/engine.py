@@ -322,6 +322,8 @@ class CrawlEngine:
         self._collect_manifests = collect_manifests
         # Set for the duration of arun() when there is a display to write to.
         self._display: LiveDisplay | None = None
+        #: Live counts for the current run; see :meth:`_start`.
+        self.stats = CrawlStats()
         # Hosts the caller named, which the ad/analytics blocklist must not
         # second-guess. `--block-ads` exists to stop a page pulling a tracker off
         # a CDN; a user who typed `protor scrape https://www.facebook.com
@@ -393,6 +395,11 @@ class CrawlEngine:
 
     async def _start(self, session: aiohttp.ClientSession, on_tick: Any = None) -> CrawlStats:
         stats = CrawlStats()
+        # Published as it is built, not on return, so a caller catching
+        # KeyboardInterrupt can still read the counts for the pages that finished.
+        # Reporting "interrupted" and nothing else is how a ten-minute batch used
+        # to end, with every page already on disk.
+        self.stats = stats
         pending: set[asyncio.Task[Any]] = set()
         rows = list(self._rows)
         checkpointed = 0

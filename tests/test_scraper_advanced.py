@@ -1,9 +1,12 @@
 """Additional tests for protor.scraper module - async fetch and scrape_multiple."""
 
+import io
+import re
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from bs4 import BeautifulSoup
+from rich.console import Console
 
 from protor.exceptions import FetchError
 from protor.fetcher import download_file, fetch
@@ -306,3 +309,106 @@ class TestAPipedRunSaysWhatHappened:
         # One line per result, and no table repeating them at the end.
         assert out.count("✓ done") == 2, out
         assert "Domain" not in out, "the table duplicates the lines"
+
+
+class TestAnInterruptReportsWhatWasAlreadySaved:
+    """
+    Ctrl-C is a normal way for a batch to end, and it used to print nothing.
+
+    `scrape_multiple` had no handler, so the interrupt reached the CLI, which
+    printed one line — no page count, no output path, and no sign that every page
+    already fetched was sitting on disk with no `sites_index.json` pointing at it.
+    """
+
+    def test_the_index_is_written_and_the_counts_reported(self, tmp_path, monkeypatch):
+        import json
+
+        import protor.engine as engine_mod
+        import protor.scraper as scraper_mod
+        from protor.models import SiteManifest, SiteMetadata
+        from protor.progress import RunState  # noqa: F401 - import guard
+
+        monkeypatch.setattr(engine_mod, "check_robots", _always_allowed)
+
+        real_engine = engine_mod.CrawlEngine
+
+        def interrupting_run(self):
+            # Stand in for a run that finished two pages and was then cut short.
+            manifest = SiteManifest(
+                url="https://ex.com/a",
+                domain="ex.com",
+                html_file=str(tmp_path / "a"),
+                metadata=SiteMetadata(
+                    title="A", description="", keywords=[], author="", og_tags={}
+                ),
+                text_content="a",
+                markdown_content="a",
+                js_files=[],
+                js_count=0,
+                bytes_received=29,
+                elapsed_ms=3,
+                timestamp="2024-01-01 00:00:00",
+                success=True,
+            )
+            self.manifests.append(manifest)
+            self.stats.scraped = 1
+            self.stats.bytes_total = 29
+            raise KeyboardInterrupt
+
+        monkeypatch.setattr(engine_mod.CrawlEngine, "run", interrupting_run)
+        monkeypatch.setattr(scraper_mod, "CrawlEngine", real_engine)
+
+        buf = _console()
+        monkeypatch.setattr(scraper_mod, "console", buf)
+        monkeypatch.setattr(engine_mod, "console", buf)
+
+        with pytest.raises(KeyboardInterrupt):
+            scraper_mod.scrape_multiple(["https://ex.com/a"], str(tmp_path), live=False)
+
+        index = tmp_path / "sites_index.json"
+        assert index.exists(), "the fetched pages were left with no index pointing at them"
+        assert len(json.loads(index.read_text())) == 1
+
+        out = _plain(buf.file.getvalue())
+        assert "stopped at" in out, out
+        assert "1" in out, out
+        assert str(index) in out, "the user is not told where the work went"
+
+    def test_a_completed_run_is_unaffected(self, tmp_path, monkeypatch):
+        """The control: an ordinary run must not claim to have been interrupted."""
+        import protor.engine as engine_mod
+        import protor.scraper as scraper_mod
+        from protor.fetcher import FetchResult
+
+        async def fake_fetch(session, url, **kwargs):
+            return FetchResult(
+                text="<html><body><p>x</p></body></html>",
+                nbytes=29,
+                status=200,
+                content_type="text/html",
+            )
+
+        monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+        monkeypatch.setattr(engine_mod, "check_robots", _always_allowed)
+        buf = _console()
+        monkeypatch.setattr(scraper_mod, "console", buf)
+        monkeypatch.setattr(engine_mod, "console", buf)
+
+        index = scraper_mod.scrape_multiple(["https://ex.com/a"], str(tmp_path), live=False)
+
+        assert index.endswith("sites_index.json")
+        assert "stopped at" not in _plain(buf.file.getvalue())
+
+
+async def _always_allowed(*_args, **_kwargs) -> bool:
+    return True
+
+
+def _console() -> Console:
+    console = Console(file=None, width=100, force_terminal=False, legacy_windows=False)
+    console.file = io.StringIO()
+    return console
+
+
+def _plain(text: str) -> str:
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)

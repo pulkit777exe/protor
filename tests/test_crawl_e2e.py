@@ -1366,3 +1366,87 @@ class TestTheCrawlExplainsItsFailures:
         assert normalise_reason("HTTP 403 for 'https://a.com/x'") == normalise_reason(
             "HTTP 403 for 'https://b.com/y'"
         )
+
+
+class TestAnInterruptedCrawlSaysWhereItGotTo:
+    """
+    Ctrl-C is a normal way for a crawl to end, and it used to print nothing.
+
+    The checkpoint is written on the way out either way, so the summary was already
+    true when the interrupt arrived — the run just skipped it. The user was left
+    with "✗ interrupted" and no page count, no output path, and no mention of the
+    `--resume` that the same flag's help text describes.
+    """
+
+    def test_it_reports_the_count_and_how_to_continue(self, tmp_path, monkeypatch):
+        import io
+
+        from rich.console import Console
+
+        import protor.crawler as crawler_mod
+        from protor.crawler import Crawler
+
+        monkeypatch.setattr(Crawler, "_run", _interrupted_run)
+
+        buf = io.StringIO()
+        monkeypatch.setattr(
+            crawler_mod, "console", Console(file=buf, width=100, force_terminal=False)
+        )
+        monkeypatch.setattr(
+            "protor.progress._console", Console(file=buf, width=100, force_terminal=False)
+        )
+
+        crawler = Crawler("https://ex.com/", max_pages=10, output_dir=tmp_path, live=False)
+        crawler._state.scraped = 7
+        with pytest.raises(KeyboardInterrupt):
+            crawler.crawl()
+
+        out = _plain(buf.getvalue())
+        assert "stopped at 7" in out, out
+        assert "crawl complete" not in out, "an interrupted run is not a complete one"
+        assert str(tmp_path) in out, out
+        assert "--resume" in out, f"the way to continue is not offered:\n{out}"
+
+    def test_the_checkpoint_is_written_before_the_interrupt_escapes(self, tmp_path, monkeypatch):
+        """The `--resume` hint is only true if the checkpoint is already on disk."""
+        from protor.crawler import CHECKPOINT_FILENAME, Crawler
+
+        monkeypatch.setattr(Crawler, "_run", _interrupted_run)
+        crawler = Crawler("https://ex.com/", max_pages=10, output_dir=tmp_path, live=False)
+        with pytest.raises(KeyboardInterrupt):
+            crawler.crawl()
+        assert (tmp_path / CHECKPOINT_FILENAME).exists()
+
+    def test_a_finished_crawl_is_not_reported_as_stopped(self, tmp_path, monkeypatch):
+        import io
+
+        from rich.console import Console
+
+        import protor.crawler as crawler_mod
+        from protor.crawler import Crawler
+
+        async def quiet_run(self):
+            return None
+
+        monkeypatch.setattr(Crawler, "_run", quiet_run)
+        buf = io.StringIO()
+        monkeypatch.setattr(
+            crawler_mod, "console", Console(file=buf, width=100, force_terminal=False)
+        )
+
+        Crawler("https://ex.com/", max_pages=10, output_dir=tmp_path, live=False).crawl()
+
+        out = _plain(buf.getvalue())
+        assert "crawl complete" in out, out
+        assert "stopped at" not in out, out
+        assert "--resume" not in out, "nothing to resume, so nothing to offer"
+
+
+async def _interrupted_run(self):
+    raise KeyboardInterrupt
+
+
+def _plain(text: str) -> str:
+    import re
+
+    return re.sub(r"\x1b\[[0-9;]*m", "", text)

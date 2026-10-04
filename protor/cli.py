@@ -48,7 +48,7 @@ from .formatters import FORMAT_CHOICES
 from .llm_backends import BACKEND_CHOICES
 from .runtimes import RUNTIMES, get_runtime, runtime_names
 from .scraper import scrape_multiple
-from .theme import ERR_STYLED, OK_STYLED, console, content, err, info, safe
+from .theme import ERR_STYLED, OK_STYLED, console, content, err, info, muted, safe
 from .updater import check_for_update, perform_update
 from .utils import get_default_output_dir, load_json, safe_filename, validate_url
 
@@ -354,10 +354,15 @@ def _cmd_update(args: argparse.Namespace) -> None:
 
     console.print(f"\n  Updating protor to v{latest}...")
 
-    if perform_update():
+    outcome = perform_update()
+    if outcome.ok:
         console.print(f"  protor updated to v{latest}\n")
     else:
+        # Say why, not just that it failed. pip's own stderr went to the terminal
+        # as it ran, so the detail is above; this adds the part it cannot state.
         console.print(f"\n  {err('Update failed.')}")
+        if outcome.reason:
+            console.print(f"  {muted(outcome.reason)}")
         console.print(f"  {info('Try: pip install --upgrade protor')}\n")
         sys.exit(1)
 
@@ -602,12 +607,42 @@ def _build_parser() -> argparse.ArgumentParser:
 
     # ── run (scrape + analyze) ───────────────────────────────────────────────
     rp = sub.add_parser("run", help="scrape then analyze in one step")
-    rp.add_argument("urls", nargs="+", metavar="URL")
-    rp.add_argument("--model", "-m", default="llama3", metavar="MODEL")
-    rp.add_argument("--focus", choices=FOCUS_CHOICES, default="general")
-    rp.add_argument("--output", "-o", metavar="DIR", default=None)
-    rp.add_argument("--no-js", action="store_true")
-    rp.add_argument("--concurrency", "-c", type=int, default=6, metavar="N")
+    rp.add_argument(
+        "urls", nargs="+", metavar="URL", help="one or more pages to scrape and analyse"
+    )
+    # `run` had no help text on the flags that differ from `scrape`, so
+    # `protor run --help` was materially less useful than `protor scrape --help`
+    # for the same options. Defaults are stated here rather than left to argparse,
+    # which shows none unless told to.
+    rp.add_argument(
+        "--model",
+        "-m",
+        default="llama3",
+        metavar="MODEL",
+        help="model to analyse with (default: llama3)",
+    )
+    rp.add_argument(
+        "--focus",
+        choices=FOCUS_CHOICES,
+        default="general",
+        help="what the analysis should emphasise (default: general)",
+    )
+    rp.add_argument(
+        "--output",
+        "-o",
+        metavar="DIR",
+        default=None,
+        help="where to write the results (default: ~/Downloads/protor/analysis)",
+    )
+    rp.add_argument("--no-js", action="store_true", help="do not download a page's scripts")
+    rp.add_argument(
+        "--concurrency",
+        "-c",
+        type=int,
+        default=6,
+        metavar="N",
+        help="pages in flight at once (default: 6)",
+    )
     rp.add_argument(
         "--timeout",
         type=int,
@@ -621,8 +656,16 @@ def _build_parser() -> argparse.ArgumentParser:
         metavar="SCHEMA.json",
         help="JSON schema file for structured data extraction",
     )
-    rp.add_argument("--block-ads", action="store_true")
-    rp.add_argument("--auto-scale", action="store_true")
+    rp.add_argument(
+        "--block-ads",
+        action="store_true",
+        help="skip requests to ad and analytics hosts, including the ones a page links to",
+    )
+    rp.add_argument(
+        "--auto-scale",
+        action="store_true",
+        help="raise or lower concurrency as the run's success rate moves",
+    )
     rp.add_argument("--cache", action="store_true", help="reuse cached responses across runs")
     _add_analysis_flags(rp)
     _add_output_flags(rp)

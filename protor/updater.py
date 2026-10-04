@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 from urllib.error import URLError
@@ -92,19 +93,48 @@ def _is_editable_install() -> bool:
         return False
 
 
-def perform_update() -> bool:
-    """Run pip install --upgrade protor.
+#: How long to let pip run before giving up on it. Separate from
+#: ``UPDATE_TIMEOUT``, which is the PyPI *metadata* lookup and is deliberately
+#: short — a version check should never be the thing that hangs.
+INSTALL_TIMEOUT = 300
+
+
+@dataclass(frozen=True)
+class UpdateOutcome:
+    """
+    What happened, and what to tell the user about it.
+
+    A bare bool was not enough. pip's own output was captured and then discarded,
+    so a user watched "Updating protor to v2.10.0..." for up to two minutes with no
+    sign of life, and on failure was told only "Update failed. Try: pip install
+    --upgrade protor" — never *why*, which is the only part that differs between a
+    permissions failure, a yanked release and a proxy that cannot reach PyPI.
+    """
+
+    ok: bool
+    #: pip's stderr, already trimmed, for the failure case.
+    reason: str = ""
+
+
+def perform_update() -> UpdateOutcome:
+    """Run ``pip install --upgrade protor``, letting pip write its own progress.
 
     Returns:
-        True if upgrade succeeded, False otherwise.
+        An :class:`UpdateOutcome` saying whether it worked and, if not, why.
     """
     try:
+        # No capture_output: pip's download and install progress is what makes the
+        # wait legible, and hiding it behind a two-minute silence is its own bug.
         result = subprocess.run(
             [sys.executable, "-m", "pip", "install", "--upgrade", "protor"],
-            capture_output=True,
             text=True,
-            timeout=120,
+            timeout=INSTALL_TIMEOUT,
+            check=False,
         )
-        return result.returncode == 0
-    except (subprocess.TimeoutExpired, FileNotFoundError, OSError):
-        return False
+    except subprocess.TimeoutExpired:
+        return UpdateOutcome(False, f"pip did not finish within {INSTALL_TIMEOUT}s")
+    except (FileNotFoundError, OSError) as exc:
+        return UpdateOutcome(False, str(exc))
+    if result.returncode == 0:
+        return UpdateOutcome(True)
+    return UpdateOutcome(False, f"pip exited {result.returncode}")

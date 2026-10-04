@@ -104,6 +104,11 @@ ERR = "✗" if _can_encode("✗") else "x"
 #: default style, so `✓ 40 scraped` and `✗ 2 failed` were the same colour.
 OK_STYLED = f"[green]{OK}[/green]"
 ERR_STYLED = f"[red]{ERR}[/red]"
+
+#: The `warn()` glyph, coloured, for a headline that is neither success nor
+#: failure. Used when a run is cut short: the work done so far is real and worth
+#: reporting, but it is not a completed crawl.
+WARN_STYLED = "[yellow]![/yellow]"
 SKIP = "-"
 SPIN = "◌" if _can_encode("◌") else "o"
 ARROW = "→" if _can_encode("→") else "->"

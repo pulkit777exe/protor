@@ -40,6 +40,7 @@ from .theme import (
     OK_STYLED,
     SKIP,
     SPIN,
+    WARN_STYLED,
     bright,
     console,
     content,
@@ -419,8 +420,16 @@ def scrape_multiple(
         live_render=lambda: _build_table(rows),
         live=live,
     )
+    interrupted = False
     try:
         stats = engine.run()
+    except KeyboardInterrupt:
+        # Everything fetched so far is on disk and in `engine.manifests`; the point
+        # of catching this is to write the index and report the counts before the
+        # interrupt reaches the CLI, which otherwise printed one line and nothing
+        # about what had already been saved.
+        interrupted = True
+        stats = engine.stats
     finally:
         # A crashed run must still persist what it fetched, or every conditional
         # request from the next run starts cold.
@@ -434,8 +443,13 @@ def scrape_multiple(
     avg_ms = round(sum(m.elapsed_ms for m in manifests) / max(ok_n, 1)) if ok_n else 0
 
     console.print()
+    headline = (
+        f"{WARN_STYLED} stopped at {bright(str(ok_n))} scraped"
+        if interrupted
+        else f"{OK_STYLED} {bright(str(ok_n))} scraped"
+    )
     console.print(
-        f"  {OK_STYLED} {bright(str(ok_n))} scraped  "
+        f"  {headline}  "
         + (f"{ERR_STYLED} {bright(str(error_count))} failed  " if error_count else "")
         + f"{muted(human_bytes(total) + ' total')}  {muted(f'avg {avg_ms}ms')}"
     )
@@ -445,5 +459,8 @@ def scrape_multiple(
     _write_manifest_index(manifests, index)
     console.print(f"  {label('index')} {muted(str(index))}")
     console.print()
+
+    if interrupted:
+        raise KeyboardInterrupt from None
 
     return str(index)

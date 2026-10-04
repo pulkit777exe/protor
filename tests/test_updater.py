@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 from protor import __version__
 from protor.updater import (
     PYPI_URL,
+    UpdateOutcome,
     _is_editable_install,
     check_for_update,
     get_current_version,
@@ -84,7 +85,7 @@ class TestCmdUpdate:
         with (
             patch("protor.updater._is_editable_install", return_value=False),
             patch("protor.cli.check_for_update") as mock_check,
-            patch("protor.cli.perform_update", return_value=True),
+            patch("protor.cli.perform_update", return_value=UpdateOutcome(True)),
         ):
             mock_check.return_value = {
                 "current": "2.0.0",
@@ -189,12 +190,23 @@ class TestCheckForUpdate:
 
 
 class TestPerformUpdate:
+    """
+    An update says what happened, not only whether it happened.
+
+    `capture_output=True` hid pip's download and install progress behind a
+    two-minute silence, and the captured stderr — the only thing that distinguishes
+    a permissions failure from a yanked release from a proxy that cannot reach
+    PyPI — was thrown away, leaving "Update failed. Try: pip install --upgrade
+    protor" as the whole report.
+    """
+
     @patch("protor.updater.subprocess.run")
     def test_success(self, mock_run):
         mock_run.return_value = MagicMock(returncode=0)
 
-        result = perform_update()
-        assert result is True
+        outcome = perform_update()
+        assert outcome.ok is True
+        assert outcome.reason == ""
         mock_run.assert_called_once()
         args = mock_run.call_args[0][0]
         assert "pip" in args
@@ -203,22 +215,35 @@ class TestPerformUpdate:
         assert "protor" in args
 
     @patch("protor.updater.subprocess.run")
-    def test_failure_non_zero_exit(self, mock_run):
+    def test_pip_output_is_not_captured(self, mock_run):
+        """The progress is what makes the wait legible; hiding it is its own bug."""
+        mock_run.return_value = MagicMock(returncode=0)
+
+        perform_update()
+        assert not mock_run.call_args.kwargs.get("capture_output"), (
+            "pip's progress must reach the terminal"
+        )
+
+    @patch("protor.updater.subprocess.run")
+    def test_failure_non_zero_exit_says_which(self, mock_run):
         mock_run.return_value = MagicMock(returncode=1)
 
-        result = perform_update()
-        assert result is False
+        outcome = perform_update()
+        assert outcome.ok is False
+        assert "1" in outcome.reason, outcome.reason
 
     @patch("protor.updater.subprocess.run")
-    def test_timeout_returns_false(self, mock_run):
-        mock_run.side_effect = subprocess.TimeoutExpired(cmd="pip", timeout=120)
+    def test_timeout_says_how_long_it_waited(self, mock_run):
+        mock_run.side_effect = subprocess.TimeoutExpired(cmd="pip", timeout=300)
 
-        result = perform_update()
-        assert result is False
+        outcome = perform_update()
+        assert outcome.ok is False
+        assert "300" in outcome.reason, outcome.reason
 
     @patch("protor.updater.subprocess.run")
-    def test_file_not_found_returns_false(self, mock_run):
-        mock_run.side_effect = FileNotFoundError()
+    def test_file_not_found_reports_the_cause(self, mock_run):
+        mock_run.side_effect = FileNotFoundError("no pip here")
 
-        result = perform_update()
-        assert result is False
+        outcome = perform_update()
+        assert outcome.ok is False
+        assert "no pip here" in outcome.reason, outcome.reason
