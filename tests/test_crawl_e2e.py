@@ -105,6 +105,9 @@ class _Site:
         self.errors: dict[str, int] = {}
         self.delays: dict[str, float] = {}
         self.robots = "User-agent: *\nAllow: /\n"
+        #: Body served at /sitemap.xml. Empty means "no sitemap here", which is
+        #: the common case and must not stop a crawl.
+        self.sitemap: str = ""
         self.requests: list[str] = []
         self.page_requests: list[str] = []
         self.robots_requests: list[str] = []
@@ -165,6 +168,12 @@ class _Site:
 
     # ── handlers ──
 
+    async def sitemap_handler(self, request: web.Request) -> web.Response:
+        self.requests.append(request.path)
+        if not self.sitemap:
+            return web.Response(status=404, text="no sitemap")
+        return web.Response(text=self.sitemap, content_type="application/xml")
+
     async def robots_handler(self, request: web.Request) -> web.Response:
         self.requests.append(request.path)
         self.robots_requests.append(request.path)
@@ -204,6 +213,7 @@ async def site():
     state = _Site()
     app = web.Application()
     app.router.add_get("/robots.txt", state.robots_handler)
+    app.router.add_get("/sitemap.xml", state.sitemap_handler)
     app.router.add_get("/{tail:.*}", state.page_handler)
     runner = web.AppRunner(app)
     await runner.setup()
@@ -219,7 +229,14 @@ async def site():
 # ── driving a crawl ───────────────────────────────────────────────────────────
 
 
-async def _crawl(site: _Site, output_dir: Path, *, max_pages: int, resume: bool = False) -> None:
+async def _crawl(
+    site: _Site,
+    output_dir: Path,
+    *,
+    max_pages: int,
+    resume: bool = False,
+    use_sitemaps: bool = False,
+) -> None:
     """
     Run the crawl the way the CLI does, against the live server.
 
@@ -243,6 +260,7 @@ async def _crawl(site: _Site, output_dir: Path, *, max_pages: int, resume: bool 
             output_dir=output_dir,
             resume=resume,
             live=False,
+            use_sitemaps=use_sitemaps,
         ).crawl()
 
     await asyncio.to_thread(run)
@@ -978,3 +996,90 @@ class TestMaxPagesBoundsRequests:
         assert len(site.page_requests) > len(visited), (
             "expected the retried page to cost more than one request"
         )
+
+
+class TestSitemapSeeding:
+    """
+    A link-walk only reaches what pages happen to link to.
+
+    On a documentation site that is the sidebar; on a shop it is the top nav. The
+    pages in a sitemap and nothing else — an unlisted changelog, a product retired
+    from the nav last year — are exactly the ones a link-walk structurally cannot
+    find, and they are a large share of what a site has.
+    """
+
+    def _sitemap(self, site: _Site, *paths: str) -> None:
+        site.sitemap = (
+            '<?xml version="1.0"?>'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            + "".join(f"<url><loc>{site.url(p)}</loc></url>" for p in paths)
+            + "</urlset>"
+        )
+
+    async def test_sitemap_pages_the_homepage_never_links_to_are_crawled(self, site, tmp_path):
+        site.add("/", "Index", ["/about.html"])
+        site.add("/about.html", "About")
+        site.add("/changelog.html", "Changelog")
+        site.add("/legacy/old-product.html", "Old product")
+        self._sitemap(site, "/changelog.html", "/legacy/old-product.html")
+
+        await _crawl(site, max_pages=10, output_dir=tmp_path, use_sitemaps=True)
+
+        assert "/changelog.html" in site.page_requests, "sitemap page was missed"
+        assert "/legacy/old-product.html" in site.page_requests
+        assert _summary(tmp_path)["scraped"] == 4
+
+    async def test_without_the_flag_the_same_site_is_not_reached(self, site, tmp_path):
+        """The control: the flag is what changes the outcome, not the sitemap."""
+        site.add("/", "Index", ["/about.html"])
+        site.add("/about.html", "About")
+        site.add("/changelog.html", "Changelog")
+        self._sitemap(site, "/changelog.html")
+
+        await _crawl(site, max_pages=10, output_dir=tmp_path, use_sitemaps=False)
+
+        assert "/changelog.html" not in site.page_requests
+
+    async def test_a_site_with_no_sitemap_still_crawls(self, site, tmp_path):
+        """A sitemap is an optimisation; its absence must not stop the walk."""
+        _tree(site)
+
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path, use_sitemaps=True)
+
+        assert _summary(tmp_path)["scraped"] == len(TREE), "the crawl stopped without a sitemap"
+
+    async def test_a_malformed_sitemap_does_not_stop_the_crawl(self, site, tmp_path):
+        _tree(site)
+        site.sitemap = "<html>not xml at all"
+
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path, use_sitemaps=True)
+
+        assert _summary(tmp_path)["scraped"] == len(TREE)
+
+    async def test_off_domain_sitemap_entries_are_dropped(self, site, tmp_path):
+        """A sitemap can list a sibling property or a CDN; those are not ours."""
+        _tree(site)
+        site.add("/about.html", "About")
+        site.sitemap = (
+            '<?xml version="1.0"?>'
+            '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">'
+            "<url><loc>https://elsewhere.example/page</loc></url>"
+            f"<url><loc>{site.url('/about.html')}</loc></url>"
+            "</urlset>"
+        )
+
+        await _crawl(site, max_pages=len(TREE), output_dir=tmp_path, use_sitemaps=True)
+
+        assert all("elsewhere.example" not in p for p in site.page_requests), site.page_requests
+
+    async def test_a_sitemap_cannot_overrun_the_page_ceiling(self, site, tmp_path):
+        """5,000 listed URLs and --max-pages 4 is four requests, not five thousand."""
+        site.add("/", "Index", [])
+        pages = [f"/p{i}.html" for i in range(5000)]
+        self._sitemap(site, *pages)
+        for path in pages:
+            site.add(path, path)
+
+        await _crawl(site, max_pages=4, output_dir=tmp_path, use_sitemaps=True)
+
+        assert len(site.page_requests) <= 4, f"{len(site.page_requests)} requests for --max-pages 4"

@@ -556,3 +556,93 @@ class TestLoaderContract:
         """
         with pytest.raises(TypeError):
             _load_robots(BASE)  # type: ignore[call-arg]
+
+
+def _policy(text: str):
+    """A parsed robots policy, as `_policy_for` would return one."""
+    from urllib.robotparser import RobotFileParser
+
+    parser = RobotFileParser()
+    parser.parse(text.splitlines())
+    return parser
+
+
+def _stub_policy(value):
+    """An async stand-in for `RobotsCache._policy_for`, which is a coroutine."""
+    from collections.abc import Awaitable
+
+    async def _inner(base: str, session: Any) -> Awaitable[Any]:
+        return value
+
+    return _inner
+
+
+class TestSitemapDirectives:
+    """
+    Reading `Sitemap:` out of robots.txt, for the crawler's sitemap seeding.
+
+    The point of going through the cached policy is that the crawl has usually
+    already fetched robots.txt to decide what it may fetch, so asking about
+    sitemaps must cost no extra request.
+    """
+
+    @pytest.mark.asyncio
+    async def test_sitemaps_are_read_from_the_cached_policy(self, monkeypatch):
+        import aiohttp
+
+        cache = RobotsCache()
+        monkeypatch.setattr(
+            cache,
+            "_policy_for",
+            _stub_policy(
+                _policy(
+                    "User-agent: *\nAllow: /\n"
+                    "Sitemap: https://x.example/sitemap.xml\n"
+                    "Sitemap: https://x.example/sitemap-news.xml\n"
+                )
+            ),
+        )
+
+        async with aiohttp.ClientSession() as session:
+            found = await cache.sitemaps("https://x.example/page", session)
+
+        assert found == [
+            "https://x.example/sitemap.xml",
+            "https://x.example/sitemap-news.xml",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_a_site_with_no_sitemap_lines_yields_an_empty_list(self, monkeypatch):
+        """
+        The common case, and the one that used to raise.
+
+        urllib's ``site_maps()`` returns ``None`` rather than ``[]`` when a
+        robots.txt has no ``Sitemap:`` lines, so ``list()`` over it raised
+        TypeError — caught by the crawler's broad handler and reported as
+        "Sitemap unavailable" instead of falling back to /sitemap.xml, which is
+        what makes the feature work on most sites.
+        """
+        import aiohttp
+
+        cache = RobotsCache()
+        monkeypatch.setattr(
+            cache, "_policy_for", _stub_policy(_policy("User-agent: *\nAllow: /\n"))
+        )
+
+        async with aiohttp.ClientSession() as session:
+            found = await cache.sitemaps("https://x.example/page", session)
+
+        assert found == []
+
+    @pytest.mark.asyncio
+    async def test_an_unreadable_robots_yields_no_sitemaps(self, monkeypatch):
+        """We could not ask, which is not an answer about sitemaps."""
+        import aiohttp
+
+        cache = RobotsCache()
+        monkeypatch.setattr(cache, "_policy_for", _stub_policy(None))
+
+        async with aiohttp.ClientSession() as session:
+            found = await cache.sitemaps("https://x.example/page", session)
+
+        assert found == []

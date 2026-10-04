@@ -516,6 +516,7 @@ class Crawler:
         live: bool = True,
         allow_internal_redirects: bool = False,
         download_js: bool = False,
+        use_sitemaps: bool = False,
     ) -> None:
         self.start_url = start_url
         self.max_pages = max_pages
@@ -526,6 +527,7 @@ class Crawler:
         self._live = live
         self._allow_internal_redirects = allow_internal_redirects
         self._download_js = download_js
+        self._use_sitemaps = use_sitemaps
 
         self._base_domain = urlparse(start_url).netloc
         self._state = _State(max_pages=max_pages)
@@ -639,6 +641,59 @@ class Crawler:
 
     # ── internal ──────────────────────────────────────────────────────────────
 
+    async def _seed_from_sitemaps(self, budget: int) -> None:
+        """
+        Enqueue the pages the site's sitemap names, ahead of the link-walk.
+
+        A link-walk only reaches what pages happen to link to, which on a docs
+        site is the sidebar and on a shop the top nav. A sitemap is the site
+        saying what exists.
+
+        Best-effort throughout: a site with no sitemap, an unreadable one, or a
+        hostile one costs a couple of requests and nothing else. The crawl is a
+        link-walk with extra routes, never a sitemap reader that cannot start
+        without one. Off-domain entries are dropped — a sitemap can list a
+        CDN's or a sibling property's URLs — and the remaining budget bounds how
+        many are taken, so a 50,000-URL sitemap cannot overrun ``--max-pages``
+        before the walk has begun.
+        """
+        if budget <= 0:
+            return
+        import aiohttp
+
+        from .robots import RobotsCache
+        from .sitemap import discover_sitemap_urls
+
+        domain = self._base_domain.lower()
+        try:
+            async with aiohttp.ClientSession() as session:
+                found = await discover_sitemap_urls(
+                    session,
+                    self.start_url,
+                    robots=RobotsCache(),
+                    limit=budget,
+                )
+        except Exception as exc:  # A sitemap is an optimisation, never a precondition.
+            console.print(f"  {warn('Sitemap unavailable')} {muted(f'({exc})')}\n")
+            return
+
+        added = 0
+        for url, _lastmod in found:
+            if urlparse(url).netloc.lower() != domain:
+                continue
+            if self._queue.enqueue(url):
+                added += 1
+            if added >= budget:
+                break
+
+        if added:
+            console.print(
+                f"  {OK} Sitemap seeded {muted(str(added))} "
+                f"additional {muted('page' if added == 1 else 'pages')}\n"
+            )
+        else:
+            console.print(f"  {muted('No sitemap URLs found; crawling links only.')}\n")
+
     async def _run(self) -> None:
         scaler: AutoScaler | None = None
         if self.auto_scale:
@@ -649,6 +704,9 @@ class Crawler:
         # engine a fresh budget of max_pages let a resumed crawl finish with up to
         # twice the requested pages (and a progress bar pinned at 100%).
         max_targets = max(0, self.max_pages - self._state.scraped)
+
+        if self._use_sitemaps:
+            await self._seed_from_sitemaps(max_targets)
 
         engine = CrawlEngine(
             queue=self._queue,

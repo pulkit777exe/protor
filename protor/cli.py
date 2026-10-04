@@ -181,6 +181,10 @@ def _cmd_crawl(args: argparse.Namespace) -> None:
         live=not args.no_live,
         allow_internal_redirects=args.allow_internal_redirects,
         download_js=args.js,
+        # getattr, like --prompt above: a Namespace assembled by a caller or a
+        # test does not necessarily carry every flag, and a missing opt-in flag
+        # must mean "off" rather than an AttributeError.
+        use_sitemaps=getattr(args, "sitemap", False),
     ).crawl()
 
 
@@ -627,6 +631,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "directory (off by default: a crawl can cover thousands of pages, "
             "and scraping pulls a script bundle per page. `protor scrape` does "
             "download them by default, and this is the same switch)"
+        ),
+    )
+    cp.add_argument(
+        "--sitemap",
+        action="store_true",
+        help=(
+            "seed the crawl from the site's sitemap (robots.txt `Sitemap:` lines, "
+            "else /sitemap.xml) as well as by following links. Finds the pages "
+            "nothing links to — the ones a link-walk structurally cannot reach"
         ),
     )
     _add_output_flags(cp)

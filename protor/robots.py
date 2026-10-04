@@ -163,6 +163,29 @@ class RobotsCache:
             return True
         return policy.can_fetch(user_agent, url)
 
+    async def sitemaps(self, base: str, session: aiohttp.ClientSession) -> list[str]:
+        """
+        The ``Sitemap:`` URLs robots.txt advertises, in the order it lists them.
+
+        Read from the cached policy, so asking costs no extra request: the crawl
+        already fetched robots.txt to decide what it was allowed to fetch.
+
+        A ``None`` policy means robots.txt could not be read, and that is not an
+        answer about sitemaps — it yields none, and the caller falls back to the
+        conventional ``/sitemap.xml``.
+        """
+        policy = await self._policy_for(_base_of(base), session)
+        if policy is None:
+            return []
+        # urllib's site_maps() returns None rather than [] when the file has no
+        # Sitemap: lines — the common case for most sites — so list() over it
+        # raises. Treat that as "no sitemaps", which is what it means.
+        maps = getattr(policy, "site_maps", None)
+        if maps is None:
+            return []
+        listed = maps()
+        return list(listed or ())
+
     # ── enforcing path ──────────────────────────────────────────────────────
 
     async def check(
