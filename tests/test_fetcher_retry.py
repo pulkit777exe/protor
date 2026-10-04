@@ -403,3 +403,104 @@ class TestDownloadFileRedirectsAreGuarded:
 
         assert await download_file(session, "http://site.example/x.js", tmp_path / "x.js") is False
         assert len(session.calls) <= 11, f"redirects were not bounded: {len(session.calls)}"
+
+
+class TestRetryAfterIsHonoured:
+    """
+    A 429 or 503 carrying `Retry-After` is a server naming its own cooldown.
+
+    Ignoring it in favour of our own schedule is how a scraper gets itself
+    rate-limited harder, or blocked outright: the one moment a server is explicit
+    about wanting space is the moment to give it.
+    """
+
+    def test_delta_seconds_is_used_verbatim(self):
+        from protor.fetcher import _retry_delay
+
+        assert _retry_delay(0, "3") == 3.0
+        assert _retry_delay(0, "30") == 30.0
+
+    def test_an_http_date_is_understood(self):
+        """The other defined form. Rounded to the second, so within a tolerance."""
+        import datetime
+        from email.utils import format_datetime
+
+        from protor.fetcher import _retry_delay
+
+        when = datetime.datetime.now(datetime.UTC) + datetime.timedelta(seconds=5)
+        delay = _retry_delay(0, format_datetime(when, usegmt=True))
+        assert 3 <= delay <= 6, delay
+
+    def test_a_past_date_does_not_delay_at_all(self):
+        import datetime
+        from email.utils import format_datetime
+
+        from protor.fetcher import _retry_delay
+
+        when = datetime.datetime.now(datetime.UTC) - datetime.timedelta(seconds=30)
+        assert _retry_delay(0, format_datetime(when, usegmt=True)) == 0.0
+
+    @pytest.mark.parametrize("value", [None, "", "soon", "1e", "-5"])
+    def test_nonsense_falls_back_to_backoff(self, value):
+        """
+        Includes a negative delta: the server is misbehaving, and retrying
+        instantly against whatever is rate-limiting us is the wrong response.
+        """
+        from protor.config import RETRY_BACKOFF_BASE
+        from protor.fetcher import _retry_delay
+
+        delay = _retry_delay(0, value)
+        # Compared against the window rather than an exact call: _backoff adds
+        # random jitter, so two invocations differ.
+        assert RETRY_BACKOFF_BASE <= delay <= RETRY_BACKOFF_BASE + 0.5, delay
+
+    def test_an_absurd_delay_does_not_stall_the_run(self):
+        """
+        One hostile or mistaken header must not hang a crawl.
+
+        A server asking for an hour is not obeyed for an hour; the run degrades
+        to "try again soon" rather than stopping.
+        """
+        from protor.config import RETRY_BACKOFF_BASE
+        from protor.fetcher import _MAX_RETRY_AFTER, _retry_delay
+
+        for header in ("99999", str(int(_MAX_RETRY_AFTER) + 10)):
+            delay = _retry_delay(0, header)
+            assert RETRY_BACKOFF_BASE <= delay <= RETRY_BACKOFF_BASE + 0.5, delay
+
+    @pytest.mark.asyncio
+    async def test_a_429_waits_for_the_delay_it_was_given(self, monkeypatch):
+        """End to end: the sleep is the server's number, not our backoff."""
+        from protor.fetcher import fetch
+
+        slept: list[float] = []
+
+        async def fake_sleep(seconds):
+            slept.append(seconds)
+
+        monkeypatch.setattr(asyncio, "sleep", fake_sleep)
+
+        session = RecordingSession(
+            [
+                {"status": 429, "headers": {"Retry-After": "7"}, "body": "slow down"},
+                {"status": 200, "body": "<html>ok</html>", "url": "http://test.local/"},
+            ]
+        )
+
+        result = await fetch(session, "http://test.local/", cache=None, max_retries=3)
+
+        assert result.status == 200
+        assert slept == [7.0], f"waited {slept} instead of the 7 seconds requested"
+
+    @pytest.mark.parametrize("value", [None, 7, object()])
+    def test_a_non_string_header_is_treated_as_absent(self, value):
+        """
+        Total: only a string can be a header value.
+
+        A test double or an exotic client can hand back anything, and calling
+        ``.strip()`` on it raises out of the retry path — a crash in the middle
+        of error handling, which is the worst place for one.
+        """
+        from protor.fetcher import _retry_after_seconds
+
+        assert _retry_after_seconds(value) is None

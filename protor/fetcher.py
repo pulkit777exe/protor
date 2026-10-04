@@ -75,6 +75,70 @@ def _backoff(attempt: int) -> float:
     return delay
 
 
+#: Ceiling on an honoured ``Retry-After``. A server may ask for an hour, or for
+#: a date far in the future; a scraper that blocks on it for longer than this is
+#: indistinguishable from a hung one. Over the cap the backoff is used instead,
+#: so the run degrades to "try again soon" rather than "stop".
+_MAX_RETRY_AFTER = 120.0
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    """
+    Parse a ``Retry-After`` header into seconds.
+
+    Two forms are defined: delta-seconds and an HTTP-date. Only the first is
+    worth much to a scraper — an HTTP-date is rounded to the second and is
+    almost always in the past by the time it is read, since the server computed
+    it when it sent the response — but it is cheap to support, and a date a few
+    seconds ahead is still an instruction.
+
+    A negative delta is treated as malformed rather than as "no delay": it means
+    the server is already misbehaving, and retrying instantly against whatever
+    is rate-limiting us is the wrong response to that.
+    """
+    if not value:
+        return None
+    # Anything that is not a string cannot be a header value — a test double or
+    # an exotic client may hand back anything — and treating that as absent is
+    # both correct and total, where `.strip()` on it would raise.
+    if not isinstance(value, str):
+        return None
+    raw = value.strip()
+    try:
+        seconds = float(raw)
+    except ValueError:
+        pass
+    else:
+        return seconds if seconds >= 0 else None
+    try:
+        from email.utils import parsedate_to_datetime
+
+        when = parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
+        return None
+    if when is None:
+        return None
+    import datetime as _dt
+
+    now = _dt.datetime.now(tz=when.tzinfo) if when.tzinfo else _dt.datetime.now()
+    return max(0.0, (when - now).total_seconds())
+
+
+def _retry_delay(attempt: int, retry_after: str | None = None) -> float:
+    """
+    How long to wait before retrying: what the server asked for, else backoff.
+
+    A 429 or 503 that carries ``Retry-After`` is a server asking for a specific
+    pause, and ignoring it in favour of our own schedule is how a scraper gets
+    itself rate-limited harder — or blocked outright. The asked-for delay wins,
+    capped so one hostile or mistaken header cannot stall a run indefinitely.
+    """
+    asked = _retry_after_seconds(retry_after)
+    if asked is None or asked > _MAX_RETRY_AFTER:
+        return _backoff(attempt)
+    return asked
+
+
 def _conditional_headers(entry: CacheEntry | None) -> dict[str, str]:
     """
     Build revalidation headers from an entry's validators.
@@ -252,7 +316,7 @@ async def fetch(
                 return _from_cache(served)
             if r.status >= 400:
                 if r.status in RETRYABLE_STATUS and attempt < max_retries - 1:
-                    await asyncio.sleep(_backoff(attempt))
+                    await asyncio.sleep(_retry_delay(attempt, r.headers.get("Retry-After")))
                     continue
                 raise FetchError(url, f"HTTP {r.status}")
             data = r.data

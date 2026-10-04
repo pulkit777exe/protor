@@ -196,7 +196,16 @@ class TestMaxTargets:
             requested.append(url)
             if len(requested) % 3 == 0:
                 raise RuntimeError("boom")
-            return type("R", (), {"text": link_page, "nbytes": len(link_page), "status": 200, "content_type": "text/html"})()
+            return type(
+                "R",
+                (),
+                {
+                    "text": link_page,
+                    "nbytes": len(link_page),
+                    "status": 200,
+                    "content_type": "text/html",
+                },
+            )()
 
         monkeypatch.setattr(engine_mod, "fetch", flaky)
 
@@ -373,7 +382,11 @@ class TestBlocklistCoversJsDownloads:
 
         async def fake_fetch(session, url, **kwargs):
             fetched.append(url)
-            return type("R", (), {"text": html, "nbytes": len(html), "status": 200, "content_type": "text/html"})()
+            return type(
+                "R",
+                (),
+                {"text": html, "nbytes": len(html), "status": 200, "content_type": "text/html"},
+            )()
 
         monkeypatch.setattr("protor.engine.fetch", fake_fetch)
 
@@ -406,7 +419,11 @@ class TestBlocklistCoversJsDownloads:
 
         async def fake_fetch(session, url, **kwargs):
             fetched.append(url)
-            return type("R", (), {"text": html, "nbytes": len(html), "status": 200, "content_type": "text/html"})()
+            return type(
+                "R",
+                (),
+                {"text": html, "nbytes": len(html), "status": 200, "content_type": "text/html"},
+            )()
 
         monkeypatch.setattr("protor.engine.fetch", fake_fetch)
 
@@ -1324,9 +1341,7 @@ class TestNonPagesAreNotScraped:
         from protor.fetcher import FetchResult
 
         async def fake_fetch(session, url, **kwargs):
-            return FetchResult(
-                text=body, nbytes=len(body), status=200, content_type=content_type
-            )
+            return FetchResult(text=body, nbytes=len(body), status=200, content_type=content_type)
 
         monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
         engine = CrawlEngine(
@@ -1349,9 +1364,7 @@ class TestNonPagesAreNotScraped:
     async def test_a_binary_response_is_not_counted_as_a_page(
         self, tmp_path, monkeypatch, content_type, body
     ):
-        stats = await self._crawl_one(
-            tmp_path, monkeypatch, content_type=content_type, body=body
-        )
+        stats = await self._crawl_one(tmp_path, monkeypatch, content_type=content_type, body=body)
         assert stats.scraped == 0, f"{content_type} was scraped as a page"
         assert stats.total == 0, "and it consumed the page budget"
 
@@ -1369,9 +1382,7 @@ class TestNonPagesAreNotScraped:
     )
     async def test_html_is_still_scraped(self, tmp_path, monkeypatch, content_type):
         html = "<html><head><title>Real</title></head><body><p>hi</p></body></html>"
-        stats = await self._crawl_one(
-            tmp_path, monkeypatch, content_type=content_type, body=html
-        )
+        stats = await self._crawl_one(tmp_path, monkeypatch, content_type=content_type, body=html)
         assert stats.scraped == 1, f"a real page was dropped ({content_type!r})"
 
     async def test_html_served_as_octet_stream_is_still_scraped(self, tmp_path, monkeypatch):
