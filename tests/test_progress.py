@@ -11,12 +11,10 @@ from rich.console import Console
 
 from protor.progress import (
     LiveDisplay,
-    RunState,
     StreamWriter,
     Throttle,
     live_display,
     live_enabled,
-    status_line,
 )
 
 
@@ -134,20 +132,12 @@ class TestLiveDisplay:
         # A terminal console, or the display disables itself and the live path is
         # never exercised at all.
         with live_display(render, console=_terminal_console()) as display:
-            assert display.state is RunState.IDLE
             # Entering the block draws once, so the frame is on screen before any
             # work has happened rather than after the first event.
             assert renders["n"] == 1, "the first frame is drawn on entry"
             display.update(force=True)
             assert renders["n"] >= 2, "a forced update redraws"
         assert renders["n"] >= 2, "the last frame is on screen at exit"
-
-    def test_state_transitions_are_tracked(self):
-        with live_display(lambda: "", console=_console()) as display:
-            display.state = RunState.WORKING
-            assert display.state is RunState.WORKING
-            display.state = RunState.DONE
-            assert display.state is RunState.DONE
 
     def test_note_writes_through(self):
         buf = io.StringIO()
@@ -224,32 +214,6 @@ class TestStreamWriter:
                 writer.write(word)
         out = buf.getvalue()
         assert out.index("alpha") < out.index("beta") < out.index("gamma") < out.index("delta")
-
-
-# ── status line ───────────────────────────────────────────────────────────────
-
-
-class TestStatusLine:
-    @pytest.mark.parametrize(
-        ("state", "needle"),
-        [
-            (RunState.WORKING, "working"),
-            (RunState.STREAMING, "streaming"),
-            (RunState.DONE, "done"),
-            (RunState.FAILED, "failed"),
-            (RunState.CANCELLED, "cancelled"),
-        ],
-    )
-    def test_state_is_named_in_the_line(self, state, needle):
-        assert needle in status_line(state).plain
-
-    def test_detail_is_appended(self):
-        assert "12/40 pages" in status_line(RunState.WORKING, "12/40 pages").plain
-
-    def test_run_state_values_are_stable_strings(self):
-        """Values reach the CLI and saved output, so they are part of the API."""
-        assert RunState.WORKING == "working"
-        assert RunState.DONE == "done"
 
 
 class TestEnvironmentFlags:

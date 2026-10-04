@@ -10,14 +10,11 @@ ad-hoc ``Live`` blocks scattered across the engine, the crawler and the analyzer
 Three ideas drive the design, all borrowed from how production terminal agents
 handle the same problems:
 
-1. **One explicit state, one renderer.** :class:`RunState` is the only thing that
-   describes "what is happening"; the display is a pure function of it. No
-   component decides on its own what to draw.
-2. **Rate-limit redraws, not work.** A display that repaints once per completed
+1. **Rate-limit redraws, not work.** A display that repaints once per completed
    page is O(n²) over a batch and starves the event loop it is reporting on. A
    progress bar at 10 Hz is indistinguishable from one at 1000 Hz to a human and
    orders of magnitude cheaper.
-3. **Degrade, never break.** A pipe, a CI log and a dumb terminal get plain
+2. **Degrade, never break.** A pipe, a CI log and a dumb terminal get plain
    sequential lines instead of cursor-up escape sequences. Animation is only
    ever attempted where it can actually work.
 """
@@ -29,13 +26,11 @@ import re
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from rich.live import Live
-from rich.text import Text
 
-from .theme import ERR, OK, SPIN, muted
+from .theme import ERR, muted
 from .theme import console as _console
 
 if TYPE_CHECKING:
@@ -46,30 +41,14 @@ if TYPE_CHECKING:
 
 __all__ = [
     "MAX_REASONS_SHOWN",
-    "RunState",
     "StreamWriter",
     "Throttle",
     "live_display",
     "live_enabled",
     "normalise_reason",
     "print_failure_reasons",
-    "status_line",
     "visible_rows",
 ]
-
-
-class RunState(StrEnum):
-    """What the tool is doing right now.
-
-    Display code switches on this; it never infers state from timing or output.
-    """
-
-    IDLE = "idle"
-    WORKING = "working"
-    STREAMING = "streaming"
-    DONE = "done"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
 
 
 #: Values read as "off" for the two environment switches below. Bare truthiness
@@ -148,20 +127,7 @@ class LiveDisplay:
     _throttle: Throttle
     _enabled: bool
     _console: Console
-    _state: RunState = RunState.IDLE
     _notes: list[str] = field(default_factory=list)
-
-    # ── state ────────────────────────────────────────────────────────────────
-
-    @property
-    def state(self) -> RunState:
-        """Current run state; the only input the renderer needs."""
-        return self._state
-
-    @state.setter
-    def state(self, value: RunState) -> None:
-        self._state = value
-        self.update(force=True)
 
     # ── output ───────────────────────────────────────────────────────────────
 
@@ -338,19 +304,6 @@ class StreamWriter:
         tb: TracebackType | None,
     ) -> None:
         self.flush()
-
-
-def status_line(state: RunState, detail: str = "") -> Text:
-    """One-line state summary, e.g. a footer under a live table."""
-    glyph = {
-        RunState.DONE: f"[green]{OK}[/green]",
-        RunState.FAILED: f"[red]{ERR}[/red]",
-        RunState.CANCELLED: "[yellow]-[/yellow]",
-    }.get(state, f"[cyan]{SPIN}[/cyan]")
-    line = Text.from_markup(f"{glyph} {state.value}")
-    if detail:
-        line.append(f"  {detail}", style="grey50")
-    return line
 
 
 # ── failure reasons ───────────────────────────────────────────────────────────

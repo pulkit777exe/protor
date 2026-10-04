@@ -326,7 +326,6 @@ class TestAnInterruptReportsWhatWasAlreadySaved:
         import protor.engine as engine_mod
         import protor.scraper as scraper_mod
         from protor.models import SiteManifest, SiteMetadata
-        from protor.progress import RunState  # noqa: F401 - import guard
 
         monkeypatch.setattr(engine_mod, "check_robots", _always_allowed)
 

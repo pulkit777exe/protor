@@ -79,7 +79,7 @@ from .theme import (
     safe,
     warn,
 )
-from .utils import canonicalize_url, get_default_output_dir, save_json
+from .utils import canonicalize_url, get_default_output_dir, human_duration, save_json
 
 __all__ = ["Crawler"]
 
@@ -419,8 +419,10 @@ _LOG_VIEW = 20
 
 #: Lines the crawl view spends before the log table starts, measured rather than
 #: counted: the two rules that bracket the stat block, the stat block itself
-#: (progress, current, queue, errors, blocked, output) and the log table's header.
-_LOG_RESERVED = 10
+#: (progress, current, queue, errors, blocked, output, elapsed) and the log table's
+#: header. Adding a stat row means raising this, or the view outgrows the terminal
+#: again — which is what the fit tests are for.
+_LOG_RESERVED = 11
 
 
 @dataclass
@@ -445,6 +447,13 @@ class _State:
     #: used to report only the 10.
     skipped: int = 0
     queue_n: int = 0
+    #: When the run started, on the monotonic clock. The view needs it for elapsed
+    #: time and a rate, and neither can be derived from a counter — a crawl of 40
+    #: pages in four seconds looks identical to one that took four minutes, and
+    #: `--auto-scale` climbs to 20 workers that the per-domain rate limiter still
+    #: holds to one request every 0.25s, so the wall clock is the only honest
+    #: measure of how fast this is going.
+    started_at: float = 0.0
     max_pages: int = DEFAULT_MAX_PAGES
     log: deque[_CrawlLog] = field(default_factory=lambda: deque(maxlen=_LOG_HISTORY))
     #: Total log entries ever appended, so numbering stays stable once the
@@ -457,6 +466,26 @@ class _State:
 
 
 _BAR_WIDTH = 32
+
+
+def _pace(state: _State) -> tuple[str, str]:
+    """
+    How long the crawl has run, and how fast it is going.
+
+    Both were missing, and their absence is what makes a slow crawl look broken:
+    `queue 499 / 3/500` for two minutes with no clock reads as a hang, when the
+    per-domain rate limiter is deliberately holding the crawl to four requests a
+    second no matter how far `--auto-scale` has climbed.
+    """
+    if not state.started_at:
+        return ("—", "")
+    seconds = max(0.0, time.monotonic() - state.started_at)
+    done = state.scraped + state.errors + state.blocked
+    if done < 2 or seconds < 1:
+        # A rate from one page is noise, and "0 pages/min" reads as a stall.
+        return (human_duration(seconds * 1000), "")
+    per_minute = done / seconds * 60
+    return (human_duration(seconds * 1000), f"{per_minute:.0f} pages/min")
 
 
 def _render(state: _State, output_dir: str, height: int | None = None) -> Group:
@@ -490,6 +519,8 @@ def _render(state: _State, output_dir: str, height: int | None = None) -> Group:
     stat.add_row("errors", str(state.errors) if state.errors else "[grey23]0[/grey23]")
     stat.add_row("blocked", str(state.blocked) if state.blocked else "[grey23]0[/grey23]")
     stat.add_row("output", muted(output_dir))
+    elapsed, rate = _pace(state)
+    stat.add_row("elapsed", bright(elapsed) + muted(f"   {rate}"))
 
     log_t = Table(
         box=box.SIMPLE, show_header=True, header_style="bold white", show_edge=False, padding=(0, 1)
@@ -564,7 +595,7 @@ class Crawler:
         self._cache = HTTPCache() if use_cache else None
 
         self._base_domain = urlparse(start_url).netloc
-        self._state = _State(max_pages=max_pages)
+        self._state = _State(max_pages=max_pages, started_at=time.monotonic())
         self._log_index: dict[str, _CrawlLog] = {}
 
         # The queue database *is* the crawl state, and it is opened whether or

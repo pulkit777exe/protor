@@ -319,3 +319,83 @@ class TestTheBatchTableFitsEightyColumns:
             names = {name for name, *_ in _columns_for(width)}
             assert "#" in names and "Domain" in names, f"at {width}: {names}"
         assert not ({"#", "Domain", "Status"} & set(_SACRIFICE_ORDER))
+
+
+class TestTheCrawlSaysHowLongAndHowFast:
+    """
+    `queue 499 / 3/500` for two minutes reads as a hang.
+
+    The crawl view had no clock and no rate, and its absence is what makes a slow
+    crawl look broken: `DomainRateLimiter` deliberately holds a single-domain crawl
+    to one request every 0.25s however far `--auto-scale` has climbed, so a run
+    that is behaving exactly as designed looks identical to one that has stalled.
+    """
+
+    def _render_state(self, **kwargs):
+        from collections import deque
+
+        from protor.crawler import _CrawlLog, _render, _State
+
+        state = _State(
+            log=deque([_CrawlLog("ok", "host.example.com", "", url="u")], maxlen=200), **kwargs
+        )
+        return _render_text(_render(state, "/tmp/out", height=40), width=80)
+
+    def test_elapsed_time_is_shown(self):
+        import time
+
+        out = self._render_state(started_at=time.monotonic() - 125, scraped=40, max_pages=500)
+        assert "elapsed" in out, out
+        assert "2m05s" in out, out
+
+    def test_the_rate_is_shown(self):
+        import time
+
+        out = self._render_state(started_at=time.monotonic() - 120, scraped=40, max_pages=500)
+        assert "pages/min" in out, out
+        # 40 pages in 120s is 20/min; allow for the second the render itself costs.
+        rate = next(line for line in out.splitlines() if "pages/min" in line)
+        assert "19 pages/min" in rate or "20 pages/min" in rate, rate
+
+    def test_a_rate_is_not_invented_from_a_handful_of_pages(self):
+        """
+        One page's worth of timing is noise, and "0 pages/min" reads as a stall —
+        the exact confusion the row exists to remove.
+        """
+        import time
+
+        out = self._render_state(started_at=time.monotonic() - 0.4, scraped=1, max_pages=500)
+        assert "pages/min" not in out, out
+        assert "elapsed" in out, "the clock is still worth showing"
+
+    def test_no_clock_before_the_run_starts(self):
+        out = self._render_state(scraped=0, max_pages=500)
+        assert "—" in out.split("elapsed")[1].splitlines()[0], out
+
+    def test_adding_the_row_did_not_push_the_view_past_the_terminal(self):
+        """
+        A stat row costs a line, and the row budget is derived from a constant.
+
+        Getting this wrong is invisible at a tall terminal and overflows at 24,
+        which is the size that matters.
+        """
+        import time
+        from collections import deque
+
+        from protor.crawler import _LOG_RESERVED, _CrawlLog, _render, _State
+
+        state = _State(
+            scraped=40,
+            max_pages=500,
+            started_at=time.monotonic() - 125,
+            log=deque(
+                [_CrawlLog("ok", f"host{i}.example.com", "", url=f"u{i}") for i in range(60)],
+                maxlen=200,
+            ),
+        )
+        for height in (24, 30):
+            out = _render_text(_render(state, "/tmp/out", height=height), width=80)
+            assert len(out.splitlines()) <= height, (
+                f"{len(out.splitlines())} lines into {height}; _LOG_RESERVED is "
+                f"{_LOG_RESERVED} and should be one higher"
+            )
