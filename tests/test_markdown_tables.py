@@ -284,3 +284,50 @@ class TestBlockContentBehindUnlistedWrappersEverywhere:
         for i in range(12):
             assert f"Widget {i}" in out, f"card {i} vanished"
             assert f"number {i}" in out, f"card {i}'s description vanished"
+
+
+class TestHostileNestingDegradesInsteadOfCrashing:
+    """
+    ``MAX_RENDER_DEPTH`` promises deeply nested content degrades to plain text.
+
+    It covered the element walk and not the table renderer, so a page nesting a
+    thousand tables — or one cell holding two thousand divs — raised
+    ``RecursionError`` out of the whole scrape. The page was recorded as a
+    failure with no manifest at all, even though every other part of it was fine.
+    """
+
+    def test_a_cell_of_two_thousand_divs_does_not_crash(self):
+        html = "<table><tr><td>" + "<div>" * 2000 + "x" + "</div>" * 2000 + "</td></tr></table>"
+        out = html_to_markdown(html, "https://example.com/")
+        assert "x" in out
+
+    def test_a_thousand_nested_tables_do_not_crash(self):
+        depth = 1000
+        html = (
+            "<table><tr><td>"
+            + "<table><tr><td>" * depth
+            + "x"
+            + "</td></tr></table>" * depth
+            + "</td></tr></table>"
+        )
+        out = html_to_markdown(html, "https://example.com/")
+        assert "x" in out
+
+    @pytest.mark.parametrize(
+        ("label", "html", "expected"),
+        [
+            ("a plain table", "<table><tr><th>A</th></tr><tr><td>1</td></tr></table>", "1"),
+            (
+                "a table through thead/tbody",
+                "<table><thead><tr><th>H</th></tr></thead><tbody><tr><td>B</td></tr></tbody></table>",
+                "B",
+            ),
+            (
+                "a layout table wrapping the content",
+                "<table><tr><td><table><tr><td>inner</td></tr></table></td></tr></table>",
+                "inner",
+            ),
+        ],
+    )
+    def test_ordinary_tables_are_unaffected(self, label, html, expected):
+        assert expected in html_to_markdown(html, "https://example.com/")
