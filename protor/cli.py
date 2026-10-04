@@ -527,7 +527,6 @@ def _build_parser() -> argparse.ArgumentParser:
             "  protor models --backend lmstudio\n"
             "  protor analyze --backend vllm --model Qwen/Qwen3-8B\n"
             "\n"
-            "Environment:\n"
             # Built from the registry rather than written out by hand: the block
             # listed six of the seventeen runtimes, so the other eleven were
             # documented only in the README. `_runtime_env_help` is what

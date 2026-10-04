@@ -216,13 +216,25 @@ class TestRedirectsOverRealSockets:
     async def test_the_opt_in_flag_lifts_the_refusal(self):
         port, stop = _serve(_redirector("http://169.254.169.254/latest/"))
         try:
-            # Nothing listens on link-local here, so this cannot succeed; what is
-            # being checked is that the guard, not the network, is what refused it.
+            # Nothing listens on link-local, so this cannot succeed; what is being
+            # checked is that the *guard* did not refuse it. The short timeout is
+            # load-bearing: 169.254.169.254 is a black hole, and letting the connect
+            # run to the default timeout cost 94 seconds of TCP retries — 31% of the
+            # whole suite — for an assertion about a string. It also made the suite
+            # depend on how the local network answers an unroutable address.
             from protor.exceptions import FetchError
 
             with pytest.raises(FetchError) as excinfo:
-                await _fetch(f"http://127.0.0.1:{port}/page", allow_internal_redirects=True)
-            assert "refused to follow" not in str(excinfo.value)
+                await _fetch(
+                    f"http://127.0.0.1:{port}/page",
+                    allow_internal_redirects=True,
+                    timeout=1,
+                )
+            message = str(excinfo.value)
+            assert "refused to follow" not in message, message
+            # The request was attempted and timed out, which is only possible if the
+            # guard let it through — a stronger statement than the absence of a word.
+            assert "timeout" in message.lower() or "Cannot connect" in message, message
         finally:
             stop()
 
