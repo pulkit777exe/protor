@@ -618,7 +618,7 @@ class TestResume:
         (tmp_path / CHECKPOINT_FILENAME).write_text("{ not json", encoding="utf-8")
         printed = []
 
-        with patch("protor.crawler.console") as fake_console:
+        with patch("protor.crawler.err_console") as fake_console:
             fake_console.print.side_effect = lambda *a, **k: printed.append(" ".join(map(str, a)))
             c = Crawler("https://example.com", output_dir=str(tmp_path), resume=True)
 

@@ -949,7 +949,9 @@ class TestCliRendersTheError:
         with pytest.raises(SystemExit) as exc:
             cli()
         assert exc.value.code == 1
-        return capsys.readouterr().out
+        # A failure is not a result: the advice goes to stderr, so a script that
+        # captures stdout gets nothing rather than an error report in its data.
+        return capsys.readouterr().err
 
     @responses_lib.activate
     def test_ollama_missing_model_prints_the_pull_hint(self, monkeypatch, tmp_path, capsys):

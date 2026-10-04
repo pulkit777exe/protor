@@ -72,6 +72,7 @@ from .theme import (
     bright,
     console,
     content,
+    err_console,
     header_rule,
     info,
     label,
@@ -181,7 +182,7 @@ class _CrawlQueue:
                 quarantine = db_path.with_name(f"{db_path.name}.corrupt{counter}")
             with contextlib.suppress(OSError):
                 db_path.rename(quarantine)
-            console.print(
+            err_console.print(
                 f"  {warn('crawl queue')} {muted(str(db_path))} was not a usable database "
                 f"({exc}). Moved to {muted(str(quarantine))} and starting a fresh queue."
             )
@@ -612,10 +613,10 @@ class Crawler:
             # explanation. A plain `protor crawl URL` now means "crawl it", and
             # continuing is what --resume is for.
             dropped = self._queue.clear_state()
-            console.print(
+            err_console.print(
                 f"  {warn('Starting a fresh crawl')}{muted(f' — cleared {dropped} pages of previous crawl state')}"
             )
-            console.print(f"  {info('Use --resume to continue an interrupted crawl instead.')}")
+            err_console.print(f"  {info('Use --resume to continue an interrupted crawl instead.')}")
         elif resume:
             if checkpoint_path.exists():
                 self._report_checkpoint(checkpoint_path)
@@ -651,7 +652,7 @@ class Crawler:
         try:
             json.loads(checkpoint_path.read_text(encoding="utf-8"))
         except Exception as exc:
-            console.print(
+            err_console.print(
                 f"  {warn(f'Could not resume from checkpoint: {exc}')}\n"
                 f"  {muted('Continuing from the queue database instead.')}"
             )
@@ -761,7 +762,7 @@ class Crawler:
                     limit=budget,
                 )
         except Exception as exc:  # A sitemap is an optimisation, never a precondition.
-            console.print(f"  {warn('Sitemap unavailable')} {muted(f'({exc})')}\n")
+            err_console.print(f"  {warn('Sitemap unavailable')} {muted(f'({exc})')}\n")
             return
 
         added = 0

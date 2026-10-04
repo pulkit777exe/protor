@@ -48,7 +48,17 @@ from .formatters import FORMAT_CHOICES
 from .llm_backends import BACKEND_CHOICES
 from .runtimes import RUNTIMES, get_runtime, runtime_names
 from .scraper import scrape_multiple
-from .theme import ERR_STYLED, OK_STYLED, console, content, err, info, muted, safe
+from .theme import (
+    ERR_STYLED,
+    OK_STYLED,
+    console,
+    content,
+    err,
+    err_console,
+    info,
+    muted,
+    safe,
+)
 from .updater import check_for_update, perform_update
 from .utils import get_default_output_dir, load_json, safe_filename, validate_url
 
@@ -59,10 +69,16 @@ if TYPE_CHECKING:
 
 
 def _abort(msg: str, hint: str = "") -> NoReturn:
-    console.print(f"\n  {err(msg)}")
+    """
+    Report a fatal error and exit non-zero.
+
+    On stderr, because every failure ends here and none of it is a result: a
+    `protor scrape url > report.txt` should hold the report and nothing else.
+    """
+    err_console.print(f"\n  {err(msg)}")
     if hint:
-        console.print(f"  {info(hint)}")
-    console.print()
+        err_console.print(f"  {info(hint)}")
+    err_console.print()
     sys.exit(1)
 
 
@@ -250,11 +266,14 @@ def _cmd_extract(args: argparse.Namespace) -> None:
         sys.exit(1)
 
     if empty:
-        console.print(
+        # A warning about the result, on stderr: `protor extract url schema.json >
+        # records.json` should not have the caveat interleaved into the report, and
+        # the JSON on disk is still correct.
+        err_console.print(
             f"  {warn('partial')} {empty} of {len(results)} records matched the container "
             f"but no field selector matched inside it; those records are empty."
         )
-        console.print()
+        err_console.print()
 
     console.print(f"  {OK_STYLED} Extracted {len(results)} records")
     console.print()
@@ -315,8 +334,8 @@ def _cmd_update(args: argparse.Namespace) -> None:
     result = check_for_update()
 
     if result is None:
-        console.print(f"\n  {err('Failed to check for updates.')}")
-        console.print(f"  {info('Check your internet connection and try again.')}\n")
+        err_console.print(f"\n  {err('Failed to check for updates.')}")
+        err_console.print(f"  {info('Check your internet connection and try again.')}\n")
         sys.exit(1)
 
     current = result["current"]
@@ -336,8 +355,8 @@ def _cmd_update(args: argparse.Namespace) -> None:
     # check for updates, don't install" — report nothing at all in a dev tree,
     # which is where a person is most likely to run it.
     if editable:
-        console.print(f"\n  {err('Editable install detected.')}")
-        console.print(f"  {info('Update via: git pull && pip install -e .')}\n")
+        err_console.print(f"\n  {err('Editable install detected.')}")
+        err_console.print(f"  {info('Update via: git pull && pip install -e .')}\n")
         return
 
     console.print(f"\n  Current: {err(current)}  |  Latest: {info(latest)}")
@@ -360,10 +379,10 @@ def _cmd_update(args: argparse.Namespace) -> None:
     else:
         # Say why, not just that it failed. pip's own stderr went to the terminal
         # as it ran, so the detail is above; this adds the part it cannot state.
-        console.print(f"\n  {err('Update failed.')}")
+        err_console.print(f"\n  {err('Update failed.')}")
         if outcome.reason:
-            console.print(f"  {muted(outcome.reason)}")
-        console.print(f"  {info('Try: pip install --upgrade protor')}\n")
+            err_console.print(f"  {muted(outcome.reason)}")
+        err_console.print(f"  {info('Try: pip install --upgrade protor')}\n")
         sys.exit(1)
 
 
@@ -776,7 +795,7 @@ def cli() -> None:
     try:
         args.func(args)
     except KeyboardInterrupt:
-        console.print(f"\n  {ERR_STYLED} interrupted\n")
+        err_console.print(f"\n  {ERR_STYLED} interrupted\n")
         sys.exit(130)
     except OllamaModelNotFoundError as exc:
         # The message already names the exact pull command.

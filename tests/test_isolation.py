@@ -13,6 +13,8 @@ the module layout changes, and it will report a clean suite while doing it.
 
 from __future__ import annotations
 
+import pytest
+
 from tests.conftest import _module_snapshot
 
 
@@ -61,3 +63,77 @@ def test_the_snapshot_covers_the_modules_that_get_patched():
     names = {key[0] for key in _module_snapshot()}
     for module in ("protor.engine", "protor.scraper", "protor.markdown", "protor.parser"):
         assert module in names, f"{module} is not covered"
+
+
+class TestStdoutIsTheReportAndStderrIsTheDiagnosis:
+    """
+    Which stream a line is on is part of the behaviour, not an accident.
+
+    Everything went to stdout, so `protor scrape url > report.txt` interleaved
+    "✗ HTTP 403" into the report and `2>/dev/null` could not silence a failure —
+    neither of which is what a shell redirection is for. `rg`, `cargo`, `docker`
+    and `kubectl` all split it the same way: the result on stdout, the diagnosis on
+    stderr.
+    """
+
+    def _run(self, capsys, argv):
+        import sys
+
+        from protor.cli import cli
+
+        old = sys.argv
+        sys.argv = ["protor", *argv]
+        try:
+            with pytest.raises(SystemExit) as excinfo:
+                cli()
+            return excinfo.value.code, capsys.readouterr()
+        finally:
+            sys.argv = old
+
+    def test_a_failure_explains_itself_on_stderr(self, capsys, tmp_path):
+        code, captured = self._run(
+            capsys, ["extract", "example.com/no-scheme", str(tmp_path / "s.json")]
+        )
+        assert code == 1
+        assert "scheme" in captured.err, captured.err
+        assert captured.out == "", f"the report stream carried a diagnostic:\n{captured.out!r}"
+
+    def test_a_file_that_does_not_exist_says_so_on_stderr(self, capsys, tmp_path):
+        code, captured = self._run(capsys, ["analyze", str(tmp_path / "nope.json")])
+        assert code != 0
+        assert captured.out == "", f"the report stream carried a diagnostic:\n{captured.out!r}"
+        assert captured.err.strip(), "nothing was said at all"
+
+    def test_a_successful_report_stays_on_stdout(self, capsys, tmp_path):
+        """
+        The control: routing everything to stderr would be just as wrong.
+
+        `protor version` is a report, so it belongs where a script or a pipe can
+        read it without asking for stderr.
+        """
+        import sys
+
+        from protor.cli import cli
+
+        old = sys.argv
+        sys.argv = ["protor", "version"]
+        try:
+            cli()
+            captured = capsys.readouterr()
+        finally:
+            sys.argv = old
+        assert "protor" in captured.out, captured.out
+        assert captured.err == "", f"a report went to stderr:\n{captured.err!r}"
+
+    def test_the_two_consores_are_both_encoding_safe(self, monkeypatch):
+        """
+        A stderr console that is a plain `Console` would raise `UnicodeEncodeError`
+        on the same terminals `theme.safe()` exists to protect — and only for the
+        lines that happen to contain a glyph, which is the worst place to find out.
+        """
+        from protor import theme
+
+        for name in ("console", "err_console"):
+            assert isinstance(getattr(theme, name), theme.ProtorConsole), name
+        assert theme.err_console.stderr is True
+        assert theme.console.stderr is False

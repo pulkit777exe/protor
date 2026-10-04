@@ -42,6 +42,7 @@ from .theme import (
     console,
     content,
     err,
+    err_console,
     header_rule,
     info,
     label,
@@ -145,8 +146,8 @@ def list_runtime_models(
     try:
         llm = create_backend(backend, "unused", base_url=base_url, api_key=api_key)
     except ValueError as exc:
-        console.print(f"  {err(str(exc))}")
-        console.print()
+        err_console.print(f"  {err(str(exc))}")
+        err_console.print()
         return
 
     url = getattr(llm, "base_url", "")
@@ -172,23 +173,23 @@ def list_runtime_models(
     except ModelListUnavailableError as exc:
         # The runtime answers chat requests but has no listing to read, so the
         # only way forward is naming the model by hand.
-        console.print(f"  {warn(str(exc))}")
-        console.print(
+        err_console.print(f"  {warn(str(exc))}")
+        err_console.print(
             f"  {info('Analyse with:')} protor analyze --backend {backend} --model <name>"
         )
-        console.print()
+        err_console.print()
         return
     except Exception as exc:
-        console.print(f"  {err(f'Could not list models: {exc}')}")
-        console.print()
+        err_console.print(f"  {err(f'Could not list models: {exc}')}")
+        err_console.print()
         return
 
     if not models:
-        console.print(f"  {warn('No models available.')}")
+        err_console.print(f"  {warn('No models available.')}")
         if backend == "ollama":
-            console.print(f"  {info('Pull one with: ollama pull llama3')}")
+            err_console.print(f"  {info('Pull one with: ollama pull llama3')}")
         else:
-            console.print(f"  {info('Load a model in the runtime, then retry')}")
+            err_console.print(f"  {info('Load a model in the runtime, then retry')}")
         console.print()
         return
 
@@ -265,8 +266,10 @@ def list_runtimes() -> None:
             f"  {info('Analyse with it:')} protor analyze --backend {first.key} --model <name>"
         )
     else:
-        console.print(f"  {warn('No local runtime detected.')}")
-        console.print(f"  {info('Start one of the above, or use --backend openai / anthropic')}")
+        err_console.print(f"  {warn('No local runtime detected.')}")
+        err_console.print(
+            f"  {info('Start one of the above, or use --backend openai / anthropic')}"
+        )
 
     # llama.cpp, llamafile, TabbyAPI and Cortex.cpp all default to port 8080 and
     # speak the same API, so one server marks all four as running. Say so, rather
@@ -564,7 +567,7 @@ def analyze(
         f"{label('sites')} {bright(f'{sites_sent} of {len(data)}' if sites_sent != len(data) else str(len(data)))}"
     )
     if sites_sent < len(data):
-        console.print(
+        err_console.print(
             f"  {warn(f'{len(data) - sites_sent} site(s) exceeded the context budget')}"
             f"{muted(' — analyze in smaller batches to include them.')}"
         )

@@ -15,15 +15,33 @@ from protor.exceptions import RuntimeUnavailableError
 from protor.llm_backends import ModelInfo
 
 
-@pytest.fixture
-def captured(monkeypatch):
-    """Capture whatever the analyzer prints, returning the text."""
+def _capture(monkeypatch, target: str):
     buf = io.StringIO()
     monkeypatch.setattr(
-        "protor.analyzer.console",
+        f"protor.analyzer.{target}",
         Console(file=buf, width=100, highlight=False, soft_wrap=True, legacy_windows=False),
     )
     return lambda: buf.getvalue()
+
+
+@pytest.fixture
+def captured(monkeypatch):
+    """What the analyzer *reports*: stdout."""
+    return _capture(monkeypatch, "console")
+
+
+@pytest.fixture
+def captured_err(monkeypatch):
+    """
+    What the analyzer *diagnoses*: stderr.
+
+    Two fixtures because which stream a line is on is itself part of the behaviour.
+    stdout carries the report of what a command did; stderr carries what the user
+    has to act on that is not part of it, so `protor models > list.txt` holds the
+    listing rather than the caveat about it. A test that reaches for the wrong one
+    fails rather than silently passing on the other stream.
+    """
+    return _capture(monkeypatch, "err_console")
 
 
 def _stub_models(monkeypatch, names, *, available=True, size=1024):
@@ -90,26 +108,26 @@ class TestListRuntimeModels:
         )
         assert "vllm serve" not in out, f"same failure, two voices:\n{out}"
 
-    def test_reports_an_empty_model_list(self, monkeypatch, captured):
+    def test_reports_an_empty_model_list(self, monkeypatch, captured_err):
         _stub_models(monkeypatch, [], available=True)
         list_runtime_models("ollama")
-        out = captured()
+        out = captured_err()
         assert "No models" in out
         assert "ollama pull" in out
 
-    def test_reports_a_non_ollama_empty_list_without_ollama_advice(self, monkeypatch, captured):
+    def test_reports_a_non_ollama_empty_list_without_ollama_advice(self, monkeypatch, captured_err):
         _stub_models(monkeypatch, [], available=True)
         list_runtime_models("lmstudio")
-        out = captured()
+        out = captured_err()
         assert "No models" in out
         assert "ollama pull" not in out
 
-    def test_unknown_backend_does_not_raise(self, captured):
+    def test_unknown_backend_does_not_raise(self, captured_err):
         """A bad name must print, not traceback."""
         list_runtime_models("not-a-runtime")
-        assert "Unknown runtime" in captured()
+        assert "Unknown runtime" in captured_err()
 
-    def test_listing_failure_is_reported(self, monkeypatch, captured):
+    def test_listing_failure_is_reported(self, monkeypatch, captured_err):
         import protor.llm_backends as lb
 
         def boom(self):
@@ -118,7 +136,7 @@ class TestListRuntimeModels:
         monkeypatch.setattr(lb.OllamaBackend, "list_models", boom)
         monkeypatch.setattr(lb.OllamaBackend, "check_available", lambda self: True)
         list_runtime_models("ollama")
-        assert "socket died" in captured()
+        assert "socket died" in captured_err()
 
     def test_shows_dash_when_no_size_is_reported(self, monkeypatch, captured):
         _stub_models(monkeypatch, ["m"], size=None)
@@ -147,10 +165,10 @@ class TestListRuntimes:
         assert "vllm" in out
         assert "--backend vllm" in out, "should suggest the follow-up command"
 
-    def test_reports_nothing_running(self, monkeypatch, captured):
+    def test_reports_nothing_running(self, monkeypatch, captured_err):
         monkeypatch.setattr("protor.analyzer.detect_runtimes", lambda: [])
         list_runtimes()
-        out = captured()
+        out = captured_err()
         assert "No local runtime detected" in out
         assert "--backend openai" in out, "should mention the hosted alternative"
 

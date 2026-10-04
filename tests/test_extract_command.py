@@ -194,7 +194,9 @@ class TestExtractCommand:
         with pytest.raises(SystemExit) as excinfo:
             _run(["extract", site, schema])
         assert excinfo.value.code == 1
-        assert "broken" in capsys.readouterr().out
+        # A rejected schema is a diagnostic, so it lands on stderr; stdout is what
+        # a script captures when it wants the records.
+        assert "broken" in capsys.readouterr().err
 
     def test_a_schema_matching_containers_but_no_fields_writes_nothing(self, site, tmp_path):
         """
@@ -224,7 +226,7 @@ class TestExtractCommand:
         with pytest.raises(SystemExit) as excinfo:
             _run(["extract", "example.com/no-scheme", schema])
         assert excinfo.value.code == 1
-        assert "scheme" in capsys.readouterr().out
+        assert "scheme" in capsys.readouterr().err
 
 
 class TestThePreviewSurvivesHostileValues:
@@ -262,6 +264,7 @@ class TestThePreviewSurvivesHostileValues:
         host, port = server.server_address[:2]
         buf = io.StringIO()
         monkeypatch.setattr("protor.cli.console", Console(file=buf, width=100))
+        monkeypatch.setattr("protor.cli.err_console", Console(file=buf, width=100))
         try:
             _run(
                 [
@@ -351,6 +354,7 @@ class TestThePartialWarningReadsAsAWarning:
         host, port = server.server_address[:2]
         buf = io.StringIO()
         monkeypatch.setattr("protor.cli.console", Console(file=buf, width=100))
+        monkeypatch.setattr("protor.cli.err_console", Console(file=buf, width=100))
         try:
             _run(
                 [

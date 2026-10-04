@@ -143,12 +143,15 @@ class TestCmdVersion:
 
 
 class TestCmdUpdate:
+    # These patch the *stderr* console: what they assert on is a diagnostic, and
+    # stdout carries the report of what the command did.
+    @patch("protor.cli.err_console")
     @patch("protor.cli.console")
     @patch("protor.updater._is_editable_install")
     @patch("protor.cli.check_for_update")
     @patch("protor.cli.perform_update")
     def test_editable_install_is_not_installed_over(
-        self, mock_perform, mock_check, mock_editable, mock_console
+        self, mock_perform, mock_check, mock_editable, mock_console, mock_err_console
     ):
         """The checkout wins: pip must not replace a dev tree with a release."""
         mock_editable.return_value = True
@@ -163,7 +166,7 @@ class TestCmdUpdate:
 
         _cmd_update(args)
         assert not mock_perform.called, "an editable checkout was overwritten"
-        printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+        printed = " ".join(str(c) for c in mock_err_console.print.call_args_list)
         assert "Editable install" in printed
 
     @patch("protor.cli.console")
@@ -228,10 +231,10 @@ class TestCmdUpdate:
         _cmd_update(args)
         assert mock_console.print.called
 
-    @patch("protor.cli.console")
+    @patch("protor.cli.err_console")
     @patch("protor.updater._is_editable_install")
     @patch("protor.cli.check_for_update")
-    def test_check_network_failure(self, mock_check, mock_editable, mock_console):
+    def test_check_network_failure(self, mock_check, mock_editable, mock_err_console):
         """A failed check exits non-zero: `--check` in a script must not read as up to date."""
         mock_editable.return_value = False
         mock_check.return_value = None
@@ -242,12 +245,14 @@ class TestCmdUpdate:
         with pytest.raises(SystemExit) as excinfo:
             _cmd_update(args)
         assert excinfo.value.code == 1
-        assert mock_console.print.called
+        assert mock_err_console.print.called
 
 
 class TestCLIErrorHandling:
-    @patch("protor.cli.console")
-    def test_keyboard_interrupt(self, mock_console):
+    # A failure is not a result: everything here lands on stderr, so a script that
+    # captures stdout gets nothing rather than a traceback's worth of noise.
+    @patch("protor.cli.err_console")
+    def test_keyboard_interrupt(self, mock_err_console):
         with patch("protor.cli._build_parser") as mock_parser:
             mock_args = MagicMock()
             mock_args.func.side_effect = KeyboardInterrupt
@@ -256,9 +261,10 @@ class TestCLIErrorHandling:
             with pytest.raises(SystemExit) as exc_info:
                 cli()
             assert exc_info.value.code == 130
+            assert mock_err_console.print.called
 
-    @patch("protor.cli.console")
-    def test_value_error_shows_hint(self, mock_console):
+    @patch("protor.cli.err_console")
+    def test_value_error_shows_hint(self, mock_err_console):
         with patch("protor.cli._build_parser") as mock_parser:
             mock_args = MagicMock()
             mock_args.func.side_effect = ValueError("Invalid URL")
@@ -266,4 +272,4 @@ class TestCLIErrorHandling:
 
             with pytest.raises(SystemExit):
                 cli()
-            assert mock_console.print.called
+            assert mock_err_console.print.called

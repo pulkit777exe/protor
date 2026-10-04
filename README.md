@@ -254,6 +254,12 @@ answer streams as it arrives. three things about that:
   replaced with ASCII equivalents rather than raising `UnicodeEncodeError`, so
   an ASCII or cp1252 terminal gets readable output instead of a traceback.
   `NO_COLOR` is honoured by `rich` as usual.
+- **stdout is the report, stderr is the diagnosis.** Errors, warnings and the
+  advice that goes with them go to stderr, so `protor scrape url > report.txt`
+  holds the report and nothing else, and `2>/dev/null` silences a failure when
+  that is what you want. Everything that reports *what happened* — the results
+  table, the run's summary, `protor version`, the model's answer — stays on
+  stdout.
 
 ## what the focus modes do
 

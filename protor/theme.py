@@ -195,6 +195,18 @@ def _degrade(obj: object) -> object:
 
 console = ProtorConsole(highlight=False, soft_wrap=True)
 
+#: Where diagnostics go.
+#:
+#: stdout carries the report of what a command did; stderr carries what the user
+#: has to act on that is not part of that report. Every line went to stdout before,
+#: so `protor scrape url > report.txt` interleaved "✗ HTTP 403" into the report and
+#: `2>/dev/null` could not silence a failure — neither of which is what a shell
+#: redirection is for. `rg`, `cargo`, `docker` and `kubectl` all split it this way.
+#:
+#: Two consoles rather than a flag per call, so the destination is a property of
+#: the *kind* of line and cannot be forgotten at a call site.
+err_console = ProtorConsole(stderr=True, highlight=False, soft_wrap=True)
+
 
 # ── rules ─────────────────────────────────────────────────────────────────────
 def header_rule(title: str) -> Rule:
