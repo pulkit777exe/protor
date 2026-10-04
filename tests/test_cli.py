@@ -206,3 +206,43 @@ class TestAbort:
         with patch("protor.cli.sys.exit") as mock_exit:
             _abort("Test error", "Test hint")
             mock_exit.assert_called_once_with(1)
+
+
+class TestModuleEntryPoint:
+    def test_importing_dunder_main_does_not_run_the_cli(self):
+        """
+        `protor/__main__.py` called `cli()` at module scope.
+
+        `python -m protor` sets `__name__ == "__main__"`, so the guard changes
+        nothing there — but `pkgutil.iter_modules` lists `__main__` among the
+        package's submodules like any other, so anything that walks the package
+        (an import-everything helper, a coverage sweep, a docs generator) ran the
+        whole CLI on import and exited with whatever argv it was holding. It
+        surfaced as `protor: error: argument <command>: invalid choice:
+        'tests/test_isolation.py'`.
+        """
+        import subprocess
+        import sys
+
+        proc = subprocess.run(
+            [sys.executable, "-c", "import protor.__main__; print('inert')"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "inert" in proc.stdout, proc.stdout
+
+    def test_python_dash_m_still_runs_the_cli(self):
+        """The other half of the guard: the documented entry point must survive."""
+        import subprocess
+        import sys
+
+        proc = subprocess.run(
+            [sys.executable, "-m", "protor", "version"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert proc.stdout.strip().startswith("protor "), proc.stdout

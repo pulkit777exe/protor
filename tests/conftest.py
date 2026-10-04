@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -10,7 +12,90 @@ import pytest
 from protor.models import SiteManifest, SiteMetadata
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
     from pathlib import Path
+
+
+# ── test isolation ─────────────────────────────────────────────────────────────
+
+
+def _import_every_submodule() -> None:
+    """
+    Import every ``protor`` submodule now, so the snapshot below is complete.
+
+    Without this the detector only covers whichever modules happened to be
+    imported by the time a test ran: patch a function in a module that nothing
+    has touched yet, and the patch was invisible — which is the one case where a
+    leak does the most damage, because the importing test is the one that owns
+    the patched name.
+    """
+    import contextlib
+    import importlib
+    import pkgutil
+
+    import protor
+
+    for info in pkgutil.iter_modules(protor.__path__, prefix="protor."):
+        # A submodule that will not import is a failure the tests themselves will
+        # report; here it just means less coverage.
+        with contextlib.suppress(Exception):
+            importlib.import_module(info.name)
+
+
+_import_every_submodule()
+
+
+def _module_snapshot() -> dict[tuple[str, str], int]:
+    """Identity of every mutable attribute of every imported protor module."""
+    out: dict[tuple[str, str], int] = {}
+    for name, module in list(sys.modules.items()):
+        if name != "protor" and not name.startswith("protor."):
+            continue
+        try:
+            namespace = vars(module)
+        except TypeError:  # a namespace package has no __dict__
+            continue
+        for attr, value in list(namespace.items()):
+            if attr.startswith("__") or attr.isupper():
+                # Constants are the one thing a test may legitimately rebind and
+                # leave; lazy caches are initialised on first use, not leaked.
+                continue
+            out[(name, attr)] = id(value)
+    return out
+
+
+@pytest.fixture(autouse=True)
+def _no_leaked_module_patches() -> Iterator[None]:
+    """
+    Fail a test that leaves a protor module attribute swapped out.
+
+    Off by default because it costs ~8% of the suite; CI runs a job with
+    ``PROTOR_CHECK_ISOLATION=1`` to turn it on.
+
+    It exists because of how badly this class of bug hides. A test that patches
+    ``protor.engine.fetch`` and restores ``parse_html`` in a ``finally`` but not
+    ``fetch`` passes in isolation, passes in its own file, and then fails a
+    schema-extraction test in a different file with zero records — four hundred
+    tests later, with nothing in between to connect the two. The failure reads
+    as a product bug in the extractor. Naming the offending attribute at the
+    point of the patch turns that into a one-line diagnosis.
+    """
+    if not os.environ.get("PROTOR_CHECK_ISOLATION"):
+        yield
+        return
+
+    before = _module_snapshot()
+    yield
+    leaked = [
+        f"{module}.{attr}"
+        for (module, attr), ident in _module_snapshot().items()
+        if before.get((module, attr), ident) != ident
+    ]
+    if leaked:
+        pytest.fail(
+            "this test leaked module patches: " + ", ".join(sorted(leaked)),
+            pytrace=False,
+        )
 
 
 # ── HTTP test doubles ─────────────────────────────────────────────────────────
