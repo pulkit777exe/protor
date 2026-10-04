@@ -1,11 +1,78 @@
 # Changelog
 
-## Unreleased
+## v2.9.0 - 2026-10-03
 
-An audit pass over the whole codebase. Every fix below was reproduced before
-it was made, and each is pinned by a test that fails on the old code.
+Eleven more local runtimes, a crawl that starts fresh instead of silently
+doing nothing, the largest performance pass the codebase has had, and an
+audit that found sixteen ways a command could report something untrue — a
+runtime failure reaching the user as a traceback, a manifest naming files
+that were never downloaded, a pipe that lost the per-result output it
+promised. Every fix was reproduced before it was made and is pinned by a
+test that fails on the old code.
 
-### Fixed
+### New Features
+
+- **Eleven more local runtimes.** `protor` now registers 17 instead of 6:
+  GPT4All, KoboldCpp, llamafile, TabbyAPI, Cortex.cpp, SGLang, Xinference,
+  LiteLLM, AnythingLLM, text-generation-webui and Docker Model Runner, with
+  aliases for the spellings people actually type (`gpt-4all`, `kobold`,
+  `model-runner`, `ooba`, `tabby`, …). Two structural fixes were needed to make
+  that work rather than merely list it:
+  - Endpoints are declared per runtime. Docker Model Runner is
+    OpenAI-compatible but serves `/engines/v1`, so a hardcoded `/v1` would have
+    worked for everything except it.
+  - Base URLs are joined with path-prefix overlap handling, because KoboldCpp's
+    docs tell you to use a base ending in `/v1` and appending `/v1/chat/...` to
+    that produced a `/v1/v1/...` 404 that read like a dead server.
+- **`--no-live`** on `scrape`, `run` and `crawl`, for plain output on a real
+  terminal. Pipes and CI already got plain output automatically.
+- **Benchmarks and a CI gate.** Eight hot paths measured at two scales each, so
+  a *ratio* between scales exposes an algorithm that has gone quadratic where a
+  single timing cannot. `python -m benchmarks --gate` fails on superlinear
+  growth; CI runs it.
+- **`protor runtimes` responds to the terminal it is in.** At 60 columns the URL
+  used to truncate mid-value — `http://localhost:11434` rendered as
+  `http://localhost:114`, which reads as a different port — while the actionable
+  start-command column disappeared. Narrow terminals now fold the command and
+  fold the status into the name column instead.
+
+### Changed
+
+- `protor crawl` starts fresh unless `--resume` is passed, and `--resume` also
+  retries the pages the previous run failed on.
+- `protor --help`'s `Environment:` block is generated from the runtime registry.
+  It listed six of the seventeen runtimes and described the API-key variables as
+  `*_API_KEY`, a pattern the registry does not follow.
+
+### Fixes
+
+- **Nearly every real page failed to parse.** `clean_soup` raised
+  `AttributeError` on any page whose `<nav>`, `<header>`, `<footer>` or
+  `<aside>` contained elements: `decompose()` clears the `__dict__` of nested
+  tags, so the noise check touched a tag whose `attrs` was `None`. The engine
+  swallowed it into a scrape error, so real pages were recorded as failures.
+  Every test fixture had been flat HTML, which is why it shipped.
+- **A page in flight was fetched twice.** The queue refused only URLs in
+  `queue` or `visited`; a dequeued, mid-fetch page was in neither, so a
+  concurrent page linking to it re-admitted it. Measured 8 requests for a
+  5-page site, duplicates charged against `--max-pages`, and a checkpoint
+  contradicting the state of record. Each duplicate rediscovered the same links,
+  so on a cyclic site the frontier multiplied: a five-page test site produced a
+  7.8 GB queue database.
+- **A missing API key was reported with a URL hint.** Every `ValueError` from
+  every layer funnelled through one handler carrying URL advice.
+- **Terminals that cannot encode the glyphs crashed with a traceback** —
+  `protor --help`, `models` and `crawl` all died on an ASCII or cp1252
+  terminal. Glyphs now degrade to ASCII.
+- **Redirects into cloud metadata endpoints** are refused rather than followed.
+- **A schema matching containers but no fields** wrote all-null records and
+  reported success.
+- **Conditional requests could never fire**, because reading a stale entry
+  deleted the validators that revalidation needs.
+- **`analyze()` refused an empty batch**, instead of spending a model call to
+  report "Sites analyzed: 0" — which is what `protor run <url>` did whenever the
+  fetch failed.
+
 
 - **A page's `<title>` or meta description could forge structure in the
   prompt.** Both are untrusted page text and both keep their newlines, and they
@@ -89,82 +156,19 @@ it was made, and each is pinned by a test that fails on the old code.
 - **`--backend local` and `--backend compat` were rejected by argparse** for
   names `create_backend` has always accepted; the two lists had drifted.
 
-### Changed
-
-- `protor crawl` starts fresh unless `--resume` is passed, and `--resume` also
-  retries the pages the previous run failed on.
-- `protor --help`'s `Environment:` block is generated from the runtime registry.
-  It listed six of the seventeen runtimes and described the API-key variables as
-  `*_API_KEY`, a pattern the registry does not follow.
-
-### Internal
-
-- Corrected comments and docstrings that did not describe the code: the
-  retry-per-run semantics in `requeue_failed`, the durability window implied by
-  deferred commits, `_probe`'s fallback rule, the legacy cache index format, and
-  a `netguard` test whose `in (True, False)` assertion could not fail. Where a
-  docstring described behaviour that did not exist, the behaviour was changed or
-  the claim narrowed — not left standing.
-
-## v2.9.0 - 2026-10-03
-
-Eleven more local runtimes, a crawl that starts fresh instead of silently
-doing nothing, and the largest performance pass the codebase has had.
-
-### New Features
-
-- **Eleven more local runtimes.** `protor` now registers 17 instead of 6:
-  GPT4All, KoboldCpp, llamafile, TabbyAPI, Cortex.cpp, SGLang, Xinference,
-  LiteLLM, AnythingLLM, text-generation-webui and Docker Model Runner, with
-  aliases for the spellings people actually type (`gpt-4all`, `kobold`,
-  `model-runner`, `ooba`, `tabby`, …). Two structural fixes were needed to make
-  that work rather than merely list it:
-  - Endpoints are declared per runtime. Docker Model Runner is
-    OpenAI-compatible but serves `/engines/v1`, so a hardcoded `/v1` would have
-    worked for everything except it.
-  - Base URLs are joined with path-prefix overlap handling, because KoboldCpp's
-    docs tell you to use a base ending in `/v1` and appending `/v1/chat/...` to
-    that produced a `/v1/v1/...` 404 that read like a dead server.
-- **`--no-live`** on `scrape`, `run` and `crawl`, for plain output on a real
-  terminal. Pipes and CI already got plain output automatically.
-- **Benchmarks and a CI gate.** Eight hot paths measured at two scales each, so
-  a *ratio* between scales exposes an algorithm that has gone quadratic where a
-  single timing cannot. `python -m benchmarks --gate` fails on superlinear
-  growth; CI runs it.
-- **`protor runtimes` responds to the terminal it is in.** At 60 columns the URL
-  used to truncate mid-value — `http://localhost:11434` rendered as
-  `http://localhost:114`, which reads as a different port — while the actionable
-  start-command column disappeared. Narrow terminals now fold the command and
-  fold the status into the name column instead.
-
-### Fixes
-
-- **Nearly every real page failed to parse.** `clean_soup` raised
-  `AttributeError` on any page whose `<nav>`, `<header>`, `<footer>` or
-  `<aside>` contained elements: `decompose()` clears the `__dict__` of nested
-  tags, so the noise check touched a tag whose `attrs` was `None`. The engine
-  swallowed it into a scrape error, so real pages were recorded as failures.
-  Every test fixture had been flat HTML, which is why it shipped.
-- **A page in flight was fetched twice.** The queue refused only URLs in
-  `queue` or `visited`; a dequeued, mid-fetch page was in neither, so a
-  concurrent page linking to it re-admitted it. Measured 8 requests for a
-  5-page site, duplicates charged against `--max-pages`, and a checkpoint
-  contradicting the state of record. Each duplicate rediscovered the same links,
-  so on a cyclic site the frontier multiplied: a five-page test site produced a
-  7.8 GB queue database.
-- **A missing API key was reported with a URL hint.** Every `ValueError` from
-  every layer funnelled through one handler carrying URL advice.
-- **Terminals that cannot encode the glyphs crashed with a traceback** —
-  `protor --help`, `models` and `crawl` all died on an ASCII or cp1252
-  terminal. Glyphs now degrade to ASCII.
-- **Redirects into cloud metadata endpoints** are refused rather than followed.
-- **A schema matching containers but no fields** wrote all-null records and
-  reported success.
-- **Conditional requests could never fire**, because reading a stale entry
-  deleted the validators that revalidation needs.
-- **`analyze()` refused an empty batch**, instead of spending a model call to
-  report "Sites analyzed: 0" — which is what `protor run <url>` did whenever the
-  fetch failed.
+- **`protor update --check` reported nothing on an editable install.** It
+  returned before the version check, so it printed a refusal to install and never
+  said whether an update existed — in a dev tree, which is where someone is most
+  likely to run it. The editable check now refuses only the *install*.
+- **`--max-pages` was documented as issuing "at most 10 requests".** It is a
+  ceiling over *pages*: a 502 is retried up to `MAX_RETRIES` before the page is
+  recorded as failed, so one page attempt can cost three wire requests. That is
+  deliberate, and the wording now says so.
+- **`max_targets` held only because nothing can skip.** The ceiling counts
+  dispatched pages through `stats.total`, which a skipped URL would not advance.
+  Nothing can skip, because the parser yields same-host links only — an
+  invariant rather than luck, and now pinned by a test on the server's request
+  log.
 
 ### Performance
 
@@ -198,6 +202,14 @@ queue (43% slower than the two statements it replaced).
   section documented it).
 - `tests/test_docs.py` fails the build if the README and the runtime registry
   disagree.
+
+
+- Corrected comments and docstrings that did not describe the code: the
+  retry-per-run semantics in `requeue_failed`, the durability window implied by
+  deferred commits, `_probe`'s fallback rule, the legacy cache index format, and
+  a `netguard` test whose `in (True, False)` assertion could not fail. Where a
+  docstring described behaviour that did not exist, the behaviour was changed or
+  the claim narrowed — not left standing.
 
 ## [v2.8.0] — 2026-10-02
 
