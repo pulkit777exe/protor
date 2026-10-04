@@ -1,5 +1,35 @@
 # Changelog
 
+## Unreleased
+
+### New Features
+
+- **`--sitemap` seeds a crawl from the site's sitemap** — the `Sitemap:` lines in
+  `robots.txt`, falling back to `/sitemap.xml`. A link-walk only reaches what a
+  page happens to link, which on a documentation site is the sidebar and on a
+  shop the top nav; the pages a sitemap lists and nothing links to are exactly
+  the ones a link-walk structurally cannot find. Reads urlset, sitemapindex
+  (depth-capped, so two indexes naming each other cannot loop) and gzip —
+  detected on the magic bytes, because `.xml.gz` is routinely served as
+  `application/xml`. Best-effort throughout: no sitemap, an unreadable one, a
+  malformed one, or one listing another property's domain each costs a couple of
+  requests and changes nothing else.
+- **`--cache` on `crawl`.** The crawler never passed a cache to the engine, so
+  every run re-downloaded every byte of every page. Opt-in, like the scraper's,
+  because a cache changes what a repeat run sees.
+- **A re-crawl now admits when nothing changed.** The cache revalidates with
+  ETag/Last-Modified, but the 304 was served without telling the caller, so a
+  second crawl reported the same "N pages scraped" as the first. The 304 is
+  carried through to the summary: "N pages scraped (M unchanged)".
+- **A PDF is not a web page.** Nothing checked the `Content-Type`, so a link to
+  a manual.pdf was "scraped" into 2,949 characters of raw PDF syntax and a PNG
+  into 407 characters of binary noise, both reported as successfully scraped
+  pages. `application/octet-stream` is deliberately not trusted — plenty of
+  servers send it for perfectly good HTML.
+- **`Retry-After` is honoured** instead of our own backoff. Both defined forms,
+  delta-seconds and HTTP-date, capped at two minutes so one hostile header
+  cannot stall a run, with nonsense falling back to backoff.
+
 ## v2.9.0 - 2026-10-03
 
 Eleven more local runtimes, a crawl that starts fresh instead of silently
