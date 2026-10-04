@@ -2,6 +2,33 @@
 
 ## Unreleased
 
+### Performance
+
+- **The batch progress bar was two-thirds of a batch run.** Every row was
+  rebuilt and repainted on every tick — Rich's own render of the table measured
+  27 ms at 300 rows and 1,839 ms at 3,000 — so rendering it was 67% of a 300-URL
+  batch's wall clock and 89% at 600. Now bounded to the last 25 rows with an
+  elision note, as the crawler already bounded its log: 3,000 rows went 8,760 ms
+  to 11 ms. Rich's `Live` was also refreshing on its own background thread, so
+  35 throttled renders produced 70 prints; `auto_refresh=False` makes the
+  throttle the only repaint path.
+- **A crawl retained ~49 KiB per page that nothing read.** `Crawler` never
+  touches `engine.manifests`; the engine accumulated one per page anyway, so a
+  40,000-page crawl held roughly 1.9 GB. Manifests are still written to disk.
+- **The HTTP cache's docstring claimed bodies were dropped after reading.
+  They were not.** `get` and `entry_for` attached the body to the indexed entry
+  and nothing ever released it: 11.4 MiB retained across 500 entries. The index
+  is metadata-only now — 11.4 MiB to 0 KiB, every body still served.
+- **List rendering spent 38-55% of its time in `find()`**, building a
+  SoupStrainer per call. A 500-item TOC with nested lists: 51.8 ms to 27.1 ms,
+  output byte-identical.
+- **`StaticQueue.dequeue` was `pop(0)`**, quadratic in batch size. 50,000
+  dequeues: 148.9 ms to 1.4 ms.
+- Rejected after measuring: memoising `canonicalize_url`. A repeat call is ~100x
+  cheaper and the engine canonicalises the same string twice per link, but a
+  crawl's URLs are overwhelmingly distinct, so the cache evicts and the project's
+  own scaling gate then reported the function superlinear.
+
 ### New Features
 
 - **`--sitemap` seeds a crawl from the site's sitemap** — the `Sitemap:` lines in
