@@ -59,7 +59,7 @@ from .config import (
 )
 from .engine import CrawlEngine, RecursiveSource
 from .http_cache import HTTPCache
-from .progress import normalise_reason, print_failure_reasons
+from .progress import normalise_reason, print_failure_reasons, visible_rows
 from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
 from .theme import (
@@ -410,8 +410,16 @@ _CHECKPOINT_WRITES = 20
 #: so retaining every page of a large crawl grew memory for nothing.
 _LOG_HISTORY = 200
 
-#: Rows shown in the live log table.
+#: Most rows the live log will show, however tall the terminal. The actual count
+#: comes from :func:`protor.progress.visible_rows`, because a fixed 20 rendered 29
+#: lines against a 24-line terminal and the top — the bar and the counts — scrolled
+#: out of view.
 _LOG_VIEW = 20
+
+#: Lines the crawl view spends before the log table starts, measured rather than
+#: counted: the two rules that bracket the stat block, the stat block itself
+#: (progress, current, queue, errors, blocked, output) and the log table's header.
+_LOG_RESERVED = 10
 
 
 @dataclass
@@ -450,7 +458,7 @@ class _State:
 _BAR_WIDTH = 32
 
 
-def _render(state: _State, output_dir: str) -> Group:
+def _render(state: _State, output_dir: str, height: int | None = None) -> Group:
     # The bar is scaled to a fixed width. One cell per page made --max-pages
     # 500 render a 500-character bar that wrapped and wrecked the layout.
     if state.max_pages:
@@ -489,7 +497,7 @@ def _render(state: _State, output_dir: str) -> Group:
     log_t.add_column("Domain", style="white", min_width=28)
     log_t.add_column("Status", width=10)
 
-    recent = list(state.log)[-_LOG_VIEW:]
+    recent = list(state.log)[-visible_rows(_LOG_RESERVED, ceiling=_LOG_VIEW, height=height) :]
     first_index = max(1, state.log_total - len(recent) + 1)
     for i, entry in enumerate(recent, first_index):
         if entry.status == "ok":

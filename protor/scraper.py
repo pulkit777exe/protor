@@ -18,7 +18,7 @@ from __future__ import annotations
 import json
 from collections import Counter
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
 from rich import box
@@ -30,7 +30,7 @@ from .config import DEFAULT_CONCURRENCY, DEFAULT_TIMEOUT, RATE_LIMIT_DELAY
 from .engine import CrawlEngine, StaticQueue, StaticSource
 from .http_cache import HTTPCache
 from .parser import extract_links
-from .progress import normalise_reason, print_failure_reasons
+from .progress import normalise_reason, print_failure_reasons, visible_rows
 from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
 from .theme import (
@@ -51,7 +51,7 @@ from .theme import (
 from .utils import ensure_output_dir, human_bytes, human_duration
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterable
+    from collections.abc import Callable, Iterable, Sequence
 
     from .extractor import ExtractionSchema
     from .models import SiteManifest
@@ -93,8 +93,64 @@ def _print_failure_reasons(rows: list[dict[str, Any]]) -> None:
 #: still carries every row.
 _TABLE_VIEW = 25
 
+#: A column of the batch table: name, minimum width, style, justification.
+_Column = tuple[str, int, str, Literal["left", "right"]]
 
-def _build_table(rows: list[dict[str, Any]]) -> Table:
+
+#: The batch table's columns.
+#:
+#: The widths are floors, not preferences, and they are what keeps the table inside
+#: the window. They used to need 81 columns, and at 80 — the canonical width — rich
+#: dropped the last column outright, so the JS count vanished with no ellipsis and
+#: no warning. Worse, leaving the deficit to rich is worse than overflowing: at 72
+#: it squeezed *every* column instead of dropping one, rendering sizes as `120.…`
+#: and times as `1.…`.
+_BATCH_COLUMNS: tuple[_Column, ...] = (
+    ("#", 3, "grey50", "right"),
+    ("Domain", 16, "white", "left"),
+    ("Status", 12, "white", "left"),
+    ("Size", 9, "grey74", "right"),
+    ("Time", 6, "grey74", "right"),
+    ("JS", 4, "grey50", "right"),
+)
+
+
+#: What a table costs at its narrowest: the columns' widths plus one space of
+#: padding on each side of each. `box.SIMPLE` with `show_edge=False` draws no rules.
+def _columns_width(columns: Sequence[_Column]) -> int:
+    return sum(width for _, width, _, _ in columns) + 2 * len(columns)
+
+
+#: Columns given up when the window is too narrow, cheapest information first.
+#: The same trade `list_runtimes` makes with its URL column: reference
+#: information yields to the counts. Never the row number or the domain, which are
+#: what makes the table a table.
+_SACRIFICE_ORDER = ("JS", "Size", "Time")
+
+#: Domain never shrinks below this, however narrow the window: a truncated
+#: hostname is no longer a hostname.
+_DOMAIN_MIN_WIDTH = 16
+
+
+def _columns_for(width: int) -> tuple[_Column, ...]:
+    """The columns that fit *width*, dropping the least useful until they do."""
+    columns = list(_BATCH_COLUMNS)
+    for name in _SACRIFICE_ORDER:
+        if _columns_width(columns) <= width:
+            break
+        columns = [c for c in columns if c[0] != name]
+    return tuple(columns)
+
+
+#: Lines the batch table spends before its rows start, measured rather than
+#: counted: the top rule, the header row, and the elision row that names how many
+#: earlier rows were dropped.
+_TABLE_RESERVED = 4
+
+
+def _build_table(
+    rows: list[dict[str, Any]], width: int | None = None, height: int | None = None
+) -> Table:
     t = Table(
         box=box.SIMPLE,
         show_header=True,
@@ -102,14 +158,32 @@ def _build_table(rows: list[dict[str, Any]]) -> Table:
         show_edge=False,
         padding=(0, 1),
     )
-    t.add_column("#", style="grey50", width=3, justify="right")
-    t.add_column("Domain", style="white", min_width=32)
-    t.add_column("Status", width=14)
-    t.add_column("Size", style="grey74", width=9, justify="right")
-    t.add_column("Time", style="grey74", width=6, justify="right", no_wrap=True)
-    t.add_column("JS", style="grey50", width=4, justify="right")
+    columns = _columns_for(width if width is not None else console.width or 80)
+    # Domain is the only elastic column, so it needs a ceiling as well as a floor.
+    # Rich sizes columns to their *content* first and only then discovers the table
+    # is too wide, at which point it shrinks every column: a 45-character domain in
+    # a 72-column window came out as `120.…` for a size and `1…` for a time, with no
+    # dropped column to explain it. The ceiling is whatever the window has left
+    # after the columns that matter.
+    spare = (width if width is not None else console.width or 80) - _columns_width(columns)
+    domain_max = _DOMAIN_MIN_WIDTH + max(0, spare)
+    for name, column_width, style, justify in columns:
+        elastic = name == "Domain"
+        # `no_wrap` throughout: a column that wraps inflates the table's height,
+        # which is the budget just spent sizing it to the window.
+        t.add_column(
+            name,
+            style=style,
+            width=None if elastic else column_width,
+            min_width=column_width if elastic else None,
+            max_width=domain_max if elastic else column_width,
+            justify=justify,
+            no_wrap=True,
+            overflow="ellipsis",
+        )
 
-    shown = rows[-_TABLE_VIEW:] if len(rows) > _TABLE_VIEW else rows
+    budget = visible_rows(_TABLE_RESERVED, ceiling=_TABLE_VIEW, height=height)
+    shown = rows[-budget:] if len(rows) > budget else rows
     hidden = len(rows) - len(shown)
     for r in shown:
         status = r.get("status", "waiting")
@@ -134,24 +208,19 @@ def _build_table(rows: list[dict[str, Any]]) -> Table:
         else:
             s = Text(f"  {SPIN} {status}", style="yellow")
 
-        t.add_row(
-            str(r.get("idx", "")),
-            content(r.get("domain", "")),
-            s,
-            human_bytes(r["bytes"]) if r.get("bytes") else "—",
-            human_duration(r.get("ms")),
-            str(r["js"]) if r.get("js") else "—",
-        )
+        cells: dict[str, Any] = {
+            "#": str(r.get("idx", "")),
+            "Domain": content(r.get("domain", "")),
+            "Status": s,
+            "Size": human_bytes(r["bytes"]) if r.get("bytes") else "—",
+            "Time": human_duration(r.get("ms")),
+            "JS": str(r["js"]) if r.get("js") else "—",
+        }
+        t.add_row(*[cells[name] for name, *_ in columns])
 
     if hidden:
-        t.add_row(
-            "",
-            muted(f"… {hidden} earlier {'row' if hidden == 1 else 'rows'}"),
-            "",
-            "",
-            "",
-            "",
-        )
+        note = muted(f"… {hidden} earlier {'row' if hidden == 1 else 'rows'}")
+        t.add_row(*(note if name == "Domain" else "" for name, *_ in columns))
     return t
 
 

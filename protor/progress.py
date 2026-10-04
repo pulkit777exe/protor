@@ -55,6 +55,7 @@ __all__ = [
     "normalise_reason",
     "print_failure_reasons",
     "status_line",
+    "visible_rows",
 ]
 
 
@@ -382,3 +383,33 @@ def print_failure_reasons(counts: Mapping[str, int]) -> None:
         _console.print(f"  {ERR} {count:>5}  {muted(reason)}")
     if hidden > 0:
         _console.print(f"  {muted(f'+ {hidden} more distinct reason(s)')}")
+
+
+#: Assumed terminal height when nothing knows better. Rich reports 25 for a
+#: non-terminal stream, which is a reasonable guess for a log.
+_DEFAULT_HEIGHT = 25
+
+#: Never show fewer than this many rows, however short the terminal: an empty
+#: table tells the user less than a truncated one.
+_MIN_VISIBLE_ROWS = 3
+
+
+def visible_rows(reserved: int, *, ceiling: int, height: int | None = None) -> int:
+    """
+    How many table rows fit the terminal once *reserved* lines are spent.
+
+    Both live views used fixed row counts that had nothing to do with the window:
+    the crawler's rendered 29 lines and the batch table 28, on a terminal that is
+    24. A live region taller than the screen scrolls its own top out of view, so
+    the user was left watching a log table with no bar, no percentage and no
+    counts — and in the batch table's case with the JS column dropped entirely,
+    because its columns needed 81 and 80 is the canonical width.
+
+    *reserved* is everything else the render spends: rules, headers and the stat
+    block. *ceiling* keeps a tall terminal from rendering thousands of rows.
+
+    *height* overrides the console's, so a caller that knows the window — and a
+    test — does not have to mutate global state to say so.
+    """
+    rows_available = (height if height is not None else _console.height) or _DEFAULT_HEIGHT
+    return max(_MIN_VISIBLE_ROWS, min(ceiling, rows_available - reserved))

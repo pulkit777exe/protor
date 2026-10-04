@@ -591,11 +591,18 @@ class TestCrawlStateIsBounded:
             state.log.append(_CrawlLog("ok", "x.com", url=f"u{i}"))
             state.log_total += 1
 
-        console = Console(width=120, record=True, file=io.StringIO())
-        console.print(_render(state, "/tmp/out"))
+        from protor.crawler import _LOG_RESERVED, _LOG_VIEW
+
+        # 500 appended, 200 retained by the deque, and the view shows however many
+        # fit the window — so the window is pinned rather than assumed, and the
+        # expected window is derived from it rather than hard-coded.
+        height = 60
+        shown = min(_LOG_VIEW, height - _LOG_RESERVED)
+        console = Console(width=120, height=height, record=True, file=io.StringIO())
+        console.print(_render(state, "/tmp/out", height=height))
         out = console.export_text()
-        # 500 appended, 200 retained, 20 shown: the visible window is 481..500.
-        assert "481" in out
+
+        assert str(500 - shown + 1) in out, f"the window should start at {500 - shown + 1}"
         assert "500" in out
         assert "1 " not in out.split("Domain")[-1].splitlines()[1]
 

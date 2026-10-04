@@ -334,13 +334,23 @@ class TestTheBatchLiveTableIsBounded:
             }
             for i in range(3000)
         ]
+        # An explicit height, because the row budget is now derived from the
+        # window rather than fixed: this test is about the cap, and a cap that
+        # moves with the terminal needs the terminal pinned to say anything.
+        from protor.scraper import _TABLE_RESERVED
+
+        height = 60
         out = io.StringIO()
-        console = Console(file=out, width=120, force_terminal=False, legacy_windows=False)
-        console.print(_build_table(rows))
+        console = Console(
+            file=out, width=120, height=height, force_terminal=False, legacy_windows=False
+        )
+        console.print(_build_table(rows, width=120, height=height))
 
         text = out.getvalue()
+        budget = min(_TABLE_VIEW, height - _TABLE_RESERVED)
+        assert text.count("site") == budget, f"{text.count('site')} rows rendered"
+        assert f"{3000 - budget} earlier rows" in text, "the elision is not reported"
         assert text.count("site") <= _TABLE_VIEW, f"{text.count('site')} rows rendered"
-        assert "2975 earlier rows" in text, "the elision is not reported"
 
     def test_a_small_batch_is_not_truncated(self):
         from protor.scraper import _build_table
