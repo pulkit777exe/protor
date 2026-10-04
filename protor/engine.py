@@ -181,8 +181,23 @@ class CrawlEngine:
     max_targets:
         Hard ceiling on pages *attempted*; the engine never spawns work that
         could exceed it. Failures and blocked pages count toward the ceiling,
-        so ``--max-pages 10`` issues at most 10 requests rather than walking
+        so ``--max-pages 10`` attempts at most 10 pages rather than walking
         on until 10 happen to succeed.
+
+        Pages, not HTTP requests: the fetcher retries a 429 or 5xx up to
+        ``MAX_RETRIES`` before the page is recorded as failed, so one page
+        attempt can cost several requests on the wire. That is deliberate — a
+        transient 502 is worth another go — and it is why this is a ceiling over
+        work rather than over bandwidth.
+
+        The ceiling counts dispatched URLs through ``stats.total``, which a
+        *skipped* URL does not advance — so it held only because nothing can skip.
+        The parser yields same-host links exclusively, so a recursive crawl can
+        never hand the domain filter a URL to reject, and every dispatched task
+        ends in scraped, error or blocked. That is an invariant rather than a
+        coincidence, and one test now pins it: loosening the parser's host check
+        would otherwise turn this ceiling into a suggestion with nothing to say
+        so.
     concurrency:
         Number of pages fetched concurrently. When *auto_scaler* is provided,
         this is the initial value only; admission follows the scaler.

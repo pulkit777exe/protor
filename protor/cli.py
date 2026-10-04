@@ -281,10 +281,7 @@ def _cmd_version(_args: argparse.Namespace) -> None:
 def _cmd_update(args: argparse.Namespace) -> None:
     from .updater import _is_editable_install
 
-    if _is_editable_install():
-        console.print(f"\n  {err('Editable install detected.')}")
-        console.print(f"  {info('Update via: git pull && pip install -e .')}\n")
-        return
+    editable = _is_editable_install()
 
     result = check_for_update()
 

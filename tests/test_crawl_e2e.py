@@ -904,3 +904,77 @@ class TestRobotsIsEvaluatedAgainstTheSentAgent:
         await _crawl(site, max_pages=10, output_dir=tmp_path)
 
         assert "/public.html" in site.page_requests, site.page_requests
+
+
+class TestMaxPagesBoundsRequests:
+    """
+    `--max-pages` bounds requests, not just successes.
+
+    The spawn loop compares ``stats.total`` — scraped + errors + blocked — against
+    the ceiling, so a *skipped* URL would not advance it and the ceiling would
+    bound nothing. Nothing can skip: the parser yields same-host links only, so a
+    recursive crawl never hands the domain filter a URL to reject. That is why
+    this holds, and it is an invariant rather than luck — loosen the parser's host
+    check and the ceiling quietly becomes a suggestion with nothing to say so.
+
+    Asserted on the server's own request log, which is the only count no internal
+    counter can flatter.
+    """
+
+    async def test_a_never_ending_frontier_still_stops_at_the_ceiling(self, site, tmp_path):
+        # Every page links to every page, so the frontier never empties and the
+        # crawl can only stop because it hit the ceiling.
+        pages = ["/"] + [f"/p{i}.html" for i in range(12)]
+        for path in pages:
+            site.add(path, path, [p for p in pages if p != path])
+
+        await _crawl(site, max_pages=4, output_dir=tmp_path)
+
+        assert len(site.page_requests) <= 4, (
+            f"ceiling of 4 issued {len(site.page_requests)} requests: {site.page_requests}"
+        )
+        assert _summary(tmp_path)["scraped"] <= 4
+
+    async def test_a_failed_page_still_counts_against_the_ceiling(self, site, tmp_path):
+        """
+        Failures count too: the point is to bound work, not successes.
+
+        A 404 rather than a 500, because 5xx is in the fetcher's retryable set —
+        one page attempt then costs three wire requests, which is deliberate and
+        is why the ceiling is documented over *pages* and not over HTTP requests.
+        """
+        pages = ["/"] + [f"/p{i}.html" for i in range(12)]
+        for path in pages:
+            site.add(path, path, [p for p in pages if p != path])
+        for path in pages[1:4]:
+            site.fail(path, 404)
+
+        await _crawl(site, max_pages=3, output_dir=tmp_path)
+
+        assert len(site.page_requests) <= 3, (
+            f"3 failures should have ended the crawl, not {len(site.page_requests)} requests"
+        )
+        assert _summary(tmp_path)["scraped"] <= 1, "the failures are not successes"
+
+    async def test_the_ceiling_is_over_pages_not_wire_requests(self, site, tmp_path):
+        """
+        One page attempt may cost several requests, by design.
+
+        A 502 is retried up to ``MAX_RETRIES`` before the page is recorded as
+        failed, so the request log exceeds ``--max-pages`` while the number of
+        *pages* attempted does not. Documented over pages for exactly this
+        reason; asserted here so the distinction cannot quietly change.
+        """
+        pages = ["/"] + [f"/p{i}.html" for i in range(12)]
+        for path in pages:
+            site.add(path, path, [p for p in pages if p != path])
+        # The first page the crawl reaches, so a ceiling of 2 is sure to include it.
+        site.fail("/p0.html", 502)
+
+        await _crawl(site, max_pages=2, output_dir=tmp_path)
+
+        visited = _visited(tmp_path)
+        assert len(visited) <= 2, f"more pages attempted than the ceiling: {visited}"
+        assert len(site.page_requests) > len(visited), (
+            "expected the retried page to cost more than one request"
+        )

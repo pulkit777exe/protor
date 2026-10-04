@@ -145,14 +145,54 @@ class TestCmdVersion:
 class TestCmdUpdate:
     @patch("protor.cli.console")
     @patch("protor.updater._is_editable_install")
-    def test_editable_install_warning(self, mock_editable, mock_console):
+    @patch("protor.cli.check_for_update")
+    @patch("protor.cli.perform_update")
+    def test_editable_install_is_not_installed_over(
+        self, mock_perform, mock_check, mock_editable, mock_console
+    ):
+        """The checkout wins: pip must not replace a dev tree with a release."""
         mock_editable.return_value = True
+        mock_check.return_value = {
+            "current": "2.4.0",
+            "latest": "2.5.0",
+            "update_available": True,
+        }
         args = MagicMock()
         args.check = False
         args.yes = False
 
         _cmd_update(args)
-        assert mock_console.print.called
+        assert not mock_perform.called, "an editable checkout was overwritten"
+        printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+        assert "Editable install" in printed
+
+    @patch("protor.cli.console")
+    @patch("protor.updater._is_editable_install")
+    @patch("protor.cli.check_for_update")
+    def test_check_still_reports_on_an_editable_install(
+        self, mock_check, mock_editable, mock_console
+    ):
+        """
+        `--check` is documented as "only check for updates, don't install".
+
+        It returned before the check, so in a dev tree — exactly where somebody
+        runs it to see whether they are behind — it printed a refusal to install
+        and said nothing about whether an update existed.
+        """
+        mock_editable.return_value = True
+        mock_check.return_value = {
+            "current": "2.4.0",
+            "latest": "2.5.0",
+            "update_available": True,
+        }
+        args = MagicMock()
+        args.check = True
+        args.yes = False
+
+        _cmd_update(args)
+        assert mock_check.called, "--check never asked PyPI"
+        printed = " ".join(str(c) for c in mock_console.print.call_args_list)
+        assert "2.5.0" in printed, f"the latest version was not reported: {printed}"
 
     @patch("protor.cli.console")
     @patch("protor.updater._is_editable_install")
