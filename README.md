@@ -159,6 +159,12 @@ the output directory are left alone. `--resume` is what reuses them, and it
 retries the pages the previous run failed on, since the ones that worked have
 nothing left to give.
 
+`--cache` keeps responses between runs, so re-crawling an unchanged site costs
+one conditional request per page instead of downloading every byte again. It is
+off by default, because a cache changes what a repeat run sees. When it is on,
+the summary says how many pages the server confirmed were unchanged — a
+re-crawl that changed nothing should not look like a fresh scrape of everything.
+
 `--sitemap` seeds the crawl from the site's sitemap — the `Sitemap:` lines in
 `robots.txt`, or `/sitemap.xml` — as well as by following links. A link-walk
 only reaches what a page happens to link, which on a documentation site is the

@@ -59,6 +59,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sqlite3
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import pytest
@@ -71,7 +72,6 @@ from protor.utils import safe_filename
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from pathlib import Path
 
 #: Opens a loopback socket. Deliberately not ``slow``: a five-page crawl is a
 #: couple of seconds, and the point of these tests is that they run by default.
@@ -108,6 +108,10 @@ class _Site:
         #: Body served at /sitemap.xml. Empty means "no sitemap here", which is
         #: the common case and must not stop a crawl.
         self.sitemap: str = ""
+        #: When set, every page carries this ETag and answers a matching
+        #: If-None-Match with 304 — the revalidation path a re-crawl takes.
+        self.etag: str | None = None
+        self.not_modified: list[str] = []
         self.requests: list[str] = []
         self.page_requests: list[str] = []
         self.robots_requests: list[str] = []
@@ -191,7 +195,15 @@ class _Site:
         body = self.pages.get(path)
         if body is None:
             return web.Response(status=404, text="not found")
-        return web.Response(text=body, content_type="text/html")
+        headers = {}
+        if self.etag:
+            headers["ETag"] = self.etag
+            # Conditional revalidation, so a second crawl costs a 304 and no body
+            # — the path a re-crawl actually takes against a real site.
+            if request.headers.get("If-None-Match") == self.etag:
+                self.not_modified.append(path)
+                return web.Response(status=304, headers=headers)
+        return web.Response(text=body, content_type="text/html", headers=headers)
 
 
 @pytest.fixture(autouse=True)
@@ -1083,3 +1095,143 @@ class TestSitemapSeeding:
         await _crawl(site, max_pages=4, output_dir=tmp_path, use_sitemaps=True)
 
         assert len(site.page_requests) <= 4, f"{len(site.page_requests)} requests for --max-pages 4"
+
+
+class TestRecrawlReportsWhatChanged:
+    """
+    Re-crawling an unchanged site must not look like a fresh scrape of it.
+
+    The cache already revalidates with ETag/Last-Modified, so a second crawl
+    costs one conditional request per page and no body. But the 304 was served
+    from the cache without the caller being told, so every page came back looking
+    newly fetched — a re-crawl that changed nothing reported the same "N pages
+    scraped" as a first one.
+    """
+
+    @staticmethod
+    def _age_the_cache() -> None:
+        """
+        Make every cached entry stale, so the next crawl revalidates.
+
+        A fresh entry is served without any request at all, which is the point
+        of the cache and not the path under test — the re-crawl that reaches the
+        server is the one that gets a conditional request and a 304 back.
+
+        Aged by two hours rather than to zero: past the TTL, so it revalidates,
+        but inside ``stale_ttl``, past which the entry is discarded outright and
+        there is nothing left to revalidate with.
+        """
+        import time
+
+        index = Path.home() / ".cache" / "protor" / "http" / "index.json"
+        if not index.exists():
+            return
+        data = json.loads(index.read_text(encoding="utf-8"))
+        stale = time.time() - 7200
+        for entry in data.values():
+            entry["timestamp"] = stale
+        index.write_text(json.dumps(data), encoding="utf-8")
+
+    async def _crawl_state(self, site, tmp_path, *, fresh_cache: bool = False):
+        """Crawl off the event loop and hand back the resulting state."""
+        if fresh_cache:
+            clear_cache()
+
+        def run() -> object:
+            c = Crawler(
+                site.base_url,
+                max_pages=len(TREE),
+                output_dir=tmp_path,
+                live=False,
+                use_cache=True,
+            )
+            c.crawl()
+            return c._state
+
+        state = await asyncio.to_thread(run)
+        site.forget()
+        return state
+
+    async def test_a_304_is_reported_as_unchanged(self, site, tmp_path):
+        _tree(site)
+        site.etag = '"v1"'
+
+        first = await self._crawl_state(site, tmp_path, fresh_cache=True)
+        assert first.unchanged == 0, "a first crawl has nothing to be unchanged against"
+
+        self._age_the_cache()
+        second = await self._crawl_state(site, tmp_path)
+        assert second.scraped == len(TREE), "the pages should still be served"
+        assert site.not_modified, "the server was never asked to revalidate"
+        assert second.unchanged == len(TREE), (
+            f"a re-crawl of an unchanged site reported {second.unchanged} unchanged"
+        )
+
+    async def test_a_changed_page_is_not_counted_as_unchanged(self, site, tmp_path):
+        _tree(site)
+        site.etag = '"v1"'
+        await self._crawl_state(site, tmp_path, fresh_cache=True)
+
+        # The site changes its mind, so nothing answers 304.
+        site.etag = '"v2"'
+        self._age_the_cache()
+        state = await self._crawl_state(site, tmp_path)
+        assert state.scraped == len(TREE)
+        assert state.unchanged == 0, "changed pages were reported unchanged"
+
+    async def test_a_recrawl_with_a_cache_does_not_redownload_the_site(self, site, tmp_path):
+        """
+        The performance point of --cache, measured on the wire.
+
+        A crawler with no cache re-downloads every byte of every page on every
+        run. With one, an unchanged site costs a conditional request per page and
+        no response body at all.
+        """
+        _tree(site)
+        site.etag = '"v1"'
+
+        async def run(fresh_cache: bool) -> tuple[int, int]:
+            if fresh_cache:
+                clear_cache()
+            else:
+                self._age_the_cache()
+
+            def go() -> None:
+                Crawler(
+                    site.base_url,
+                    max_pages=len(TREE),
+                    output_dir=tmp_path,
+                    live=False,
+                    use_cache=True,
+                ).crawl()
+
+            await asyncio.to_thread(go)
+            site.forget()
+            return len(site.page_requests), len(site.not_modified)
+
+        _, first_modified = await run(fresh_cache=True)
+        assert first_modified == 0
+
+        _, second_modified = await run(fresh_cache=False)
+        assert second_modified == len(TREE), (
+            f"only {second_modified} of {len(TREE)} pages were revalidated"
+        )
+
+    async def test_without_the_cache_flag_nothing_is_reused(self, site, tmp_path):
+        """The control: the flag is what changes the outcome."""
+        _tree(site)
+        site.etag = '"v1"'
+
+        def run() -> None:
+            Crawler(
+                site.base_url,
+                max_pages=len(TREE),
+                output_dir=tmp_path,
+                live=False,
+                use_cache=False,
+            ).crawl()
+
+        await asyncio.to_thread(run)
+        site.forget()
+        await asyncio.to_thread(run)
+        assert site.not_modified == [], "a page was revalidated with no cache configured"

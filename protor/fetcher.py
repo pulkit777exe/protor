@@ -62,6 +62,11 @@ class FetchResult:
     nbytes: int
     status: int = 200
     content_type: str = ""
+    #: True when the server answered 304, so this body is the one already held
+    #: rather than a fresh one. Without it a re-crawl of an unchanged site
+    #: reports every page as freshly scraped, which is the "reports something
+    #: untrue" shape this codebase keeps having to correct.
+    not_modified: bool = False
 
 
 def random_user_agent() -> str:
@@ -157,7 +162,7 @@ def _conditional_headers(entry: CacheEntry | None) -> dict[str, str]:
     return headers
 
 
-def _from_cache(entry: CacheEntry) -> FetchResult:
+def _from_cache(entry: CacheEntry, *, not_modified: bool = False) -> FetchResult:
     """
     Build a result from a cache hit.
 
@@ -170,6 +175,7 @@ def _from_cache(entry: CacheEntry) -> FetchResult:
         nbytes=len(entry.body.encode("utf-8")),
         status=entry.status,
         content_type=entry.content_type,
+        not_modified=not_modified,
     )
 
 
@@ -313,7 +319,7 @@ async def fetch(
                 # Refresh it so the next visit is a disk hit, not another
                 # round trip to re-validate the same unchanged page.
                 cache.touch(url)
-                return _from_cache(served)
+                return _from_cache(served, not_modified=True)
             if r.status >= 400:
                 if r.status in RETRYABLE_STATUS and attempt < max_retries - 1:
                     await asyncio.sleep(_retry_delay(attempt, r.headers.get("Retry-After")))

@@ -196,16 +196,9 @@ class TestMaxTargets:
             requested.append(url)
             if len(requested) % 3 == 0:
                 raise RuntimeError("boom")
-            return type(
-                "R",
-                (),
-                {
-                    "text": link_page,
-                    "nbytes": len(link_page),
-                    "status": 200,
-                    "content_type": "text/html",
-                },
-            )()
+            return _result(
+                text=link_page, nbytes=len(link_page), status=200, content_type="text/html"
+            )
 
         monkeypatch.setattr(engine_mod, "fetch", flaky)
 
@@ -364,6 +357,20 @@ class TestHostileInputs:
 # ── --block-ads must cover script downloads ──────────────────────────────────
 
 
+def _result(**kwargs):
+    """
+    A real ``FetchResult`` for tests that stub ``fetch``.
+
+    Hand-rolled duck types were used here, and every time the dataclass grew a
+    field they broke — once for ``content_type`` and again for ``not_modified`` —
+    because the stub was standing in for something whose shape had moved. Using
+    the real object means it cannot drift again.
+    """
+    from protor.fetcher import FetchResult
+
+    return FetchResult(**kwargs)
+
+
 class TestBlocklistCoversJsDownloads:
     @pytest.mark.asyncio
     async def test_tracker_scripts_are_not_fetched(self, tmp_path, monkeypatch):
@@ -382,11 +389,7 @@ class TestBlocklistCoversJsDownloads:
 
         async def fake_fetch(session, url, **kwargs):
             fetched.append(url)
-            return type(
-                "R",
-                (),
-                {"text": html, "nbytes": len(html), "status": 200, "content_type": "text/html"},
-            )()
+            return _result(text=html, nbytes=len(html), status=200, content_type="text/html")
 
         monkeypatch.setattr("protor.engine.fetch", fake_fetch)
 
@@ -419,11 +422,7 @@ class TestBlocklistCoversJsDownloads:
 
         async def fake_fetch(session, url, **kwargs):
             fetched.append(url)
-            return type(
-                "R",
-                (),
-                {"text": html, "nbytes": len(html), "status": 200, "content_type": "text/html"},
-            )()
+            return _result(text=html, nbytes=len(html), status=200, content_type="text/html")
 
         monkeypatch.setattr("protor.engine.fetch", fake_fetch)
 

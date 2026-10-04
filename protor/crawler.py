@@ -58,6 +58,7 @@ from .config import (
     DEFAULT_MAX_PAGES,
 )
 from .engine import CrawlEngine, RecursiveSource
+from .http_cache import HTTPCache
 from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
 from .theme import (
@@ -423,6 +424,9 @@ class _State:
     scraped: int = 0
     errors: int = 0
     blocked: int = 0
+    #: Pages the server confirmed are unchanged (HTTP 304). A subset of
+    #: `scraped`, and the number that distinguishes a re-crawl from a first one.
+    unchanged: int = 0
     current: str = ""
     queue_n: int = 0
     max_pages: int = DEFAULT_MAX_PAGES
@@ -517,6 +521,7 @@ class Crawler:
         allow_internal_redirects: bool = False,
         download_js: bool = False,
         use_sitemaps: bool = False,
+        use_cache: bool = False,
     ) -> None:
         self.start_url = start_url
         self.max_pages = max_pages
@@ -528,6 +533,11 @@ class Crawler:
         self._allow_internal_redirects = allow_internal_redirects
         self._download_js = download_js
         self._use_sitemaps = use_sitemaps
+        # Opt-in, like the scraper's --cache: a cache changes what a repeat run
+        # sees, and silently serving a day-old page is not a default anyone
+        # should get. With it, a re-crawl of an unchanged site costs one
+        # conditional request per page and no body.
+        self._cache = HTTPCache() if use_cache else None
 
         self._base_domain = urlparse(start_url).netloc
         self._state = _State(max_pages=max_pages)
@@ -613,6 +623,7 @@ class Crawler:
         console.print(
             f"  {OK} crawl complete — "
             f"{bright(str(self._state.scraped))} pages scraped"
+            + (f" ({muted(str(self._state.unchanged))} unchanged)" if self._state.unchanged else "")
             + (f", {self._state.errors} errors" if self._state.errors else "")
             + (f", {self._state.blocked} blocked" if self._state.blocked else "")
         )
@@ -735,8 +746,15 @@ class Crawler:
             live=self._live,
             allow_internal_redirects=self._allow_internal_redirects,
             download_js=self._download_js,
+            cache=self._cache,
         )
-        await engine.arun()
+        try:
+            await engine.arun()
+        finally:
+            # Persist the validators even if the run died: they are the expensive
+            # part to obtain, and losing them costs a full re-download next time.
+            if self._cache is not None:
+                self._cache.flush()
 
     def _on_status(self, status: str, url: str, row: dict[str, Any]) -> None:
         """Keep crawl state in sync with engine events for the live render."""
@@ -754,6 +772,8 @@ class Crawler:
             self._update_log(url, "active", domain)
         elif status == "done":
             self._state.scraped += 1
+            if row.get("unchanged"):
+                self._state.unchanged += 1
             self._update_log(url, "ok", domain)
         elif status == "error":
             self._state.errors += 1

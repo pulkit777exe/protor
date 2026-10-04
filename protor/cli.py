@@ -185,6 +185,7 @@ def _cmd_crawl(args: argparse.Namespace) -> None:
         # test does not necessarily carry every flag, and a missing opt-in flag
         # must mean "off" rather than an AttributeError.
         use_sitemaps=getattr(args, "sitemap", False),
+        use_cache=getattr(args, "cache", False),
     ).crawl()
 
 
@@ -631,6 +632,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "directory (off by default: a crawl can cover thousands of pages, "
             "and scraping pulls a script bundle per page. `protor scrape` does "
             "download them by default, and this is the same switch)"
+        ),
+    )
+    cp.add_argument(
+        "--cache",
+        action="store_true",
+        help=(
+            "keep responses between runs, so re-crawling an unchanged site "
+            "costs one conditional request per page instead of a full download. "
+            "Off by default: a cache changes what a repeat run sees"
         ),
     )
     cp.add_argument(

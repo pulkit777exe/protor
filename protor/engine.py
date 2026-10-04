@@ -156,6 +156,10 @@ class CrawlStats:
     blocked: int = 0
     bytes_total: int = 0
     dispatched: int = 0
+    #: Pages the server confirmed are unchanged (HTTP 304). A subset of
+    #: ``scraped`` — they were served from the cache — and the number that tells
+    #: a re-crawl apart from a first one.
+    unchanged: int = 0
 
     @property
     def total(self) -> int:
@@ -600,6 +604,8 @@ class CrawlEngine:
 
         stats.scraped += 1
         stats.bytes_total += result.nbytes
+        if result.not_modified:
+            stats.unchanged += 1
         self._manifests.append(manifest)
         row.update(
             status="done",
@@ -607,6 +613,10 @@ class CrawlEngine:
             bytes=result.nbytes,
             js=len(js_downloaded),
             error=False,
+            # A 304 means the server says this page is exactly what we already
+            # hold. Carried into the row so a re-crawl can report "nothing
+            # changed" rather than presenting every page as freshly scraped.
+            unchanged=result.not_modified,
         )
         self._emit("done", url, row)
         self._queue.mark_visited(url, success=True)
