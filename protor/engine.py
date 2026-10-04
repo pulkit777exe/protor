@@ -812,7 +812,13 @@ class CrawlEngine:
     _TERMINAL_STATUSES = frozenset({"done", "error", "blocked", "skipped"})
 
     def _emit(self, status: str, url: str, row: dict[str, Any]) -> None:
-        if status in self._TERMINAL_STATUSES and self._display is not None:
+        # `wants_lines` before the string is built, not after: formatting a line
+        # costs 1.2us and a live run throws every one of them away.
+        if (
+            status in self._TERMINAL_STATUSES
+            and self._display is not None
+            and self._display.wants_lines
+        ):
             self._display.line(self._result_line(status, url, row))
         if self._on_status is not None:
             with contextlib.suppress(Exception):

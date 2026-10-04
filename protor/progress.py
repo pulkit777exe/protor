@@ -147,6 +147,17 @@ class LiveDisplay:
         """Print *message* so it scrolls above the live region and persists."""
         self._console.print(message)
 
+    @property
+    def wants_lines(self) -> bool:
+        """
+        Whether :meth:`line` would print anything.
+
+        Callers build the string before handing it over, and on a live run the
+        answer is always no — so a caller that formats a line first and asks second
+        pays for a string it throws away, once per finished page.
+        """
+        return self._live is None
+
     def line(self, message: str) -> None:
         """
         Print one plain line, but only when there is no live region.

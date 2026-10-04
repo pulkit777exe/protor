@@ -411,3 +411,76 @@ def _console() -> Console:
 
 def _plain(text: str) -> str:
     return re.sub(r"\x1b\[[0-9;]*m", "", text)
+
+
+class TestALiveRunDoesNotBuildTheLinesItWouldDiscard:
+    """
+    `line()` ignores its argument while animating, but the caller has already paid
+    to build it.
+
+    Formatting a result line costs 1.2us — two duration and size conversions and a
+    join — and a live run discards every one, once per finished page: 48ms over a
+    40,000-page crawl for nothing. The engine asks `wants_lines` first, which costs
+    52ns, and the test below is on that side of the call rather than on the output.
+    """
+
+    def _engine_with(self, display):
+        import protor.engine as engine_mod
+
+        engine = engine_mod.CrawlEngine.__new__(engine_mod.CrawlEngine)
+        engine._display = display
+        # _emit fans out to the status hook too; this test is only about the line.
+        engine._on_status = None
+        return engine
+
+    def _display(self, live):
+        from rich.console import Console
+
+        from protor.progress import LiveDisplay, Throttle
+
+        console = Console(file=io.StringIO(), width=80, force_terminal=False)
+        d = LiveDisplay(
+            _render=lambda: "x", _live=live, _throttle=Throttle(0), _enabled=True, _console=console
+        )
+        return d
+
+    def test_a_live_display_is_never_asked_to_format_a_line(self, monkeypatch):
+        import protor.engine as engine_mod
+
+        formatted: list[str] = []
+        monkeypatch.setattr(
+            engine_mod.CrawlEngine, "_result_line", lambda self, *a: formatted.append(a[0]) or "x"
+        )
+
+        engine = self._engine_with(self._display(live=object()))
+        engine._emit("done", "https://ex.com/a", {"domain": "ex.com"})
+
+        assert formatted == [], "a line was built for a display that discards it"
+
+    def test_a_piped_display_is(self, monkeypatch):
+        import protor.engine as engine_mod
+
+        formatted: list[str] = []
+        monkeypatch.setattr(
+            engine_mod.CrawlEngine, "_result_line", lambda self, *a: formatted.append(a[0]) or "x"
+        )
+
+        engine = self._engine_with(self._display(live=None))
+        engine._emit("done", "https://ex.com/a", {"domain": "ex.com"})
+
+        assert formatted == ["done"], "the piped path stopped reporting results"
+
+    def test_a_non_terminal_status_is_never_formatted(self, monkeypatch):
+        """`fetching` fires for every attempt; only outcomes are worth a line."""
+        import protor.engine as engine_mod
+
+        formatted: list[str] = []
+        monkeypatch.setattr(
+            engine_mod.CrawlEngine, "_result_line", lambda self, *a: formatted.append(a[0]) or "x"
+        )
+
+        engine = self._engine_with(self._display(live=None))
+        for status in ("fetching", "js:3", "ok"):
+            engine._emit(status, "https://ex.com/a", {"domain": "ex.com"})
+
+        assert formatted == [], formatted
