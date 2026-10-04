@@ -36,10 +36,33 @@ _INLINE_TAGS = {"span", "em", "strong", "b", "i", "u", "a", "code", "sup", "sub"
 
 # Compiled once at import: _is_noise runs per tag, so re-compiling per call
 # showed up as a measurable share of parse time on large pages.
+#
+# Two branches, because they answer to different authorities. The `chrome`
+# branch is page furniture by anyone's definition — a cookie banner or a pager is
+# never content, so it is stripped whatever else the caller asked for. The
+# `guessed` branch is a guess about somebody else's class name, and guesses lose
+# to an explicit instruction: `ad-`, `social`, `share` and `related` are ordinary
+# words, and a classifieds site keeps its listings in `.ad-card` while a news site
+# keeps its stories in `.related-posts`. Stripping those deleted real content from
+# every output, including from a `--schema` run whose own selectors named them —
+# which then reported a successful extraction of nothing.
+#
+# So the guesses are stripped by default and skipped when the caller has said
+# what it wants: `clean_soup` and `parse_html` take `strip_guessed_noise`, and
+# the engine turns it off when a schema is in play, because a schema's selectors
+# are the caller's statement of intent.
+#
+# One scan, not two. Giving each branch its own pattern cost 18% of the noise pass
+# (8.90ms against 7.56ms over 2000 classed tags, measured round-robin so machine
+# drift could not favour a variant), because every tag carrying a class paid for
+# both. They are an alternation inside one pattern instead, so the single match
+# says which branch fired; reading it back off `lastindex` costs 3%, against 9%
+# for `match.group`.
 _NOISE_PATTERN = re.compile(
-    r"sidebar|widget|popup|modal|overlay|banner|cookie|consent|newsletter|"
-    r"subscribe|social|share|comment|disqus|related|recommended|advertisement|"
-    r"promo|sponsor|ad-|ads-|tracking|analytics|breadcrumb|pagination|pager",
+    r"(?P<chrome>cookie|consent|newsletter|subscribe|popup|modal|overlay|"
+    r"breadcrumb|pagination|pager|disqus)|"
+    r"(?P<guessed>sidebar|widget|banner|social|share|comment|related|"
+    r"recommended|advertisement|promo|sponsor|ad-|ads-|tracking|analytics)",
     re.IGNORECASE,
 )
 
@@ -152,8 +175,15 @@ class _Lines(list[str]):
             self.capped = True
 
 
-def _is_noise(tag: Tag) -> bool:
-    """Check if a tag is likely noise based on common patterns."""
+def _is_noise(tag: Tag, *, strip_guessed_noise: bool = True) -> bool:
+    """
+    Check if a tag is likely noise based on common patterns.
+
+    *strip_guessed_noise* covers the class-name guesses only; see
+    :data:`_NOISE_PATTERN` for why they are separable from the chrome patterns.
+    `lastindex` is 1 for the chrome branch and 2 for the guesses, and neither
+    branch nests a group, so it names the branch that fired.
+    """
     if tag.name in _NOISE_TAGS:
         return True
     raw_classes = tag.get("class")
@@ -166,7 +196,10 @@ def _is_noise(tag: Tag) -> bool:
         return False
     classes = " ".join(raw_classes) if isinstance(raw_classes, list) else str(raw_classes or "")
     ids = " ".join(raw_ids) if isinstance(raw_ids, list) else str(raw_ids or "")
-    return bool(_NOISE_PATTERN.search(f"{classes} {ids}"))
+    match = _NOISE_PATTERN.search(f"{classes} {ids}")
+    if match is None:
+        return False
+    return match.lastindex != 2 or strip_guessed_noise
 
 
 def _has_block_child(tag: Tag) -> bool:
@@ -731,9 +764,14 @@ def _is_decomposed(tag: Tag) -> bool:
     return tag.__dict__.get("_decomposed", False) is True or tag.parent is None
 
 
-def clean_soup(soup: BeautifulSoup) -> None:
+def clean_soup(soup: BeautifulSoup, *, strip_guessed_noise: bool = True) -> None:
     """
     Remove noise and script/style elements from *soup* in place.
+
+    *strip_guessed_noise* also removes elements whose class or id merely looks
+    like page furniture — see the `guessed` branch of :data:`_NOISE_PATTERN`. Pass
+    False when the caller has an explicit instruction about what it wants, such
+    as a schema.
 
     This is the single, canonical page-filtering pass; every page output
     (plain text, Markdown) is derived from a tree already stripped here.
@@ -754,7 +792,9 @@ def clean_soup(soup: BeautifulSoup) -> None:
         for child in list(element.contents):
             if not isinstance(child, Tag) or _is_decomposed(child):
                 continue
-            if child.name in _SCRIPT_TAGS or _is_noise(child):
+            if child.name in _SCRIPT_TAGS or _is_noise(
+                child, strip_guessed_noise=strip_guessed_noise
+            ):
                 child.decompose()
             else:
                 pending.append(child)

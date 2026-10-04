@@ -132,18 +132,6 @@ _ADS_TRACKERS: set[str] = {
     "crypto-loot.com",
 }
 
-# Patterns for ad-related URL paths
-_AD_PATH_PATTERNS = re.compile(
-    r"/(ads?|ad[-_]vert|banner|pixel|track|beacon|analytics|统计|stat|log)/",
-    re.IGNORECASE,
-)
-
-# Patterns for common ad-related file extensions
-_AD_FILE_PATTERNS = re.compile(
-    r"\.(gif|png|jpg|jpeg|webp)(\?.*)?$",
-    re.IGNORECASE,
-)
-
 
 class _BlocklistOptions(TypedDict, total=False):
     """

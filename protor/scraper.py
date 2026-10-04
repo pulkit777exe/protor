@@ -192,6 +192,7 @@ async def scrape_site_async(
 
     engine = CrawlEngine(
         queue=StaticQueue([url]),
+        requested_hosts=[urlparse(url).netloc],
         link_source=StaticSource(),
         output_dir=output_dir,
         max_targets=1,
@@ -319,6 +320,7 @@ def scrape_multiple(
 
     engine = CrawlEngine(
         queue=StaticQueue(urls),
+        requested_hosts=[urlparse(u).netloc for u in urls],
         link_source=StaticSource(),
         output_dir=out,
         max_targets=len(urls),

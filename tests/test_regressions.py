@@ -1481,3 +1481,228 @@ class TestTheCrawlerDoesNotRetainManifests:
         )
         assert engine._collect_manifests is False
         assert engine.manifests == []
+
+
+class TestGuessedNoiseYieldsToAnExplicitSchema:
+    """
+    Class-name guesses must lose to an explicit instruction.
+
+    `_NOISE_PATTERN` matched any class or id containing `ad-`, `social`,
+    `share`, `related`, `banner`, `promo` and more. Those are ordinary words: a
+    classifieds site keeps its listings in `.ad-card`, a news site keeps its
+    stories in `.related-posts`. They were deleted before extraction ran, so a
+    `--schema` run whose own selectors named them extracted **nothing** and
+    reported success — and the same content vanished from the text and markdown
+    beside it.
+
+    Unambiguous chrome (cookie banners, consent dialogs, pagination) is still
+    stripped either way; only the guesses yield.
+    """
+
+    CLASSIFIEDS = (
+        "<html><body><div class='classifieds'>"
+        "<div class='ad-card'><h3>Blue widget</h3><span class='ad-price'>$5</span></div>"
+        "<div class='ad-card'><h3>Red widget</h3><span class='ad-price'>$7</span></div>"
+        "</div>"
+        "<div class='cookie-banner'><p>accept cookies</p></div>"
+        "<div class='sidebar'><p>chrome</p></div>"
+        "</body></html>"
+    )
+
+    def _schema(self):
+        from protor.extractor import ExtractionSchema
+
+        return ExtractionSchema.from_dict(
+            {
+                "name": "ads",
+                "base_selector": ".ad-card",
+                "fields": [
+                    {"name": "title", "selector": "h3"},
+                    {"name": "price", "selector": ".ad-price"},
+                ],
+            }
+        )
+
+    def test_a_schema_sees_the_content_its_selectors_name(self):
+        from protor.parser import parse_html
+
+        soup, page = parse_html(self.CLASSIFIEDS, "https://x.example/", strip_guessed_noise=False)
+        from protor.extractor import extract_from_soup
+
+        rows = extract_from_soup(soup, self._schema(), base_url="https://x.example/")
+        assert rows == [
+            {"title": "Blue widget", "price": "$5"},
+            {"title": "Red widget", "price": "$7"},
+        ], rows
+        assert "Blue widget" in page.text_content
+
+    def test_unambiguous_chrome_is_stripped_even_so(self):
+        from protor.parser import parse_html
+
+        _, page = parse_html(self.CLASSIFIEDS, "https://x.example/", strip_guessed_noise=False)
+        assert "accept cookies" not in page.text_content, "cookie chrome survived"
+
+    def test_the_default_is_unchanged_for_a_plain_scrape(self):
+        """
+        A run with no schema still gets the aggressive filtering.
+
+        Otherwise this would make every ordinary scrape worse by default, which
+        is the opposite of the point.
+        """
+        from protor.parser import parse_html
+
+        _, page = parse_html(self.CLASSIFIEDS, "https://x.example/")
+        assert "Blue widget" not in page.text_content, "guesses are off by default now"
+        assert "accept cookies" not in page.text_content
+
+    def test_structural_noise_is_never_a_guess(self):
+        """nav/footer/aside are chrome by anyone's definition."""
+        from protor.parser import parse_html
+
+        html = "<html><body><nav>menu</nav><p>content</p><footer>foot</footer></body></html>"
+        _, page = parse_html(html, "https://x.example/", strip_guessed_noise=False)
+        assert "menu" not in page.text_content
+        assert "foot" not in page.text_content
+        assert "content" in page.text_content
+
+    def test_the_engine_turns_the_guesses_off_for_a_schema(self, tmp_path, monkeypatch):
+        """
+        The flag only helps if the crawl path actually sets it.
+
+        Everything here is patched through *monkeypatch*, not by assigning onto
+        the module. An earlier version of this test restored `parse_html` in a
+        `finally` and forgot `fetch` beside it, which left every later test in
+        the session fetching this test's classifieds HTML — and surfaced as an
+        unrelated extraction test in another file failing with zero records,
+        hundreds of tests away.
+        """
+        import asyncio
+
+        import protor.engine as engine_mod
+        from protor.extractor import ExtractionSchema
+        from protor.fetcher import FetchResult
+
+        seen: list[bool] = []
+        real_parse = engine_mod.parse_html
+
+        def spy(html, url, **kwargs):
+            seen.append(kwargs.get("strip_guessed_noise"))
+            return real_parse(html, url, **kwargs)
+
+        async def fake_fetch(session, url, **kwargs):
+            return FetchResult(
+                text=self.CLASSIFIEDS,
+                nbytes=len(self.CLASSIFIEDS),
+                status=200,
+                content_type="text/html",
+            )
+
+        monkeypatch.setattr(engine_mod, "parse_html", spy)
+        monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+
+        async def run(schema):
+            engine = CrawlEngine(
+                queue=StaticQueue(["https://ex.com/"]),
+                link_source=StaticSource(),
+                output_dir=tmp_path,
+                max_targets=1,
+                extraction_schema=schema,
+            )
+            await engine.arun()
+
+        asyncio.run(run(None))
+        asyncio.run(
+            run(
+                ExtractionSchema.from_dict(
+                    {
+                        "name": "ads",
+                        "base_selector": ".ad-card",
+                        "fields": [{"name": "t", "selector": "h3"}],
+                    }
+                )
+            )
+        )
+
+        assert seen == [True, False], f"strip_guessed_noise was {seen}"
+
+
+class TestBlocklistDoesNotRefuseTheRequestedSite:
+    """
+    `--block-ads` exists to stop a page pulling a tracker off a CDN.
+
+    Applied to the crawl's own target it made the command useless: `protor scrape
+    https://www.facebook.com --block-ads` fetched nothing and reported the
+    target itself as blocked by the ad/analytics blocklist. facebook.com,
+    twitter.com, linkedin.com and optimizely.com are all in the apex-domain
+    list, so the flag and the target were mutually exclusive.
+    """
+
+    TRACKER_URL = "https://doubleclick.net/pixel"
+
+    async def _run(self, tmp_path, monkeypatch, *, requested_hosts):
+        import protor.engine as engine_mod
+        from protor.blocklist import Blocklist
+        from protor.fetcher import FetchResult
+
+        fetched: list[str] = []
+
+        async def fake_fetch(session, url, **kwargs):
+            fetched.append(url)
+            return FetchResult(
+                text="<html><body><p>landing</p></body></html>",
+                nbytes=40,
+                status=200,
+                content_type="text/html",
+            )
+
+        monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+        engine = CrawlEngine(
+            queue=StaticQueue([self.TRACKER_URL]),
+            link_source=StaticSource(),
+            output_dir=tmp_path,
+            max_targets=1,
+            blocklist=Blocklist(),
+            requested_hosts=requested_hosts,
+        )
+        stats = await engine.arun()
+        return stats, fetched
+
+    async def test_a_requested_host_is_fetched(self, tmp_path, monkeypatch):
+        stats, fetched = await self._run(tmp_path, monkeypatch, requested_hosts=["doubleclick.net"])
+        assert fetched == [self.TRACKER_URL], "the requested host was blocked"
+        assert stats.scraped == 1
+
+    async def test_an_unrequested_tracker_is_still_blocked(self, tmp_path, monkeypatch):
+        """The control: the flag still does its job."""
+        stats, fetched = await self._run(tmp_path, monkeypatch, requested_hosts=["example.com"])
+        assert fetched == [], "a third-party tracker was fetched"
+        assert stats.blocked == 1
+
+    async def test_the_crawls_own_domain_counts_as_requested(self, tmp_path, monkeypatch):
+        """allowed_domain is added automatically, so the crawl seed is covered."""
+        import protor.engine as engine_mod
+        from protor.blocklist import Blocklist
+        from protor.fetcher import FetchResult
+
+        fetched: list[str] = []
+
+        async def fake_fetch(session, url, **kwargs):
+            fetched.append(url)
+            return FetchResult(
+                text="<html><body><p>x</p></body></html>",
+                nbytes=29,
+                status=200,
+                content_type="text/html",
+            )
+
+        monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+        engine = CrawlEngine(
+            queue=StaticQueue(["https://doubleclick.net/"]),
+            link_source=StaticSource(),
+            output_dir=tmp_path,
+            max_targets=1,
+            allowed_domain="doubleclick.net",
+            blocklist=Blocklist(),
+        )
+        await engine.arun()
+        assert fetched == ["https://doubleclick.net/"], "the crawl seed was blocked"

@@ -113,6 +113,7 @@ def parse_html(
     base_url: str,
     *,
     max_chars: int = MAX_TEXT_CHARS,
+    strip_guessed_noise: bool = True,
 ) -> tuple[BeautifulSoup, ParsedPage]:
     """
     Parse *html* once and return the tree plus all derived artefacts.
@@ -121,7 +122,9 @@ def parse_html(
     from it, so callers that need the filtered tree for hooks get it for free.
     """
     soup = BeautifulSoup(html, "lxml")
-    return soup, parse_soup(soup, base_url, max_chars=max_chars)
+    return soup, parse_soup(
+        soup, base_url, max_chars=max_chars, strip_guessed_noise=strip_guessed_noise
+    )
 
 
 def parse_soup(
@@ -130,8 +133,14 @@ def parse_soup(
     *,
     max_chars: int = MAX_TEXT_CHARS,
     max_markdown_chars: int = MAX_MARKDOWN_CHARS,
+    strip_guessed_noise: bool = True,
 ) -> ParsedPage:
-    """Derive a :class:`ParsedPage` from an already-parsed tree."""
+    """
+    Derive a :class:`ParsedPage` from an already-parsed tree.
+
+    *strip_guessed_noise* is passed through to :func:`clean_soup`; see
+    :data:`protor.markdown._NOISE_PATTERN` for what it gives up.
+    """
     # Links, JS references and metadata come off the raw tree in a single walk,
     # because the canonical noise-filtering pass below removes the scripts and
     # navigational markup they are read from.
@@ -139,7 +148,7 @@ def parse_soup(
 
     # The one canonical filtering pass. Everything below reads this filtered
     # tree, so text and Markdown stay consistent and the walk happens once.
-    clean_soup(soup)
+    clean_soup(soup, strip_guessed_noise=strip_guessed_noise)
 
     return ParsedPage(
         metadata=harvested.metadata,

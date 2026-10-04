@@ -53,7 +53,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
+    from collections.abc import Callable, Sequence
 
     from .blocklist import Blocklist
     from .extractor import ExtractionSchema
@@ -224,6 +224,9 @@ class CrawlEngine:
         Called every *checkpoint_interval* successful scrapes (0 disables).
     live_render:
         When provided, the engine renders it inside a live display.
+    requested_hosts:
+        Hosts the caller asked for by name, which the blocklist will not refuse.
+        *allowed_domain* is included automatically.
     collect_manifests:
         Keep each page's manifest in :attr:`manifests` as well as writing it to
         disk. The batch scraper reads them; the crawler does not, and a crawl of
@@ -252,6 +255,7 @@ class CrawlEngine:
         blocklist: Blocklist | None = None,
         allow_internal_redirects: bool = False,
         collect_manifests: bool = True,
+        requested_hosts: Sequence[str] | None = None,
         rate_limiter: DomainRateLimiter | None = None,
         auto_scaler: AutoScaler | None = None,
         allowed_domain: str | None = None,
@@ -302,6 +306,14 @@ class CrawlEngine:
         # per page, so a 40,000-page crawl kept about 1.9 GB that nothing read.
         self._manifests: list[SiteManifest] = []
         self._collect_manifests = collect_manifests
+        # Hosts the caller named, which the ad/analytics blocklist must not
+        # second-guess. `--block-ads` exists to stop a page pulling a tracker off
+        # a CDN; a user who typed `protor scrape https://www.facebook.com
+        # --block-ads` asked for facebook, and refusing it as an ad network made
+        # the command fetch nothing and say the target was blocked.
+        self._requested_hosts = {h.lower() for h in (requested_hosts or ())}
+        if self._allowed_domain:
+            self._requested_hosts.add(self._allowed_domain.lower())
 
     @property
     def manifests(self) -> list[SiteManifest]:
@@ -473,7 +485,8 @@ class CrawlEngine:
             self._skip(stats, row, url, f"off-domain ({parsed.netloc})")
             return []
 
-        if self._blocklist is not None and self._blocklist.is_url_blocked(url):
+        requested = parsed.netloc.lower() in self._requested_hosts
+        if self._blocklist is not None and not requested and self._blocklist.is_url_blocked(url):
             self._block(stats, row, url, "blocked by the ad/analytics blocklist")
             return []
 
@@ -533,7 +546,17 @@ class CrawlEngine:
             html_file = site_dir / page_filename(url)
             html_file.write_text(result.text, encoding="utf-8")
 
-            soup, page = parse_html(result.text, url)
+            # With a schema, the guessed-noise patterns yield: a schema's
+            # selectors are the caller's statement of what the page contains, and
+            # a `.ad-card` or `.related-posts` is ordinary content to them. They
+            # were being deleted before extraction ran, so the run reported a
+            # successful extraction of nothing — and lost the same content from
+            # the text and markdown beside it.
+            soup, page = parse_html(
+                result.text,
+                url,
+                strip_guessed_noise=self._extraction_schema is None,
+            )
             for hook in (self._hooks or {}).get("before_parse", []):
                 self._safe_hook(hook, url, {"soup": soup, "html": result.text})
             for hook in (self._hooks or {}).get("after_parse", []):
