@@ -65,6 +65,11 @@ class CacheEntry:
     #: Indexes written before this field existed load with 0, which simply
     #: disables the check for them.
     nbytes: int = 0
+    #: The response's own Content-Type, carried through the cache so a cached
+    #: body can still be recognised as not-a-page. Cached entries from before
+    #: this field existed load with "", which the sniffing path treats as unknown
+    #: rather than as HTML.
+    content_type: str = ""
     body: str = field(default="", repr=False)
 
     @property
@@ -90,6 +95,7 @@ class CacheEntry:
             "ttl": self.ttl,
             "stale_ttl": self.stale_ttl,
             "nbytes": self.nbytes,
+            "content_type": self.content_type,
         }
 
     @classmethod

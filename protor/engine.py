@@ -38,7 +38,7 @@ import aiohttp
 from . import config
 from .fetcher import download_file, fetch, random_user_agent
 from .models import SiteManifest
-from .parser import parse_html
+from .parser import looks_like_html, parse_html
 from .progress import live_display
 from .robots import check_robots
 from .theme import console
@@ -489,6 +489,22 @@ class CrawlEngine:
             return []
 
         elapsed_ms = round((time.perf_counter() - t0) * 1000)
+
+        # A body is not a page by virtue of arriving over HTTP. Without this a
+        # link to a manual.pdf is "scraped" into two thousand characters of
+        # %PDF-1.4 and reported as a successfully scraped page — the same
+        # failure-as-success shape as a stale CSS selector, one layer down.
+        # Recorded like a filter rather than a failure, so a resumed crawl does
+        # not re-request the same PDF on every run.
+        if not looks_like_html(result.content_type, result.text):
+            self._skip(
+                stats,
+                row,
+                url,
+                f"not a web page ({result.content_type or 'no content-type'})",
+            )
+            return []
+
         site_dir = self._output_dir / safe_filename(parsed.netloc)
 
         try:

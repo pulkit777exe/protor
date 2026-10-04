@@ -49,11 +49,19 @@ MAX_REDIRECTS = 5
 
 @dataclass
 class FetchResult:
-    """A successfully fetched page: its text, byte size, and HTTP status."""
+    """
+    A successfully fetched page: its text, byte size, HTTP status, and type.
+
+    ``content_type`` is the response's own ``Content-Type``, kept because a body
+    is not a page by virtue of arriving over HTTP: without it a PDF is scraped
+    into two thousand characters of ``%PDF-1.4`` and a PNG into binary noise,
+    both reported as successfully scraped text.
+    """
 
     text: str
     nbytes: int
     status: int = 200
+    content_type: str = ""
 
 
 def random_user_agent() -> str:
@@ -97,6 +105,7 @@ def _from_cache(entry: CacheEntry) -> FetchResult:
         text=entry.body,
         nbytes=len(entry.body.encode("utf-8")),
         status=entry.status,
+        content_type=entry.content_type,
     )
 
 
@@ -256,12 +265,18 @@ async def fetch(
                         last_modified=r.headers.get("Last-Modified"),
                         body=text,
                         status=r.status,
+                        content_type=r.headers.get("Content-Type", ""),
                     ),
                 )
             for hook in (hooks or {}).get("after_fetch", []):
                 with contextlib.suppress(Exception):
                     hook(url, {"status": r.status, "body": text})
-            return FetchResult(text=text, nbytes=len(data), status=r.status)
+            return FetchResult(
+                text=text,
+                nbytes=len(data),
+                status=r.status,
+                content_type=r.headers.get("Content-Type", ""),
+            )
         except TimeoutError as exc:
             last_exc = exc
             if attempt < max_retries - 1:

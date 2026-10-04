@@ -25,7 +25,13 @@ from .config import MAX_MARKDOWN_CHARS, MAX_TEXT_CHARS
 from .markdown import clean_soup, soup_to_markdown
 from .models import SiteMetadata
 
-__all__ = ["ParsedPage", "extract_links", "parse_html", "parse_soup"]
+__all__ = [
+    "ParsedPage",
+    "extract_links",
+    "looks_like_html",
+    "parse_html",
+    "parse_soup",
+]
 
 
 @dataclass
@@ -37,6 +43,69 @@ class ParsedPage:
     markdown_content: str
     links: list[str]
     js_links: list[str]
+
+
+#: Content types that are text and are worth parsing as a page.
+_TEXTUAL_TYPES = frozenset(
+    {
+        "text/html",
+        "application/xhtml+xml",
+        "application/xhtml",
+        "text/plain",
+        "text/markdown",
+        "text/xml",
+        "application/xml",
+        "application/json",
+    }
+)
+
+#: Types that are definitely a file rather than a page. Matched by prefix so
+#: ``image/svg+xml`` and ``video/mp4`` are covered by their families.
+#: ``application/octet-stream`` is deliberately absent — see ``looks_like_html``.
+_BINARY_PREFIXES = ("image/", "video/", "audio/", "font/")
+_BINARY_TYPES = frozenset(
+    {
+        "application/pdf",
+        "application/zip",
+        "application/gzip",
+        "application/x-gzip",
+        "application/x-tar",
+        "application/msword",
+        "application/rtf",
+        "application/x-msdownload",
+        "application/vnd.ms-excel",
+        "application/vnd.ms-powerpoint",
+    }
+)
+
+
+def looks_like_html(content_type: str, body: str = "") -> bool:
+    """
+    Whether a response is a web page, rather than a file served over HTTP.
+
+    Nothing checked the ``Content-Type``, so a ``<a href="/manual.pdf">`` was
+    "scraped" into two thousand characters of ``%PDF-1.4`` and reported as a
+    successfully scraped page — the same failure-as-success shape as a stale CSS
+    selector, one layer down.
+
+    Decided from the header where it is decisive, and from the body where the
+    header is unhelpful or absent. ``application/octet-stream`` is deliberately
+    *not* decisive: plenty of servers send it for perfectly good HTML, so it
+    falls through to the sniff and keeps real content. Sniffing is what makes
+    this safe to apply to every response — a wrong "not a page" would drop real
+    content, so the body gets the casting vote whenever it looks like markup,
+    and only an unambiguous type (``application/pdf``, ``image/*``) is believed
+    over it.
+    """
+    ctype = (content_type or "").split(";", 1)[0].strip().lower()
+    if ctype in _TEXTUAL_TYPES:
+        return True
+    if ctype in _BINARY_TYPES or ctype.startswith(_BINARY_PREFIXES):
+        return False
+
+    # Unknown, absent, or something exotic: look at the bytes.
+    head = body[:512].lstrip().lower()
+    return head.startswith(("<!doctype html", "<html", "<?xml", "<head", "<body", "<div"))
 
 
 def parse_html(

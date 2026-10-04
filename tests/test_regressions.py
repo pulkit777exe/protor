@@ -196,7 +196,7 @@ class TestMaxTargets:
             requested.append(url)
             if len(requested) % 3 == 0:
                 raise RuntimeError("boom")
-            return type("R", (), {"text": link_page, "nbytes": len(link_page), "status": 200})()
+            return type("R", (), {"text": link_page, "nbytes": len(link_page), "status": 200, "content_type": "text/html"})()
 
         monkeypatch.setattr(engine_mod, "fetch", flaky)
 
@@ -373,7 +373,7 @@ class TestBlocklistCoversJsDownloads:
 
         async def fake_fetch(session, url, **kwargs):
             fetched.append(url)
-            return type("R", (), {"text": html, "nbytes": len(html), "status": 200})()
+            return type("R", (), {"text": html, "nbytes": len(html), "status": 200, "content_type": "text/html"})()
 
         monkeypatch.setattr("protor.engine.fetch", fake_fetch)
 
@@ -406,7 +406,7 @@ class TestBlocklistCoversJsDownloads:
 
         async def fake_fetch(session, url, **kwargs):
             fetched.append(url)
-            return type("R", (), {"text": html, "nbytes": len(html), "status": 200})()
+            return type("R", (), {"text": html, "nbytes": len(html), "status": 200, "content_type": "text/html"})()
 
         monkeypatch.setattr("protor.engine.fetch", fake_fetch)
 
@@ -1307,3 +1307,96 @@ class TestMaxTargetsIsADispatchCeiling:
                 f"a dispatched URL neither succeeded, failed nor blocked: "
                 f"total={stats.total} dispatched={stats.dispatched}"
             )
+
+
+class TestNonPagesAreNotScraped:
+    """
+    A body is not a page by virtue of arriving over HTTP.
+
+    Nothing checked the ``Content-Type``, so a link to a manual.pdf was scraped
+    into two thousand characters of ``%PDF-1.4`` and reported as a successfully
+    scraped page — the same failure-as-success shape as a stale CSS selector,
+    one layer down.
+    """
+
+    async def _crawl_one(self, tmp_path, monkeypatch, *, content_type, body):
+        import protor.engine as engine_mod
+        from protor.fetcher import FetchResult
+
+        async def fake_fetch(session, url, **kwargs):
+            return FetchResult(
+                text=body, nbytes=len(body), status=200, content_type=content_type
+            )
+
+        monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+        engine = CrawlEngine(
+            queue=StaticQueue(["https://ex.com/"]),
+            link_source=StaticSource(),
+            output_dir=tmp_path,
+            max_targets=5,
+        )
+        return await engine.arun()
+
+    @pytest.mark.parametrize(
+        ("content_type", "body"),
+        [
+            ("application/pdf", "%PDF-1.4\n1 0 obj\n<< /Type /Catalog >>"),
+            ("image/png", "\x89PNG\r\n\x1a\n"),
+            ("video/mp4", "\x00\x00\x00 ftypisom"),
+            ("application/zip", "PK\x03\x04"),
+        ],
+    )
+    async def test_a_binary_response_is_not_counted_as_a_page(
+        self, tmp_path, monkeypatch, content_type, body
+    ):
+        stats = await self._crawl_one(
+            tmp_path, monkeypatch, content_type=content_type, body=body
+        )
+        assert stats.scraped == 0, f"{content_type} was scraped as a page"
+        assert stats.total == 0, "and it consumed the page budget"
+
+    async def test_no_manifest_is_written_for_a_binary_response(self, tmp_path, monkeypatch):
+        engine_stats = await self._crawl_one(
+            tmp_path, monkeypatch, content_type="application/pdf", body="%PDF-1.4"
+        )
+        assert engine_stats.scraped == 0
+        assert not list(tmp_path.rglob("*.html")), "the PDF was saved as a page"
+        assert not list(tmp_path.rglob("*.json")), "and given a manifest"
+
+    @pytest.mark.parametrize(
+        "content_type",
+        ["text/html", "text/html; charset=utf-8", "application/xhtml+xml", ""],
+    )
+    async def test_html_is_still_scraped(self, tmp_path, monkeypatch, content_type):
+        html = "<html><head><title>Real</title></head><body><p>hi</p></body></html>"
+        stats = await self._crawl_one(
+            tmp_path, monkeypatch, content_type=content_type, body=html
+        )
+        assert stats.scraped == 1, f"a real page was dropped ({content_type!r})"
+
+    async def test_html_served_as_octet_stream_is_still_scraped(self, tmp_path, monkeypatch):
+        """
+        The false negative that would lose real content.
+
+        Plenty of servers send ``application/octet-stream`` for perfectly good
+        HTML, so that type must not be decisive on its own — the body decides.
+        """
+        html = "<!DOCTYPE html><html><head><title>Real</title></head><body><p>hi</p></body></html>"
+        stats = await self._crawl_one(
+            tmp_path, monkeypatch, content_type="application/octet-stream", body=html
+        )
+        assert stats.scraped == 1, "octet-stream HTML was dropped"
+
+    async def test_a_binary_response_is_not_re_requested_on_resume(self, tmp_path, monkeypatch):
+        """
+        Recorded like a filter, not a failure.
+
+        Marked as attempted-and-failed it would be retried by every resumed run,
+        spending budget on the same PDF each time.
+        """
+        from protor.crawler import _CrawlQueue
+
+        q = _CrawlQueue(tmp_path / "crawl_queue.db")
+        q.mark_visited("https://ex.com/manual.pdf", success=False, attempted=False)
+        assert q.requeue_failed() == 0, "a non-page is queued again on every resume"
+        q.close()
