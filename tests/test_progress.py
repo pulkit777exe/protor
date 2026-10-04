@@ -15,6 +15,7 @@ from protor.progress import (
     Throttle,
     live_display,
     live_enabled,
+    probing,
 )
 
 
@@ -409,3 +410,42 @@ class TestTheBatchLiveTableIsBounded:
             display.line("a result line")
 
         assert "a result line" not in console.file.getvalue()
+
+
+class TestProbingSaysSomethingOnEveryStream:
+    """
+    `protor runtimes` checks every registered runtime in turn.
+
+    Seventeen of them, one HTTP request each, a second apiece behind a firewall
+    that DROPs rather than refuses. It printed its heading and then sat there, so a
+    blank screen for several seconds was indistinguishable from a hang.
+    """
+
+    def test_a_pipe_gets_a_line_not_nothing(self):
+        """
+        Rich's `status` prints *nothing at all* to a pipe.
+
+        Using it alone would have left a CI log exactly as blank as before, which is
+        the case that most needs saying something.
+        """
+        buf = io.StringIO()
+        con = Console(file=buf, width=80, force_terminal=False)
+        with probing("probing 17 runtimes...", con):
+            pass
+        assert "probing 17 runtimes" in buf.getvalue(), buf.getvalue()
+        assert "\x1b" not in buf.getvalue(), "a pipe must not receive escape codes"
+
+    def test_a_terminal_gets_a_spinner_instead(self):
+        """One message, two renderings — not two messages."""
+        buf = io.StringIO()
+        con = Console(file=buf, width=80, force_terminal=True, color_system="truecolor")
+        with probing("probing 17 runtimes...", con):
+            pass
+        assert "\x1b" in buf.getvalue(), "no animation reached the terminal"
+
+    def test_it_does_not_swallow_an_exception(self):
+        """A context manager that hides failures turns a crash into a hang."""
+        buf = io.StringIO()
+        con = Console(file=buf, width=80, force_terminal=False)
+        with pytest.raises(RuntimeError), probing("working...", con):
+            raise RuntimeError("probe blew up")

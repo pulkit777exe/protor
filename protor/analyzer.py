@@ -26,7 +26,7 @@ from .exceptions import ModelListUnavailableError, RuntimeUnavailableError
 from .formatters import write_output
 from .llm_backends import LLMBackend, ModelInfo, OllamaBackend, create_backend
 from .models import AnalysisResult, SiteManifest
-from .progress import StreamWriter
+from .progress import StreamWriter, probing
 from .runtimes import (
     RUNTIMES,
     detect_runtimes,
@@ -216,7 +216,10 @@ def list_runtimes() -> None:
     console.print(header_rule("Local Runtimes"))
     console.print()
 
-    detected = {r.key for r in detect_runtimes()}
+    # Say so before waiting on it: seventeen runtimes, one request each, and a
+    # firewall that DROPs turns that into several seconds of nothing.
+    with probing(f"probing {len(RUNTIMES)} runtimes..."):
+        detected = {r.key for r in detect_runtimes()}
 
     # Column set follows the terminal. Declaring all four unconditionally made
     # rich drop the last one on a narrow terminal and clip the URL mid-value:

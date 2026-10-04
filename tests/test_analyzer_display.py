@@ -240,3 +240,39 @@ class TestResponsiveLayout:
 
 
 _real_detect = _runtimes.detect_runtimes
+
+
+class TestListRuntimesSaysItIsProbing:
+    """
+    Seventeen runtimes, one HTTP request each, a second apiece behind a firewall
+    that DROPs rather than refuses.
+
+    The command printed its heading and then sat there, so several seconds of blank
+    screen was indistinguishable from a hang. Nothing asserted this, which is how it
+    survived: the tests checked the table and the footer, not the wait before them.
+    """
+
+    def test_the_wait_is_announced(self, monkeypatch, capsys):
+        """A pipe is the case that needs it most, and gets the plain line."""
+        import contextlib
+
+        import protor.progress as progress_mod
+
+        seen: list[str] = []
+
+        @contextlib.contextmanager
+        def announce(message, con=None):
+            seen.append(message)
+            with progress_mod.probing(message, con):
+                yield
+
+        monkeypatch.setattr("protor.analyzer.probing", announce)
+        monkeypatch.setattr("protor.analyzer.detect_runtimes", lambda: [])
+
+        from protor.analyzer import list_runtimes
+
+        list_runtimes()
+
+        assert seen, "the probe was never announced"
+        assert "probing" in seen[0], seen[0]
+        assert capsys.readouterr().out, "no table at all"

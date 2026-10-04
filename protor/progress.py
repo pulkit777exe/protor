@@ -47,6 +47,7 @@ __all__ = [
     "live_enabled",
     "normalise_reason",
     "print_failure_reasons",
+    "probing",
     "visible_rows",
 ]
 
@@ -383,3 +384,27 @@ def visible_rows(reserved: int, *, ceiling: int, height: int | None = None) -> i
     """
     rows_available = (height if height is not None else _console.height) or _DEFAULT_HEIGHT
     return max(_MIN_VISIBLE_ROWS, min(ceiling, rows_available - reserved))
+
+
+@contextmanager
+def probing(message: str, con: Console | None = None) -> Iterator[None]:
+    """
+    Say that a slow probe is under way, and degrade honestly if it is not.
+
+    `protor runtimes` checks every registered runtime in turn — seventeen of them,
+    one HTTP request each, a second apiece behind a firewall that DROPs rather than
+    refuses. It printed its heading and then sat there, so a blank screen for several
+    seconds is indistinguishable from a hang.
+
+    Rich's ``status`` animates on a terminal and prints *nothing at all* to a pipe,
+    which would leave a CI log exactly as blank as before. So both renderings come
+    from one message: a spinner where there is a cursor, one plain line where there
+    is not.
+    """
+    target = con or _console
+    if target.is_terminal:
+        with target.status(message):
+            yield
+        return
+    target.print(message)
+    yield
