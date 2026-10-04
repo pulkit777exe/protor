@@ -160,6 +160,35 @@ def human_bytes(n: int) -> str:
     return f"{value:.1f} TB"
 
 
+def human_duration(ms: int | float | None) -> str:
+    """
+    Short, fixed-width rendering of a duration in milliseconds.
+
+    The progress table's Time column is seven cells wide because a page that
+    answered inside the default 30s timeout renders as ``30000ms``. That is exactly
+    the width, and ``--timeout 300`` with three retries reaches 900000ms — which
+    rich then ellipsised to ``900000…``, dropping the unit so the cell read as
+    corrupt data rather than as a slow page.
+
+    Units chosen so the result never exceeds six characters, whatever the timeout.
+    """
+    if not ms:
+        return "\u2014"
+    # Round once, then branch on the rounded value. Deciding first and formatting
+    # after produced "60.0s" for 59999ms in one arrangement and "0m59s" in the
+    # other, since 59.999 is under 60 but `divmod(int(59.999), 60)` is (0, 59).
+    seconds = round(float(ms) / 1000.0, 1)
+    if seconds < 1:
+        return f"{int(ms)}ms"
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    minutes, rest = divmod(int(seconds), 60)
+    if minutes < 60:
+        return f"{minutes}m{rest:02d}s"
+    hours, minutes = divmod(minutes, 60)
+    return f"{hours}h{minutes:02d}m"
+
+
 def validate_url(url: str) -> str:
     """Validate and normalise *url*.
 

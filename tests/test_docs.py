@@ -133,6 +133,32 @@ class TestHelpEnvironmentBlock:
             if runtime.env_key:
                 assert runtime.env_key in block, f"{runtime.key} has no key in --help"
 
+    def test_the_descriptions_line_up(self):
+        """
+        Every description started at the same column.
+
+        The field width was a literal 22 while ``DOCKER_MODEL_RUNNER_URL`` is 23
+        characters, so that row pushed its own description out and left the block
+        looking like it was two blocks. Width now comes from the entries, which is
+        also why adding a runtime cannot break it again.
+        """
+        import re
+
+        from protor.cli import _runtime_env_help
+
+        rows = [line for line in _runtime_env_help().splitlines()[1:] if line.strip()]
+        assert rows, "the block is empty"
+        # The padding is the run of spaces between the variable and its
+        # description, so split on it rather than counting characters.
+        columns = set()
+        for line in rows:
+            parts = re.split(r"\s{2,}", line.strip())
+            assert len(parts) == 2, f"cannot tell name from description: {line!r}"
+            columns.add(line.index(parts[1]))
+        assert len(columns) == 1, (
+            f"descriptions start at {sorted(columns)}; the block is ragged:\n" + "\n".join(rows)
+        )
+
     def test_the_block_is_in_the_help_output(self, capsys):
         from protor.cli import _build_parser
 

@@ -742,43 +742,6 @@ class CrawlEngine:
                 taken.add(candidate)
         by_url[jurl] = candidate
         return candidate
-        """
-        Return a collision-free filename for a downloaded script.
-
-        Two collisions have to be avoided, and they are not the same one.
-
-        *Within one page*, basenames are not unique across the CDNs it pulls
-        from — ``/static/vendor.js`` and ``/lib/vendor.js`` both wanted
-        ``vendor.js``, which silently overwrote earlier downloads while the
-        manifest still listed every URL.
-
-        *Across pages of one site*, the scripts share a directory: ``js_dir`` is
-        per-domain, not per-page, and the ``taken`` set is rebuilt per page. Two
-        pages of a site routinely load the same ``app.js`` path — one tagged with
-        a cache-busting query, one not, which the server answers differently —
-        and the second download overwrote the first. Measured: a two-page scrape
-        left one file on disk where both manifests listed a script, and the
-        first page's copy was unrecoverable.
-
-        So a name that another page already used on disk is disambiguated by a
-        hash of the full URL. The query string is part of that identity, which is
-        the whole point: ``app.js`` and ``app.js?v=2`` are different resources
-        that share a basename.
-        """
-        name = Path(urlparse(jurl).path).name
-        stem = safe_filename(Path(name).stem if name else "") or f"script-{index}"
-        suffix = Path(name).suffix if name else ".js"
-        candidate = f"{stem}{suffix}"
-        if taken is not None:
-            taken.add(candidate)
-        # `taken` is this page's names; `occupied` is what the site directory
-        # already holds, from this page or any page scraped before it.
-        if candidate in self._js_names_taken:
-            digest = hashlib.sha256(jurl.encode("utf-8")).hexdigest()[:8]
-            candidate = f"{stem}.{digest}{suffix}"
-            if taken is not None:
-                taken.add(candidate)
-        return candidate
 
     def _skip(
         self, stats: CrawlStats, row: dict[str, Any], url: str, note: str, status: str = "skipped"

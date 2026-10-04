@@ -191,3 +191,63 @@ class TestManifestFilename:
         # "/" and "/index.html" are the same page, so they may share a name;
         # everything else must be distinct.
         assert len(set(names[1:])) == 3
+
+
+class TestHumanDuration:
+    """
+    Bounded width, whatever the timeout.
+
+    The progress table's Time column is six cells, and `--timeout` is the user's to
+    set: at 300s with three retries a page can take 900000ms, which is nine
+    characters. Rich ellipsised it to `900000…`, dropping the unit so the cell read
+    as corrupt data rather than as a slow page.
+    """
+
+    @pytest.mark.parametrize(
+        "ms", [1, 12, 999, 1000, 1500, 30000, 59400, 59999, 60000, 90000, 900000, 3600000]
+    )
+    def test_never_exceeds_the_column(self, ms):
+        from protor.utils import human_duration
+
+        assert len(human_duration(ms)) <= 6, f"{ms}ms -> {human_duration(ms)!r}"
+
+    @pytest.mark.parametrize("ms", [None, 0])
+    def test_nothing_measured_is_a_dash(self, ms):
+        from protor.utils import human_duration
+
+        assert human_duration(ms) == "—"
+
+    @pytest.mark.parametrize(
+        ("ms", "expected"),
+        [
+            (12, "12ms"),
+            (1500, "1.5s"),
+            (30000, "30.0s"),
+            (59400, "59.4s"),
+            # The boundary that made this fiddly: deciding before formatting gave
+            # "60.0s" in one arrangement and "0m59s" in the other.
+            (59999, "1m00s"),
+            (90000, "1m30s"),
+            (900000, "15m00s"),
+            (3600000, "1h00m"),
+        ],
+    )
+    def test_the_boundary_is_not_a_thing(self, ms, expected):
+        from protor.utils import human_duration
+
+        assert human_duration(ms) == expected
+
+    def test_it_never_says_sixty_seconds(self):
+        from protor.utils import human_duration
+
+        for ms in range(59_900, 60_100, 7):
+            rendered = human_duration(ms)
+            assert rendered not in ("60.0s", "0m59s"), f"{ms}ms -> {rendered}"
+
+    def test_it_increases(self):
+        from protor.utils import human_duration
+
+        # Not a total order on the strings — units change — but never goes
+        # backwards at the unit boundaries, which is where a rounding slip shows.
+        assert human_duration(59_950) == "1m00s"
+        assert human_duration(59_900) == "59.9s"

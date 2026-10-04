@@ -96,6 +96,14 @@ _FALLBACKS: tuple[tuple[str, str], ...] = (
 # ── glyphs (degraded when the terminal cannot encode them) ────────────────────
 OK = "✓" if _can_encode("✓") else "+"
 ERR = "✗" if _can_encode("✗") else "x"
+
+#: The same glyphs, already coloured. A summary line mixes a glyph with markup the
+#: surrounding helpers produced — `bright(count)`, `muted(dir)` — so it cannot use
+#: `ok()`/`err()`, which escape their argument and would eat those tags. Warnings
+#: were yellow and errors red while every headline success and failure sat in the
+#: default style, so `✓ 40 scraped` and `✗ 2 failed` were the same colour.
+OK_STYLED = f"[green]{OK}[/green]"
+ERR_STYLED = f"[red]{ERR}[/red]"
 SKIP = "-"
 SPIN = "◌" if _can_encode("◌") else "o"
 ARROW = "→" if _can_encode("→") else "->"

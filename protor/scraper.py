@@ -33,8 +33,22 @@ from .parser import extract_links
 from .progress import normalise_reason, print_failure_reasons
 from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
-from .theme import ERR, OK, SPIN, bright, console, content, header_rule, label, muted, safe
-from .utils import ensure_output_dir, human_bytes
+from .theme import (
+    ERR,
+    ERR_STYLED,
+    OK,
+    OK_STYLED,
+    SKIP,
+    SPIN,
+    bright,
+    console,
+    content,
+    header_rule,
+    label,
+    muted,
+    safe,
+)
+from .utils import ensure_output_dir, human_bytes, human_duration
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterable
@@ -92,7 +106,7 @@ def _build_table(rows: list[dict[str, Any]]) -> Table:
     t.add_column("Domain", style="white", min_width=32)
     t.add_column("Status", width=14)
     t.add_column("Size", style="grey74", width=9, justify="right")
-    t.add_column("Time", style="grey74", width=7, justify="right")
+    t.add_column("Time", style="grey74", width=6, justify="right", no_wrap=True)
     t.add_column("JS", style="grey50", width=4, justify="right")
 
     shown = rows[-_TABLE_VIEW:] if len(rows) > _TABLE_VIEW else rows
@@ -109,6 +123,11 @@ def _build_table(rows: list[dict[str, Any]]) -> Table:
             s = Text(f"  {SPIN} fetch", style="yellow")
         elif status == "blocked":
             s = Text(f"  {ERR} blocked", style="red")
+        elif status == "skipped":
+            # Its own case: the crawler's live view already draws this one with
+            # SKIP in grey, and it is a finished page, so borrowing the yellow
+            # spinner below made a permanent outcome look like work in progress.
+            s = Text(f"  {SKIP} skipped", style="grey50")
         elif status.startswith("js:"):
             n = status.split(":")[1]
             s = Text(f"  {SPIN} js ({n})", style="cyan")
@@ -120,7 +139,7 @@ def _build_table(rows: list[dict[str, Any]]) -> Table:
             content(r.get("domain", "")),
             s,
             human_bytes(r["bytes"]) if r.get("bytes") else "—",
-            f"{r['ms']}ms" if r.get("ms") else "—",
+            human_duration(r.get("ms")),
             str(r["js"]) if r.get("js") else "—",
         )
 
@@ -347,8 +366,8 @@ def scrape_multiple(
 
     console.print()
     console.print(
-        f"  {OK} {bright(str(ok_n))} scraped  "
-        + (f"{ERR} {bright(str(error_count))} failed  " if error_count else "")
+        f"  {OK_STYLED} {bright(str(ok_n))} scraped  "
+        + (f"{ERR_STYLED} {bright(str(error_count))} failed  " if error_count else "")
         + f"{muted(human_bytes(total) + ' total')}  {muted(f'avg {avg_ms}ms')}"
     )
     _print_failure_reasons(rows)

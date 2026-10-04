@@ -48,7 +48,7 @@ from .formatters import FORMAT_CHOICES
 from .llm_backends import BACKEND_CHOICES
 from .runtimes import RUNTIMES, get_runtime, runtime_names
 from .scraper import scrape_multiple
-from .theme import ERR, console, content, err, info, safe
+from .theme import ERR_STYLED, OK_STYLED, console, content, err, info, safe
 from .updater import check_for_update, perform_update
 from .utils import get_default_output_dir, load_json, safe_filename, validate_url
 
@@ -214,7 +214,7 @@ def _cmd_extract(args: argparse.Namespace) -> None:
 
     from .extractor import Extractor
     from .fetcher import fetch
-    from .theme import OK, bright, header_rule, label, muted, warn
+    from .theme import bright, header_rule, label, muted, warn
 
     async def _extract_async() -> list[dict[str, Any]]:
         async with aiohttp.ClientSession() as session:
@@ -245,18 +245,18 @@ def _cmd_extract(args: argparse.Namespace) -> None:
         # Non-zero: a script that pipes this into `&&` must not read an empty
         # extraction as success. The comment above explains why an empty result
         # is a failure at all, and returning 0 contradicted it.
-        console.print(f"  {ERR} No data matched the schema")
+        console.print(f"  {ERR_STYLED} No data matched the schema")
         console.print()
         sys.exit(1)
 
     if empty:
         console.print(
-            f"  {warn('warn')} {empty} of {len(results)} records matched the container "
+            f"  {warn('partial')} {empty} of {len(results)} records matched the container "
             f"but no field selector matched inside it; those records are empty."
         )
         console.print()
 
-    console.print(f"  {OK} Extracted {len(results)} records")
+    console.print(f"  {OK_STYLED} Extracted {len(results)} records")
     console.print()
 
     # Output
@@ -470,15 +470,20 @@ def _runtime_env_help() -> str:
     neither of which is the runtime key plus a suffix. Generated, it cannot
     drift, and ``tests/test_docs.py`` asserts it against the registry.
     """
-    rows = []
+    entries: list[tuple[str, str]] = []
     for runtime in sorted(RUNTIMES.values(), key=lambda r: r.label):
         if runtime.env_url:
-            rows.append(f"  {runtime.env_url:<22} {runtime.label} URL")
+            entries.append((runtime.env_url, f"{runtime.label} URL"))
         if runtime.env_key:
-            rows.append(f"  {runtime.env_key:<22} {runtime.label} API key")
-    rows.append(f"  {'--base-url':<22} override any runtime's URL for one command")
-    rows.append(f"  {'--api-key':<22} token for runtimes started with authentication")
-    return "Environment:\n" + "\n".join(rows)
+            entries.append((runtime.env_key, f"{runtime.label} API key"))
+    entries.append(("--base-url", "override any runtime's URL for one command"))
+    entries.append(("--api-key", "token for runtimes started with authentication"))
+
+    # Width from the entries rather than a literal: it was pinned at 22 while
+    # DOCKER_MODEL_RUNNER_URL is longer, which pushed that row's description and
+    # every row below it out of alignment.
+    width = max(len(name) for name, _ in entries)
+    return "Environment:\n" + "\n".join(f"  {name:<{width}}  {desc}" for name, desc in entries)
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -728,7 +733,7 @@ def cli() -> None:
     try:
         args.func(args)
     except KeyboardInterrupt:
-        console.print(f"\n  {ERR} interrupted\n")
+        console.print(f"\n  {ERR_STYLED} interrupted\n")
         sys.exit(130)
     except OllamaModelNotFoundError as exc:
         # The message already names the exact pull command.

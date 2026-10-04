@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from typing import ClassVar
 
 import pytest
 
@@ -304,3 +305,68 @@ class TestThePreviewSurvivesHostileValues:
         starts = {len(line) - len(line.lstrip()) for line in rows}
         assert len(starts) == 1, f"the value column is ragged: {rows}"
         assert any("Blue Widget" in line for line in rows), rows
+
+
+class TestThePartialWarningReadsAsAWarning:
+    """
+    `warn()` already prints "! ", and the call site passed the word "warn" as its
+    argument, so the line read `! warn 3 of 10 records matched the container` — the
+    label restating the glyph. The all-empty and all-full cases were covered; the
+    partial one, which is the only one that takes this branch, was not.
+    """
+
+    PARTIAL_PAGE = """<!DOCTYPE html>
+<html><body><main>
+  <section class="product"><h2 class="name">Filled</h2><span class="price">$1</span></section>
+  <section class="product"></section>
+  <section class="product"></section>
+</main></body></html>
+"""
+
+    PARTIAL_SCHEMA: ClassVar = {
+        "name": "products",
+        "base_selector": "section.product",
+        "fields": [
+            {"name": "name", "selector": ".name", "type": "text"},
+            {"name": "price", "selector": ".price", "type": "text"},
+        ],
+    }
+
+    def test_no_duplicated_label(self, tmp_path, monkeypatch):
+        import io
+        import threading
+
+        from rich.console import Console
+
+        page = self.PARTIAL_PAGE
+        schema = self.PARTIAL_SCHEMA
+
+        class _HandlerFor(_Handler):
+            HTML = page
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _HandlerFor)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        buf = io.StringIO()
+        monkeypatch.setattr("protor.cli.console", Console(file=buf, width=100))
+        try:
+            _run(
+                [
+                    "extract",
+                    f"http://{host}:{port}/index.html",
+                    _write_schema(tmp_path, schema),
+                    "--output",
+                    str(tmp_path / "out"),
+                ]
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+
+        out = buf.getvalue()
+        assert "2 of 3 records matched" in out, out
+        assert "warn" not in out.lower(), f"the label restates the glyph:\n{out}"
+        assert out.count("!") == 1, f"one warning, one marker:\n{out}"

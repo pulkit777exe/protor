@@ -65,6 +65,7 @@ from .scaler import AutoScaler
 from .theme import (
     ERR,
     OK,
+    OK_STYLED,
     SKIP,
     SPIN,
     bright,
@@ -453,8 +454,12 @@ def _render(state: _State, output_dir: str) -> Group:
     # The bar is scaled to a fixed width. One cell per page made --max-pages
     # 500 render a 500-character bar that wrapped and wrecked the layout.
     if state.max_pages:
-        filled = round(_BAR_WIDTH * min(state.scraped / state.max_pages, 1.0))
-        pct = int(state.scraped / state.max_pages * 100)
+        # Floor, not round, so the bar and the percentage cannot disagree. Rounding
+        # filled the whole bar at 98.4% — `round(32 * 63/64)` is 32 — so the last
+        # page or two of every crawl rendered as a full bar next to "98%".
+        fraction = min(state.scraped / state.max_pages, 1.0)
+        filled = int(_BAR_WIDTH * fraction)
+        pct = int(fraction * 100)
     else:
         filled = 0
         pct = 0
@@ -583,7 +588,7 @@ class Crawler:
             if scraped:
                 self._state.scraped = scraped
                 console.print(
-                    f"  {OK} Resumed from checkpoint — {self._state.scraped} pages already scraped"
+                    f"  {OK_STYLED} Resumed from checkpoint — {self._state.scraped} pages already scraped"
                 )
             # A page that failed in an earlier run is the one thing a resume has
             # left to offer: the successes are done by definition, so without
@@ -631,7 +636,7 @@ class Crawler:
             self._queue.close()
         console.print()
         console.print(
-            f"  {OK} crawl complete — "
+            f"  {OK_STYLED} crawl complete — "
             f"{bright(str(self._state.scraped))} pages scraped"
             + (f" ({muted(str(self._state.unchanged))} unchanged)" if self._state.unchanged else "")
             + (f", {self._state.errors} errors" if self._state.errors else "")
@@ -714,7 +719,7 @@ class Crawler:
 
         if added:
             console.print(
-                f"  {OK} Sitemap seeded {muted(str(added))} "
+                f"  {OK_STYLED} Sitemap seeded {muted(str(added))} "
                 f"additional {muted('page' if added == 1 else 'pages')}\n"
             )
         else:

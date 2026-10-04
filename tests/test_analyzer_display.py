@@ -64,19 +64,31 @@ class TestListRuntimeModels:
 
     def test_reports_a_stopped_runtime_with_a_start_hint(self, monkeypatch, captured):
         """
-        The message is printed, and the command exits non-zero.
+        The message is printed once, and the command exits non-zero.
 
         Returning 0 meant `protor models` could not be told apart from a runtime
         with no models loaded, so a script saw success from a runtime that is not
         running. The typed error is what carries the URL out to the CLI.
+
+        It used to be reported twice, here and again by `_abort`: "vLLM is not
+        reachable. / Start it with: vllm serve <model>" followed by "Cannot reach
+        vLLM at http://localhost:8000. Start it with: vllm serve <model>". The
+        exception already contains every fact, so this path stays quiet and lets
+        the CLI speak once.
         """
         _stub_models(monkeypatch, [], available=False)
         with pytest.raises(RuntimeUnavailableError) as exc:
             list_runtime_models("vllm")
-        assert "vllm serve" in str(exc.value)
+
+        message = str(exc.value)
+        assert "vllm serve" in message, "the exception must carry the start command"
+        assert "localhost:8000" in message, "and the URL it tried"
+
         out = captured()
-        assert "not reachable" in out
-        assert "vllm serve" in out, "must tell the user how to start it"
+        assert "not reachable" not in out, (
+            f"the failure is stated here and again by the CLI:\n{out}"
+        )
+        assert "vllm serve" not in out, f"same failure, two voices:\n{out}"
 
     def test_reports_an_empty_model_list(self, monkeypatch, captured):
         _stub_models(monkeypatch, [], available=True)

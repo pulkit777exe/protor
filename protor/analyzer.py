@@ -37,6 +37,7 @@ from .runtimes import (
 )
 from .theme import (
     OK,
+    OK_STYLED,
     bright,
     console,
     content,
@@ -153,16 +154,15 @@ def list_runtime_models(
     console.print()
 
     if not llm.check_available():
-        console.print(f"  {err(f'{llm.display_name} is not reachable.')}")
+        # The raise below already says all of this — the name, the URL it tried and
+        # the command to start it — and the CLI prints it. Printing it here as well
+        # made `protor models` report the same failure twice in two voices and four
+        # lines: "vLLM is not reachable. / Start it with: vllm serve <model>" then
+        # "Cannot reach vLLM at http://localhost:8000. Start it with: vllm serve".
+        # A runtime that is not running is a failure, not an empty list: this path is
+        # shared by `protor models` and by `analyze`, and exiting 0 meant a script
+        # could not tell "no models" from "the runtime is down".
         hint = llm.start_hint()
-        if hint:
-            console.print(f"  {info('Start it with: ' + hint)}")
-        else:
-            console.print(f"  {info('Pass --base-url if it listens somewhere else')}")
-        console.print()
-        # A runtime that is not running is a failure, not an empty list: this
-        # path is shared by `protor models` and by `analyze`, and exiting 0
-        # meant a script could not tell "no models" from "the runtime is down".
         raise RuntimeUnavailableError(
             llm.display_name, str(url), hint or "Pass --base-url if it listens somewhere else"
         )
@@ -600,7 +600,7 @@ def analyze(
     report_path = write_output(result, out, fmt)
 
     console.print(
-        f"  {OK} {label('saved')} {muted(str(report_path))}  {muted(str(out / 'analysis.json'))}"
+        f"  {OK_STYLED} {label('saved')} {muted(str(report_path))}  {muted(str(out / 'analysis.json'))}"
     )
     console.print()
     return result
