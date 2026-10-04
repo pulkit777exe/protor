@@ -170,6 +170,14 @@ test that fails on the old code.
   invariant rather than luck, and now pinned by a test on the server's request
   log.
 
+- **One oversized block could bypass the Markdown character budget.** The budget
+  is charged by `_Lines.append`, and a code block's body plus a list item's
+  continuation lines were added with `list.extend`, which skips it. A single
+  `<pre>` holding a minified bundle produced 151,897 characters against a 40,000
+  cap — and, since the budget was never exceeded as far as the truncation check
+  was concerned, no `[truncated]` marker was written either, so a caller could
+  not tell the page had been cut.
+
 ### Performance
 
 Measured before and after; the benchmark suite guards the ratio.
