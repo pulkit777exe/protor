@@ -145,6 +145,9 @@ protor crawl https://example.com --max-pages 50
 
 # pick up where a previous run stopped
 protor crawl https://example.com --resume
+
+# also crawl the pages the homepage does not link to
+protor crawl https://example.com --sitemap
 ```
 
 `--max-pages` is a ceiling for the crawl, not for each run: resuming a crawl
@@ -155,6 +158,14 @@ previous crawl so it cannot silently do nothing, and the pages already saved to
 the output directory are left alone. `--resume` is what reuses them, and it
 retries the pages the previous run failed on, since the ones that worked have
 nothing left to give.
+
+`--sitemap` seeds the crawl from the site's sitemap — the `Sitemap:` lines in
+`robots.txt`, or `/sitemap.xml` — as well as by following links. A link-walk
+only reaches what a page happens to link, which on a documentation site is the
+sidebar; the pages listed in a sitemap and nothing else are the ones it
+structurally cannot find. Sitemap indexes and gzipped sitemaps are both read.
+It is an optimisation, never a precondition: a site with no sitemap still
+crawls by links alone.
 
 ### analyze what you scraped
 
