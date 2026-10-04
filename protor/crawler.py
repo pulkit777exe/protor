@@ -48,7 +48,6 @@ from urllib.parse import urlparse
 from rich import box
 from rich.console import Group
 from rich.rule import Rule
-from rich.table import Table
 from rich.text import Text
 
 from .config import (
@@ -69,6 +68,7 @@ from .theme import (
     SKIP,
     SPIN,
     WARN_STYLED,
+    SafeTable,
     bright,
     console,
     content,
@@ -505,7 +505,7 @@ def _render(state: _State, output_dir: str, height: int | None = None) -> Group:
     filled = max(0, min(filled, _BAR_WIDTH))
     bar = safe("█" * filled + "░" * (_BAR_WIDTH - filled))
 
-    stat = Table(box=box.SIMPLE, show_header=False, show_edge=False, padding=(0, 1))
+    stat = SafeTable(box=box.SIMPLE, show_header=False, show_edge=False, padding=(0, 1))
     stat.add_column(width=10, style="grey74")
     stat.add_column(style="white")
     stat.add_row(
@@ -523,7 +523,7 @@ def _render(state: _State, output_dir: str, height: int | None = None) -> Group:
     elapsed, rate = _pace(state)
     stat.add_row("elapsed", bright(elapsed) + muted(f"   {rate}"))
 
-    log_t = Table(
+    log_t = SafeTable(
         box=box.SIMPLE, show_header=True, header_style="bold white", show_edge=False, padding=(0, 1)
     )
     log_t.add_column("#", style="grey50", width=4, justify="right")

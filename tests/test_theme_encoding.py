@@ -9,6 +9,8 @@ expects a stack trace, since they only asked to see a model list.
 from io import StringIO
 
 import pytest
+from rich.console import Console
+from rich.table import Table
 
 from protor import theme
 
@@ -270,3 +272,100 @@ class TestSquareBracketsSurviveRichMarkup:
         out = buf.getvalue()
         assert "\\" not in out, f"the escape leaked into the output: {out!r}"
         assert "[slug]" in out
+
+
+class TestTableCellsAreSanitisedToo:
+    """
+    A Table renders its cells without ever passing them through `print`.
+
+    `ProtorConsole` is the chokepoint for everything printed and `_EncodingSafeFile`
+    is the last line of defence for everything written. A table cell was neither: the
+    helpers never saw it, and by the time the file wrapper could act the string had
+    already lost its glyphs to `errors="replace"`. So a glyph in a cell became `?` on
+    a cp1252 terminal while the same glyph through `muted()` became `o` — the same
+    character meaning two different things on the same screen.
+
+    `SafeTable` closes the gap at the source, the way `ProtorConsole` does for
+    `print`. Most cells already pass through a helper and so are unaffected; this is
+    about the ones that do not, today or in the next change that adds one.
+
+    The glyph is written literally rather than taken from a module token, because the
+    tokens are *already* degraded by the time a cell could use one — using one would
+    make the two tables agree for the wrong reason.
+    """
+
+    GLYPH = "\u25cc"  # a dotted circle: cp1252 cannot encode it
+
+    def _render(self, table_class, monkeypatch, encoding):
+        monkeypatch.setattr(theme, "_output_encoding", lambda: encoding)
+        table = table_class(box=None, show_header=False, show_edge=False)
+        table.add_column("Domain", no_wrap=True)
+        table.add_row(f"x {self.GLYPH} y")
+        buf = StringIO()
+        Console(file=buf, width=120, force_terminal=False).print(table)
+        return buf.getvalue()
+
+    def test_a_bare_cell_degrades_like_every_other_glyph(self, monkeypatch):
+        safe_out = self._render(theme.SafeTable, monkeypatch, "cp1252")
+        plain_out = self._render(Table, monkeypatch, "cp1252")
+
+        assert self.GLYPH not in safe_out, f"the cell kept an unencodable glyph: {safe_out!r}"
+        assert "?" not in safe_out, f"the cell did not degrade at all: {safe_out!r}"
+        # The plain table cannot help: the write layer has already lost the glyph.
+        assert plain_out != safe_out, "a plain Table already did this"
+
+    def test_it_leaves_encodable_text_alone(self, monkeypatch):
+        out = self._render(theme.SafeTable, monkeypatch, "utf-8")
+        assert "x \u25cc y" in out, out
+
+    def test_it_keeps_the_styling_cells_deliberately_carry(self):
+        """`safe`, not `content`: escaping a cell would eat the tags and the styles."""
+        from rich.text import Text
+
+        buf = StringIO()
+        table = theme.SafeTable(box=None, show_header=False, show_edge=False)
+        table.add_column("Status")
+        table.add_row(Text("styled", style="green"))
+        Console(file=buf, width=120, force_terminal=True, color_system="truecolor").print(table)
+        out = buf.getvalue()
+        assert "styled" in out
+        assert "\x1b[" in out, "the style was stripped"
+
+    def test_every_table_the_tool_builds_is_one_of_these(self):
+        """
+        Pin the wiring, not just the class.
+
+        A cell is only sanitised if the table is a `SafeTable`, and nothing stops
+        the next change from reaching for `rich.table.Table` directly — the type
+        checker is happy either way and every existing test passes. So: the scraper's
+        table, the crawler's tables, and a check that `theme` is the only module that
+        imports rich's Table at all.
+        """
+        import pathlib
+
+        import protor.analyzer
+        import protor.crawler
+        import protor.scraper
+        from protor.scraper import _build_table
+
+        table = _build_table([{"idx": 1, "domain": "ex.com", "status": "done"}])
+        assert isinstance(table, theme.SafeTable)
+
+        from collections import deque
+
+        from protor.crawler import _CrawlLog, _render, _State
+
+        state = _State(log=deque([_CrawlLog("ok", "ex.com", url="u")], maxlen=10))
+        tables = [r for r in _render(state, "/tmp/out").renderables if hasattr(r, "columns")]
+        assert tables, "the crawl view built no table"
+        for built in tables:
+            assert isinstance(built, theme.SafeTable), type(built)
+
+        package = pathlib.Path(theme.__file__).parent
+        offenders = [
+            f.name
+            for f in package.glob("*.py")
+            if f.name != "theme.py" and "rich.table" in f.read_text(encoding="utf-8")
+        ]
+        assert not offenders, f"these reach past SafeTable: {offenders}"
+        assert protor.analyzer and protor.crawler and protor.scraper

@@ -22,7 +22,6 @@ from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import urlparse
 
 from rich import box
-from rich.table import Table
 from rich.text import Text
 
 from .blocklist import Blocklist
@@ -41,6 +40,7 @@ from .theme import (
     SKIP,
     SPIN,
     WARN_STYLED,
+    SafeTable,
     bright,
     console,
     content,
@@ -151,8 +151,8 @@ _TABLE_RESERVED = 4
 
 def _build_table(
     rows: list[dict[str, Any]], width: int | None = None, height: int | None = None
-) -> Table:
-    t = Table(
+) -> SafeTable:
+    t = SafeTable(
         box=box.SIMPLE,
         show_header=True,
         header_style="bold white",

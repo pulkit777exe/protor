@@ -26,7 +26,6 @@ from typing import TYPE_CHECKING, Any, NoReturn
 
 from rich import box
 from rich.cells import cell_len, set_cell_size
-from rich.table import Table
 
 from .analyzer import (
     FOCUS_CHOICES,
@@ -51,6 +50,7 @@ from .scraper import scrape_multiple
 from .theme import (
     ERR_STYLED,
     OK_STYLED,
+    SafeTable,
     console,
     content,
     err,
@@ -298,7 +298,7 @@ def _cmd_extract(args: argparse.Namespace) -> None:
     # count unrelated to how wide the line actually rendered.
     for i, record in enumerate(results[:3], 1):
         console.print(f"  {label(f'[{i}]')}")
-        preview = Table(box=box.SIMPLE, show_header=False, show_edge=False, padding=(0, 2))
+        preview = SafeTable(box=box.SIMPLE, show_header=False, show_edge=False, padding=(0, 2))
         preview.add_column(style="grey74", no_wrap=True)
         preview.add_column(style="white", overflow="fold")
         for k, v in record.items():

@@ -16,7 +16,6 @@ import re
 from typing import TYPE_CHECKING, Any
 
 from rich import box
-from rich.table import Table
 from rich.text import Text
 
 if TYPE_CHECKING:
@@ -38,6 +37,7 @@ from .runtimes import (
 from .theme import (
     OK,
     OK_STYLED,
+    SafeTable,
     bright,
     console,
     content,
@@ -193,7 +193,7 @@ def list_runtime_models(
         console.print()
         return
 
-    t = Table(
+    t = SafeTable(
         box=box.SIMPLE, show_header=True, header_style="bold white", show_edge=False, padding=(0, 1)
     )
     t.add_column("Model", style="white", min_width=30)
@@ -228,7 +228,7 @@ def list_runtimes() -> None:
     width = console.width or 80
     show_url = width >= 96
 
-    t = Table(
+    t = SafeTable(
         box=box.SIMPLE, show_header=True, header_style="bold white", show_edge=False, padding=(0, 1)
     )
     if show_url:

@@ -17,6 +17,7 @@ from typing import Any
 from rich.console import Console
 from rich.markup import escape
 from rich.rule import Rule
+from rich.table import Table
 from rich.text import Text
 
 
@@ -25,11 +26,25 @@ def _output_encoding() -> str:
 
 
 def _can_encode(text: str) -> bool:
+    """
+    True when *text* survives the trip to *text*'s terminal and back.
+
+    Testing only that ``encode`` does not raise is not enough, and cp1252 is why.
+    It *can* encode an em dash: U+2014 maps to byte 0x97, which is in the range
+    that decodes back to the C1 control characters. So the encode succeeds, the
+    check passed, and the terminal drew a control character where a dash should be —
+    an em dash reaching a Windows console as something that looks like corruption.
+    Requiring the round trip to be lossless rejects those, and costs one decode.
+    """
+    encoding = _output_encoding()
     try:
-        text.encode(_output_encoding())
+        raw = text.encode(encoding)
     except (UnicodeEncodeError, LookupError):
         return False
-    return True
+    try:
+        return raw.decode(encoding) == text
+    except UnicodeDecodeError:  # pragma: no cover - a codec that will not round-trip
+        return False
 
 
 def content(text: str) -> str:
@@ -191,6 +206,25 @@ def _degrade(obj: object) -> object:
             return obj
         return Text(plain, style=obj.style, justify=obj.justify, end=obj.end)
     return obj
+
+
+class SafeTable(Table):
+    """
+    A :class:`rich.table.Table` whose cells go through :func:`safe`.
+
+    A Table renders its cells without ever passing them through the console's
+    ``print``, so the helpers never saw them and only ``_EncodingSafeFile`` stood
+    between a scraped string and the terminal. That file cannot degrade anything —
+    it has already lost the string by then — so a cell holding an em dash rendered as
+    the cp1252 replacement byte while the same glyph written through ``muted()``
+    rendered as ``-``. Same glyph, same terminal, two characters.
+
+    ``safe`` and not ``content``: these cells carry markup on purpose (``muted(...)``
+    and friends have already emitted their tags), and escaping would eat it.
+    """
+
+    def add_row(self, *renderables: Any, **kwargs: Any) -> None:
+        super().add_row(*[_degrade(r) for r in renderables], **kwargs)  # type: ignore[arg-type]
 
 
 console = ProtorConsole(highlight=False, soft_wrap=True)
