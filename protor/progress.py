@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import re
 import time
 from contextlib import contextmanager
 from dataclasses import dataclass, field
@@ -35,21 +36,24 @@ from typing import TYPE_CHECKING, Any
 from rich.live import Live
 from rich.text import Text
 
-from .theme import ERR, OK, SPIN
+from .theme import ERR, OK, SPIN, muted
 from .theme import console as _console
 
 if TYPE_CHECKING:
-    from collections.abc import Callable, Iterator
+    from collections.abc import Callable, Iterator, Mapping
     from types import TracebackType
 
     from rich.console import Console
 
 __all__ = [
+    "MAX_REASONS_SHOWN",
     "RunState",
     "StreamWriter",
     "Throttle",
     "live_display",
     "live_enabled",
+    "normalise_reason",
+    "print_failure_reasons",
     "status_line",
 ]
 
@@ -329,3 +333,52 @@ def status_line(state: RunState, detail: str = "") -> Text:
     if detail:
         line.append(f"  {detail}", style="grey50")
     return line
+
+
+# ── failure reasons ───────────────────────────────────────────────────────────
+
+#: Distinct causes shown before the tail is folded into a count.
+MAX_REASONS_SHOWN = 6
+
+
+def normalise_reason(note: str) -> str:
+    """
+    Collapse a failure note to its cause.
+
+    The engine records one note per URL, so "HTTP 403 for https://a/b" and
+    "HTTP 403 for https://c/d" are the same failure and want to be one line. Only
+    the URL is collapsed.
+
+    The status code used to be collapsed too, and that lost the answer: 403, 404
+    and 500 are three different problems with three different remedies, so a run
+    dominated by missing pages came out indistinguishable from one being
+    rate-limited. That is the question this summary exists to answer.
+    """
+    return re.sub(r"\s+", " ", re.sub(r"https?://\S+", "<url>", note)).strip()
+
+
+def print_failure_reasons(counts: Mapping[str, int]) -> None:
+    """
+    Print accumulated failure causes, most common first.
+
+    Takes a mapping rather than the notes themselves, because the two callers
+    accumulate differently: the scraper holds every row of the run, while the
+    crawler keeps only the last 200 in its live log and has to count as it goes
+    or it misreports every failure earlier in a long crawl.
+
+    Only `scrape` had this at all. The crawler recorded a note on every failed
+    row and read none of them back, so a run could report "6 errors" and leave the
+    user to guess between DNS failure, HTTP 403, a timeout and robots.txt.
+    """
+    if not counts:
+        return
+
+    ranked = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
+    shown = ranked[:MAX_REASONS_SHOWN]
+    hidden = len(ranked) - len(shown)
+
+    _console.print()
+    for reason, count in shown:
+        _console.print(f"  {ERR} {count:>5}  {muted(reason)}")
+    if hidden > 0:
+        _console.print(f"  {muted(f'+ {hidden} more distinct reason(s)')}")

@@ -15,6 +15,7 @@ import sys
 from typing import Any
 
 from rich.console import Console
+from rich.markup import escape
 from rich.rule import Rule
 from rich.text import Text
 
@@ -29,6 +30,27 @@ def _can_encode(text: str) -> bool:
     except (UnicodeEncodeError, LookupError):
         return False
     return True
+
+
+def content(text: str) -> str:
+    """
+    Make *text* safe to interpolate into a rich **markup** string.
+
+    :func:`safe` handles the encoding; this handles rich's markup, which is a
+    separate parser with a separate opinion about square brackets. Rich read
+    ``[slug]`` in a URL as a style tag and silently dropped it, so the crawl
+    view showed ``https://ex.com/docs/`` for a page actually at
+    ``https://ex.com/docs/[slug]`` — no crash, just a wrong answer about which
+    page is being fetched. ``[..]`` happened to survive only because a dot is
+    not a legal tag name.
+
+    Every helper below takes *content*, never markup, which is what makes this
+    the right thing to do in all of them: there is no call site that means to
+    pass a style tag through one. The console's own ``print`` is the opposite
+    case and deliberately does *not* escape, because most output reaches it as an
+    f-string of helpers that have already emitted their own tags.
+    """
+    return escape(safe(text))
 
 
 def safe(text: str) -> str:
@@ -163,41 +185,41 @@ console = ProtorConsole(highlight=False, soft_wrap=True)
 
 # ── rules ─────────────────────────────────────────────────────────────────────
 def header_rule(title: str) -> Rule:
-    return Rule(f"[bold white]{safe(title)}[/bold white]", style="grey35")
+    return Rule(f"[bold white]{content(title)}[/bold white]", style="grey35")
 
 
 def section_rule(title: str) -> Rule:
-    return Rule(f"[grey50]{safe(title)}[/grey50]", style="grey23")
+    return Rule(f"[grey50]{content(title)}[/grey50]", style="grey23")
 
 
 # ── inline text helpers ───────────────────────────────────────────────────────
 def dim(s: str) -> str:
-    return f"[grey23]{safe(s)}[/grey23]"
+    return f"[grey23]{content(s)}[/grey23]"
 
 
 def muted(s: str) -> str:
-    return f"[grey50]{safe(s)}[/grey50]"
+    return f"[grey50]{content(s)}[/grey50]"
 
 
 def label(s: str) -> str:
-    return f"[grey74]{safe(s)}[/grey74]"
+    return f"[grey74]{content(s)}[/grey74]"
 
 
 def bright(s: str) -> str:
-    return f"[bold white]{safe(s)}[/bold white]"
+    return f"[bold white]{content(s)}[/bold white]"
 
 
 def ok(s: str) -> str:
-    return f"[green]{OK} {safe(s)}[/green]"
+    return f"[green]{OK} {content(s)}[/green]"
 
 
 def err(s: str) -> str:
-    return f"[red]{ERR} {safe(s)}[/red]"
+    return f"[red]{ERR} {content(s)}[/red]"
 
 
 def warn(s: str) -> str:
-    return f"[yellow]! {safe(s)}[/yellow]"
+    return f"[yellow]! {content(s)}[/yellow]"
 
 
 def info(s: str) -> str:
-    return f"[grey74]{ARROW} {safe(s)}[/grey74]"
+    return f"[grey74]{ARROW} {content(s)}[/grey74]"

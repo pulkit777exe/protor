@@ -6,6 +6,8 @@ UnicodeEncodeError traceback on those terminals — the one place a user least
 expects a stack trace, since they only asked to see a model list.
 """
 
+from io import StringIO
+
 import pytest
 
 from protor import theme
@@ -86,8 +88,6 @@ class TestPrintHelpersSanitize:
     @pytest.mark.parametrize("rule", [theme.header_rule, theme.section_rule])
     def test_rules_are_encodable(self, rule, monkeypatch):
         monkeypatch.setattr(theme, "_output_encoding", lambda: "ascii")
-        from io import StringIO
-
         from rich.console import Console
 
         con = Console(file=StringIO(), width=80, force_terminal=False)
@@ -191,3 +191,82 @@ class TestConsoleWritesWhatTheTerminalCanEncode:
         )
         assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
         assert "café — 日本 ✓" in done.stdout.decode("utf-8")
+
+
+class TestSquareBracketsSurviveRichMarkup:
+    """
+    Rich's markup parser and the terminal's encoder are different parsers.
+
+    `theme.safe()` handled the encoder. Square brackets reach a second parser
+    first: rich read `[slug]` in a URL as a style tag and dropped it, so the crawl
+    view reported `https://ex.com/docs/` for a page actually at
+    `https://ex.com/docs/[slug]` — no crash, just a wrong answer about which page
+    was being fetched. `[..]` survived only because a dot is not a legal tag name,
+    which is luck rather than a rule.
+
+    The helpers therefore escape markup. They do not, and must not, escape in the
+    console's own `print`: most output arrives there as an f-string of helpers that
+    have already emitted their own tags, and escaping would strip every colour in
+    the tool.
+    """
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "https://ex.com/docs/[slug]",
+            "https://ex.com/a[b]c",
+            "https://ex.com/p/[id]",
+            "https://ex.com/[org]/[repo]/issues",
+            "match [and group] here",
+            "[not a tag]",
+        ],
+    )
+    def test_the_text_arrives_intact(self, value):
+        from rich.console import Console
+
+        buf = StringIO()
+        con = Console(file=buf, width=200, force_terminal=False)
+        for helper in (
+            theme.muted,
+            theme.label,
+            theme.bright,
+            theme.ok,
+            theme.err,
+            theme.warn,
+            theme.info,
+        ):
+            buf.truncate(0)
+            buf.seek(0)
+            con.print(helper(value))
+            assert value in buf.getvalue(), f"{helper.__name__} ate part of {value!r}"
+
+    def test_markup_is_still_interpreted_where_it_is_meant_to_be(self):
+        """
+        The guard against over-escaping.
+
+        `content()` is right for the helpers and wrong for the console's `print`,
+        which is handed markup. If this ever breaks, the tool loses all colour.
+        """
+        import re
+
+        from rich.console import Console
+
+        buf = StringIO()
+        con = Console(file=buf, width=80, force_terminal=True, color_system="truecolor")
+        con.print(f"{theme.label('saved')} {theme.muted('/tmp/x')}")
+        out = buf.getvalue()
+        assert "\x1b[" in out, "no styling reached the terminal"
+        # Rich wraps each styled run separately, so the escape codes sit *inside*
+        # the text; compare against the plain rendering.
+        assert re.sub(r"\x1b\[[0-9;]*m", "", out) == "saved /tmp/x\n"
+
+    def test_the_escaped_form_is_still_readable_text(self):
+        """Escaping must not put backslashes on screen."""
+        from rich.console import Console
+
+        buf = StringIO()
+        con = Console(file=buf, width=200, force_terminal=False)
+        con.print(theme.muted("https://ex.com/docs/[slug]"))
+        out = buf.getvalue()
+        assert "\\" not in out, f"the escape leaked into the output: {out!r}"
+        assert "[slug]" in out

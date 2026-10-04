@@ -39,6 +39,7 @@ from .theme import (
     OK,
     bright,
     console,
+    content,
     err,
     header_rule,
     info,
@@ -200,7 +201,7 @@ def list_runtime_models(
 
     for m in models:
         size = human_bytes(m.size_bytes) if m.size_bytes else "—"
-        t.add_row(m.name, size, m.modified or safe("—"))
+        t.add_row(content(m.name), size, m.modified or content("—"))
 
     console.print(t)
     console.print()

@@ -103,6 +103,9 @@ class _Site:
     def __init__(self) -> None:
         self.pages: dict[str, str] = {}
         self.errors: dict[str, int] = {}
+        #: Paths served with a non-HTML content type, so the engine's
+        #: content-type guard has something to reject.
+        self.binaries: dict[str, str] = {}
         self.delays: dict[str, float] = {}
         self.robots = "User-agent: *\nAllow: /\n"
         #: Body served at /sitemap.xml. Empty means "no sitemap here", which is
@@ -138,6 +141,10 @@ class _Site:
 
     def add(self, path: str, title: str, links: Sequence[str] = ()) -> None:
         self.pages[path] = _page(title, links)
+
+    def binary(self, path: str, content_type: str = "application/pdf") -> None:
+        """Serve *path* with a content type the engine must not parse as a page."""
+        self.binaries[path] = content_type
 
     def fail(self, path: str, status: int) -> None:
         self.errors[path] = status
@@ -192,6 +199,8 @@ class _Site:
             await asyncio.sleep(delay)
         if path in self.errors:
             return web.Response(status=self.errors[path], text=f"{path} is broken")
+        if path in self.binaries:
+            return web.Response(body=b"%PDF-1.4 not a page", content_type=self.binaries[path])
         body = self.pages.get(path)
         if body is None:
             return web.Response(status=404, text="not found")
@@ -1235,3 +1244,125 @@ class TestRecrawlReportsWhatChanged:
         site.forget()
         await asyncio.to_thread(run)
         assert site.not_modified == [], "a page was revalidated with no cache configured"
+
+
+class TestTheCrawlExplainsItsFailures:
+    """
+    A crawl used to record a reason on every failed row and read none of them back.
+
+    The live log has no column for a reason and the summary printed only counts, so
+    a run ending "6 errors" gave the user no way at all — not in the live view, not
+    in the summary — to tell DNS failure from HTTP 403 from a robots.txt refusal.
+    `scrape` has printed this summary since it had one; `crawl` did not.
+
+    Counts are accumulated as the run proceeds rather than read back off the log,
+    because the log is a 200-row deque: on a long crawl every earlier failure would
+    be missing from the summary while the totals said otherwise.
+    """
+
+    async def test_the_causes_are_named_not_just_counted(self, site, tmp_path, monkeypatch):
+        import io
+
+        from rich.console import Console
+
+        site.add("/", "Index", ["/ok.html", "/secret.html", "/missing.html"])
+        site.add("/ok.html", "Fine")
+        site.forbid("/secret.html")
+        site.fail("/missing.html", 404)
+
+        buf = io.StringIO()
+        monkeypatch.setattr("protor.crawler.console", Console(file=buf, width=100))
+        monkeypatch.setattr("protor.progress._console", Console(file=buf, width=100))
+
+        await _crawl(site, output_dir=tmp_path, max_pages=10)
+
+        out = buf.getvalue()
+        assert "errors" in out, f"no errors reported at all: {out}"
+        assert "robots" in out.lower(), f"the robots refusal is not explained: {out}"
+        assert "404" in out, f"the status-code failure is not explained: {out}"
+
+    async def test_skipped_pages_are_counted_in_the_summary(self, site, tmp_path, monkeypatch):
+        """
+        Skips were logged with a status but tallied nowhere.
+
+        A run that dispatched 30 URLs, scraped 10 and discarded 20 as non-HTML
+        reported only the 10, so the page count did not add up to anything the
+        user could see.
+        """
+        import io
+
+        from rich.console import Console
+
+        site.add("/", "Index", ["/doc.pdf"])
+        site.binary("/doc.pdf")
+
+        buf = io.StringIO()
+        monkeypatch.setattr("protor.crawler.console", Console(file=buf, width=100))
+        monkeypatch.setattr("protor.progress._console", Console(file=buf, width=100))
+
+        await _crawl(site, output_dir=tmp_path, max_pages=10)
+
+        out = buf.getvalue()
+        assert "1 skipped" in out, f"a skipped page is invisible in the summary: {out}"
+
+    def test_reasons_survive_a_log_that_has_overflown(self):
+        """
+        The summary must not be derived from the live log.
+
+        The log keeps the last 200 rows, so a crawl of 400 failures would report
+        the causes of the final 200 and say nothing about the first 200 while the
+        error total counted all 400. Driven through the real status hook so the
+        log fills and overflows exactly as it would in a crawl.
+        """
+        import io
+        from collections import deque
+        from types import SimpleNamespace
+
+        from rich.console import Console
+
+        from protor.crawler import Crawler, _State
+        from protor.progress import print_failure_reasons
+
+        crawler = Crawler.__new__(Crawler)
+        crawler._state = _State()
+        crawler._log_index = {}
+        crawler._state.log = deque(maxlen=5)
+        # _on_status reads one number off the queue to refresh the live view.
+        crawler._queue = SimpleNamespace(queue_size=0)  # type: ignore[attr-defined]
+
+        for i in range(50):
+            crawler._on_status("error", f"https://ex.com/{i}", {"note": "HTTP 403"})
+
+        assert crawler._state.errors == 50
+        assert len(crawler._state.log) == 5, "the log should still be bounded"
+
+        buf = io.StringIO()
+        import protor.progress as progress_mod
+
+        original = progress_mod._console
+        progress_mod._console = Console(file=buf, width=100)
+        try:
+            print_failure_reasons(crawler._state.reasons)
+        finally:
+            progress_mod._console = original
+
+        assert "50" in buf.getvalue(), buf.getvalue()
+
+    def test_the_status_code_is_not_collapsed_away(self):
+        """
+        403, 404 and 500 are three different problems with three different fixes.
+
+        Collapsing them into `HTTP <code>` — which is what the per-URL tidy-up
+        used to do as a side effect — makes a run dominated by missing pages
+        indistinguishable from one being rate-limited, which is the question the
+        summary exists to answer.
+        """
+        from protor.progress import normalise_reason
+
+        assert normalise_reason("Fetch failed for 'https://a.com/x': HTTP 403") != (
+            normalise_reason("Fetch failed for 'https://b.com/y': HTTP 500")
+        )
+        # The URL still collapses, which is the actual noise: one cause, one line.
+        assert normalise_reason("HTTP 403 for 'https://a.com/x'") == normalise_reason(
+            "HTTP 403 for 'https://b.com/y'"
+        )

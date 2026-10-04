@@ -56,11 +56,15 @@ SCHEMA = {
 class _Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
 
+    #: A class attribute rather than the module-level name, so a test can serve a
+    #: different page by subclassing instead of monkeypatching a global.
+    HTML = PAGE
+
     def log_message(self, fmt: str, *args: object) -> None:
         pass
 
     def do_GET(self) -> None:
-        body = PAGE.encode("utf-8")
+        body = self.HTML.encode("utf-8")
         self.send_response(200)
         self.send_header("Content-Type", "text/html; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -220,3 +224,83 @@ class TestExtractCommand:
             _run(["extract", "example.com/no-scheme", schema])
         assert excinfo.value.code == 1
         assert "scheme" in capsys.readouterr().out
+
+
+class TestThePreviewSurvivesHostileValues:
+    """
+    The preview is the only place a scraped string is shown to a person.
+
+    Every other renderer in the tool goes through a `theme` helper or a Table
+    cell; this one used to be an f-string, so a value containing `[b]` was parsed
+    as rich markup and part of it vanished — after the JSON had already been
+    written, so the user lost the preview and kept the data. It also truncated
+    with `[:80]`, which counts codepoints rather than display cells: 80 CJK
+    characters is 160 columns of overflow, and whether the ellipsis appeared had
+    nothing to do with how wide the line rendered.
+    """
+
+    HOSTILE_PAGE = """<!DOCTYPE html>
+<html><body><main>
+  <section class="product"><h2 class="name">Widget [beta] edition</h2></section>
+  <section class="product"><h2 class="name">日本語のとても長い商品名です</h2></section>
+</main></body></html>
+"""
+
+    def _run_against(self, page_html, tmp_path, monkeypatch):
+        import io
+
+        from rich.console import Console
+
+        class _HandlerFor(_Handler):
+            HTML = page_html
+
+        server = ThreadingHTTPServer(("127.0.0.1", 0), _HandlerFor)
+        server.daemon_threads = True
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        host, port = server.server_address[:2]
+        buf = io.StringIO()
+        monkeypatch.setattr("protor.cli.console", Console(file=buf, width=100))
+        try:
+            _run(
+                [
+                    "extract",
+                    f"http://{host}:{port}/index.html",
+                    _write_schema(tmp_path, SCHEMA),
+                    "--output",
+                    str(tmp_path / "out"),
+                ]
+            )
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+        return buf.getvalue()
+
+    def test_brackets_in_a_value_are_not_read_as_markup(self, tmp_path, monkeypatch):
+        out = self._run_against(self.HOSTILE_PAGE, tmp_path, monkeypatch)
+        assert "Widget [beta] edition" in out, f"the preview mangled the value:\n{out}"
+
+    def test_a_wide_value_is_truncated_by_display_width(self, tmp_path, monkeypatch):
+        """80 codepoints of CJK is 160 columns; the line has to stay bounded."""
+        out = self._run_against(self.HOSTILE_PAGE, tmp_path, monkeypatch)
+        long_line = max(out.splitlines(), key=len)
+        assert len(long_line) <= 100, f"the preview overflowed its width: {long_line!r}"
+
+    def test_values_line_up_in_one_column(self, tmp_path, monkeypatch):
+        """
+        A Table like every other renderer, so the values form a column.
+
+        The old f-string put a colon after a variable-length key, so the values
+        started wherever that key happened to end.
+        """
+        out = self._run_against(PAGE, tmp_path, monkeypatch)
+        rows = [
+            line
+            for line in out.splitlines()
+            if line.strip().startswith(("name", "price", "link", "raw_href"))
+        ]
+        assert len(rows) >= 4, f"the preview lost fields:\n{out}"
+        starts = {len(line) - len(line.lstrip()) for line in rows}
+        assert len(starts) == 1, f"the value column is ragged: {rows}"
+        assert any("Blue Widget" in line for line in rows), rows

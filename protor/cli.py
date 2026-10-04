@@ -24,6 +24,10 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, NoReturn
 
+from rich import box
+from rich.cells import cell_len, set_cell_size
+from rich.table import Table
+
 from .analyzer import (
     FOCUS_CHOICES,
     analyze_with_runtime,
@@ -44,7 +48,7 @@ from .formatters import FORMAT_CHOICES
 from .llm_backends import BACKEND_CHOICES
 from .runtimes import RUNTIMES, get_runtime, runtime_names
 from .scraper import scrape_multiple
-from .theme import ERR, console, err, info, safe
+from .theme import ERR, console, content, err, info, safe
 from .updater import check_for_update, perform_update
 from .utils import get_default_output_dir, load_json, safe_filename, validate_url
 
@@ -95,6 +99,10 @@ def _load_schema(path: str | None) -> ExtractionSchema | None:
         return ExtractionSchema.from_json(path)
     except Exception as e:
         _abort(f"Failed to load schema: {e}", hint="Schema must be a valid JSON file")
+
+
+#: Display width of a previewed record value, in terminal cells.
+_PREVIEW_CELL_WIDTH = 80
 
 
 # ── command handlers ──────────────────────────────────────────────────────────
@@ -263,12 +271,23 @@ def _cmd_extract(args: argparse.Namespace) -> None:
     console.print(f"  {label('saved')} {muted(str(out_file))}")
     console.print()
 
-    # Print preview
+    # Print preview. A Table like every other renderer here, so the field names
+    # line up; the previous f-string put a colon after a variable-length key and
+    # the columns were ragged. Values are escaped because a scraped string is
+    # content, not markup, and truncated by display cells rather than codepoints
+    # — `[:80]` on CJK is 160 columns of overflow, and the "..." was decided by a
+    # count unrelated to how wide the line actually rendered.
     for i, record in enumerate(results[:3], 1):
-        console.print(f"  [{i}]")
+        console.print(f"  {label(f'[{i}]')}")
+        preview = Table(box=box.SIMPLE, show_header=False, show_edge=False, padding=(0, 2))
+        preview.add_column(style="grey74", no_wrap=True)
+        preview.add_column(style="white", overflow="fold")
         for k, v in record.items():
-            display = str(v)[:80] + ("..." if len(str(v)) > 80 else "")
-            console.print(f"      {k}: {display}")
+            text = str(v)
+            if cell_len(text) > _PREVIEW_CELL_WIDTH:
+                text = set_cell_size(text, _PREVIEW_CELL_WIDTH - 3) + "..."
+            preview.add_row(content(k), content(text))
+        console.print(preview)
         console.print()
     if len(results) > 3:
         console.print(f"  ... and {len(results) - 3} more")

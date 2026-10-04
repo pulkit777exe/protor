@@ -39,7 +39,7 @@ import contextlib
 import json
 import sqlite3
 import time
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -59,6 +59,7 @@ from .config import (
 )
 from .engine import CrawlEngine, RecursiveSource
 from .http_cache import HTTPCache
+from .progress import normalise_reason, print_failure_reasons
 from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
 from .theme import (
@@ -68,6 +69,7 @@ from .theme import (
     SPIN,
     bright,
     console,
+    content,
     header_rule,
     info,
     label,
@@ -428,12 +430,20 @@ class _State:
     #: `scraped`, and the number that distinguishes a re-crawl from a first one.
     unchanged: int = 0
     current: str = ""
+    #: Pages the engine declined — not HTML, off-domain, over the link cap. They
+    #: were dispatched and then discarded, so a run that queued 30 and scraped 10
+    #: used to report only the 10.
+    skipped: int = 0
     queue_n: int = 0
     max_pages: int = DEFAULT_MAX_PAGES
     log: deque[_CrawlLog] = field(default_factory=lambda: deque(maxlen=_LOG_HISTORY))
     #: Total log entries ever appended, so numbering stays stable once the
     #: deque starts discarding old rows.
     log_total: int = 0
+    #: Failure cause -> count, over the whole run. Not derived from `log`, which
+    #: keeps only the last 200 rows: reading reasons back off a bounded view would
+    #: silently misreport every failure earlier in a long crawl.
+    reasons: Counter[str] = field(default_factory=Counter)
 
 
 _BAR_WIDTH = 32
@@ -487,7 +497,7 @@ def _render(state: _State, output_dir: str) -> Group:
             s = Text(f"{SKIP} skipped", style="grey50")
         else:
             s = Text(f"{SPIN} ...", style="yellow")
-        log_t.add_row(str(i), entry.domain, s)
+        log_t.add_row(str(i), content(entry.domain), s)
 
     return Group(Rule(style="grey23"), stat, Rule(style="grey23"), log_t)
 
@@ -626,9 +636,14 @@ class Crawler:
             + (f" ({muted(str(self._state.unchanged))} unchanged)" if self._state.unchanged else "")
             + (f", {self._state.errors} errors" if self._state.errors else "")
             + (f", {self._state.blocked} blocked" if self._state.blocked else "")
+            + (f", {self._state.skipped} skipped" if self._state.skipped else "")
         )
         console.print(f"  {label('output')} {muted(str(self.output_dir))}")
         console.print()
+        # The log records a reason on every failure and the table has no column
+        # for it, so without this a crawl could report "6 errors" and leave the
+        # user to guess between DNS failure, HTTP 403, a timeout and robots.txt.
+        print_failure_reasons(self._state.reasons)
 
     def _save_checkpoint(self) -> None:
         """
@@ -781,12 +796,19 @@ class Crawler:
             self._update_log(url, "ok", domain)
         elif status == "error":
             self._state.errors += 1
-            self._update_log(url, "err", domain, str(row.get("note", "")))
+            self._update_log(url, "err", domain, self._note(url, row))
         elif status == "blocked":
             self._state.blocked += 1
-            self._append_log(url, "blocked", domain, str(row.get("note", "")))
+            self._append_log(url, "blocked", domain, self._note(url, row))
         elif status == "skipped":
-            self._update_log(url, "skip", domain, str(row.get("note", "")))
+            self._state.skipped += 1
+            self._update_log(url, "skip", domain, self._note(url, row))
+
+    def _note(self, url: str, row: dict[str, Any]) -> str:
+        """Record *row*'s failure cause and return it for the log."""
+        note = str(row.get("note", "") or "")
+        self._state.reasons[normalise_reason(note)] += 1
+        return note
 
     def _append_log(self, url: str, status: str, domain: str, note: str = "") -> None:
         """

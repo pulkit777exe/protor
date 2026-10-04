@@ -776,7 +776,6 @@ class TestFailureReasonsAreReported:
 
         from protor.scraper import _print_failure_reasons
 
-        monkeypatch.setattr("protor.scraper.console", Console(file=io.StringIO(), width=100))
         rows = [
             {"status": "error", "note": "Fetch failed for 'https://a.com/': timeout"},
             {"status": "error", "note": "Fetch failed for 'https://b.com/': timeout"},
@@ -785,7 +784,9 @@ class TestFailureReasonsAreReported:
             {"status": "done", "note": None},
         ]
         buf = io.StringIO()
-        monkeypatch.setattr("protor.scraper.console", Console(file=buf, width=100))
+        # The grouping moved to protor.progress so the crawler can print the same
+        # summary; the write happens there, so that is what has to be redirected.
+        monkeypatch.setattr("protor.progress._console", Console(file=buf, width=100))
         _print_failure_reasons(rows)
         out = buf.getvalue()
         assert "timeout" in out and "2" in out, "grouped the repeated cause"

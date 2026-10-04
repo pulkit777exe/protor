@@ -16,7 +16,7 @@ Public API
 from __future__ import annotations
 
 import json
-import re
+from collections import Counter
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urlparse
@@ -30,9 +30,10 @@ from .config import DEFAULT_CONCURRENCY, DEFAULT_TIMEOUT, RATE_LIMIT_DELAY
 from .engine import CrawlEngine, StaticQueue, StaticSource
 from .http_cache import HTTPCache
 from .parser import extract_links
+from .progress import normalise_reason, print_failure_reasons
 from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
-from .theme import ERR, OK, SPIN, bright, console, header_rule, label, muted, safe
+from .theme import ERR, OK, SPIN, bright, console, content, header_rule, label, muted, safe
 from .utils import ensure_output_dir, human_bytes
 
 if TYPE_CHECKING:
@@ -48,8 +49,6 @@ __all__ = ["extract_links", "scrape_multiple", "scrape_site_async"]
 
 
 #: Distinct failure reasons to show, so a run against 500 dead URLs stays readable.
-MAX_REASONS_SHOWN = 6
-
 _FAILED_STATES = ("error", "blocked", "skipped")
 
 
@@ -59,32 +58,15 @@ def _print_failure_reasons(rows: list[dict[str, Any]]) -> None:
 
     The engine records a reason on every non-success row, but the live table has
     no room for it, so a run could only report "3 failed" — leaving the user to
-    guess between DNS failure, HTTP 403, a timeout and robots.txt. Groups by
-    cause, since a handful of reasons usually explains a whole batch.
+    guess between DNS failure, HTTP 403, a timeout and robots.txt. The grouping
+    lives in :mod:`protor.progress` because the crawler needs the same summary
+    and did not have it at all.
     """
-    reasons: dict[str, int] = {}
+    reasons: Counter[str] = Counter()
     for row in rows:
-        if row.get("status") not in _FAILED_STATES:
-            continue
-        note = str(row.get("note", "")).strip() or "no reason recorded"
-        # Collapse per-URL and per-status detail so one cause is one group.
-        key = re.sub(r"https?://\S+", "<url>", note)
-        key = re.sub(r"HTTP \d+", "HTTP <code>", key)
-        key = re.sub(r"\s+", " ", key).strip()
-        reasons[key] = reasons.get(key, 0) + 1
-
-    if not reasons:
-        return
-
-    ranked = sorted(reasons.items(), key=lambda kv: (-kv[1], kv[0]))
-    shown = ranked[:MAX_REASONS_SHOWN]
-    hidden = len(ranked) - len(shown)
-
-    console.print()
-    for reason, count in shown:
-        console.print(f"  {ERR} {count:>5}  {muted(reason)}")
-    if hidden > 0:
-        console.print(f"  {muted(f'+ {hidden} more distinct reason(s)')}")
+        if row.get("status") in _FAILED_STATES:
+            reasons[normalise_reason(str(row.get("note", "") or ""))] += 1
+    print_failure_reasons(reasons)
 
 
 #: How many rows the live batch table shows. The crawler bounds its log the same
@@ -135,7 +117,7 @@ def _build_table(rows: list[dict[str, Any]]) -> Table:
 
         t.add_row(
             str(r.get("idx", "")),
-            r.get("domain", ""),
+            content(r.get("domain", "")),
             s,
             human_bytes(r["bytes"]) if r.get("bytes") else "—",
             f"{r['ms']}ms" if r.get("ms") else "—",
