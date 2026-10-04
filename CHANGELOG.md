@@ -28,6 +28,16 @@
   cheaper and the engine canonicalises the same string twice per link, but a
   crawl's URLs are overwhelmingly distinct, so the cache evicts and the project's
   own scaling gate then reported the function superlinear.
+- **A live run formatted result lines it then threw away.** `LiveDisplay.line()`
+  ignores its argument while animating, because the table already carries the row,
+  but the caller built the string first: 1.2us per finished page, 48ms over a
+  40,000-page crawl for nothing. `wants_lines` asks first, at 52ns.
+- **The noise-pattern split cost 18% of the noise pass** if done as two regexes
+  (8.90ms against 7.56ms over 2000 classed tags, measured round-robin so machine
+  drift could not favour a variant), because every tag carrying a class pays for
+  both. One pattern with named alternation branches keeps the distinction in a
+  single scan; reading the branch back off `lastindex` costs 3%, against 9% for
+  `match.group`.
 
 ### New Features
 
@@ -56,6 +66,147 @@
 - **`Retry-After` is honoured** instead of our own backoff. Both defined forms,
   delta-seconds and HTTP-date, capped at two minutes so one hostile header
   cannot stall a run, with nonsense falling back to backoff.
+
+- **A crawl says how long it has run and how fast.** Neither was shown, and their
+  absence is what makes a slow crawl look broken: `DomainRateLimiter` holds a
+  single-domain crawl to one request every 0.25s however far `--auto-scale` has
+  climbed, so a run behaving exactly as designed looked identical to a stalled
+  one. A rate is not invented from a single page — one page's timing is noise, and
+  "0 pages/min" reads as the stall the row exists to remove.
+- **A crawl explains its failures.** It recorded a reason on every failed row and
+  read none of them back: the live log has no column for one and the summary
+  printed counts only, so a run ending "6 errors" gave no way at all to tell DNS
+  failure from HTTP 403 from a robots.txt refusal. `scrape` has printed that
+  summary since it had one. The counts are accumulated as the run proceeds rather
+  than read off the log, which keeps only the last 200 rows — a 400-failure crawl
+  would otherwise explain its last 200 while the total counted all 400. The status
+  code is not collapsed to `HTTP <code>`, because 403, 404 and 500 are three
+  different problems with three different fixes; only the per-URL part is.
+- **A piped run says what happened, as it happens.** `protor scrape ... | tee log`
+  has promised "one clean line per result" since before the promise was true. With
+  animation off every update was a no-op for the whole run, so a ten-minute scrape
+  logged a header, then ten minutes of nothing, then a block — and which URLs had
+  failed appeared nowhere until it was over. Each finished row now writes status,
+  domain, size, time and reason. Deliberately not a Table: a box drawn 3,000 times
+  in a log file is noise.
+- **Ctrl-C reports what was already saved.** The most common way a long run ends,
+  and both commands printed nothing about it. The crawl's checkpoint is written on
+  the way out either way, so its summary was already true when the interrupt
+  arrived; `scrape` had no handler at all, so a batch ended with pages on disk and
+  no `sites_index.json` pointing at them. Both still exit 130, and the crawl says
+  the command that continues it.
+- **Both live views size themselves to the window.** The crawler's rendered 29
+  lines and the batch table 28, on a terminal that is 24 — so the bar, the
+  percentage and the counts scrolled out of view, which is the part the log table
+  does not duplicate. Row budgets come from the window now, with a floor so a short
+  terminal shows a few rows rather than none.
+- **`protor runtimes` says it is probing.** Seventeen runtimes, one request each, a
+  second apiece behind a firewall that DROPs. A spinner where there is a cursor and
+  one plain line where there is not, since rich's `status` prints nothing at all to
+  a pipe.
+
+### Changed
+
+- **Diagnostics go to stderr; stdout is the report.** Everything went to stdout, so
+  `protor scrape url > report.txt` interleaved "HTTP 403" into the report and
+  `2>/dev/null` could not silence a failure. Errors, warnings and the advice that
+  goes with them are on stderr now; everything reporting *what happened* — the
+  results table, the run's summary, `protor version`, the model's answer — stays on
+  stdout. A script that captured the error report in its data now gets nothing.
+- **`--schema` outranks the noise heuristics.** `_NOISE_PATTERN` matched any class
+  or id containing `ad-`, `social`, `share`, `related`, `banner` or `promo`, and
+  ran before extraction. Those are ordinary words: a classifieds site keeps its
+  listings in `.ad-card`, a news site keeps its stories in `.related-posts`. A
+  `--schema` run whose own selectors named them extracted **nothing** and reported
+  success, and the same content vanished from the text and markdown beside it.
+  Cookie banners, consent dialogs and pagers are still stripped either way, as are
+  nav and footer, so a plain scrape is unchanged.
+- **`--block-ads` no longer refuses the target.** It compared the URL against a
+  list of tracker apex domains, and facebook.com, twitter.com, linkedin.com and
+  optimizely.com are all on it, so `protor scrape https://www.facebook.com
+  --block-ads` fetched nothing and reported the target itself as blocked. Hosts the
+  caller named are exempt; third-party trackers are still blocked.
+- **The batch table declares its layout instead of negotiating it.** Its columns
+  needed 81 and 80 is the canonical width, so rich dropped the last one outright —
+  the JS count vanished with no ellipsis and no warning. Fixing the arithmetic was
+  not enough, because rich sizes columns to their *content* and only then finds the
+  table too wide, at which point it shrinks every column: a 45-character domain in a
+  72-column window rendered a size as `120.…` and a time as `1…`. Columns carry the
+  widths they need, Domain is the only elastic one and gets a ceiling computed from
+  what the window leaves over, and a column is given up whole rather than squeezed.
+  Verified from 40 to 200 columns.
+- **Durations render in at most six characters** (`human_duration`). The Time
+  column was seven wide because `30000ms` is seven characters, and `--timeout` is
+  the user's to set: at 300s with three retries a page reaches 900000ms, which rich
+  ellipsised to `900000…`, dropping the unit so the cell read as corrupt data.
+
+### Fixes
+
+- **Rich's markup parser ate square brackets in displayed URLs.** `[slug]` and
+  `[id]` were read as style tags and dropped, so the crawl view reported
+  `https://ex.com/docs/` for a page actually at `https://ex.com/docs/[slug]` — no
+  crash, just a wrong answer about which page was being fetched. `[..]` survived
+  only because a dot is not a legal tag name.
+- **A table cell was the one place a glyph could not degrade.** `ProtorConsole` is
+  the chokepoint for everything printed and `_EncodingSafeFile` is the last line of
+  defence for everything written, but rich renders cells itself, so the helpers never
+  saw them and by the time the file wrapper could act the string had lost its glyphs
+  to `errors="replace"`. A glyph in a cell became `?` on a cp1252 terminal while the
+  same glyph through `muted()` became `o` — one character, two meanings, one screen.
+- **Importing `protor.__main__` ran the whole CLI.** It called `cli()` at module
+  scope with no guard, and `pkgutil.iter_modules` lists `__main__` among the
+  package's submodules like any other, so anything that walks the package ran the
+  CLI on import and exited on whatever argv it was holding.
+- **The progress bar and its own percentage disagreed.** `round(32 * 63/64)` is 32,
+  so the bar was full while the number beside it read 98%.
+- **A skipped page looked like work in progress.** `protor scrape` had no case for
+  it and fell through to the branch that renders in-progress work, with the spinner
+  glyph in yellow. The crawl's view already drew it with the skip glyph in grey.
+- **Skipped pages were tallied nowhere.** Logged with a status, absent from every
+  counter, so a run that dispatched 30 URLs, scraped 10 and discarded 20 as
+  non-HTML reported only the 10.
+- **Success and failure headlines were colourless.** Warnings were yellow and
+  errors red; `✓ 40 scraped` and `✗ 2 failed` were both the default style.
+- **`protor models` reported an unreachable runtime twice**, in two voices and four
+  lines: the message printed there, then `_abort` printing the exception that
+  already contained every fact.
+- **`warn()` already prints "!", and the call site passed "warn" as its argument**,
+  so the line read `! warn 3 of 10 records matched the container`.
+- **`--help`'s environment block was ragged.** Names were padded to a literal 22
+  columns while `DOCKER_MODEL_RUNNER_URL` is 23, pushing that row's description out.
+  The width comes from the entries now, so adding a runtime cannot break it again.
+- **`protor run --help` listed ten flags with no help text at all**, so for the
+  options that differ from `scrape` it was materially less useful than
+  `protor scrape --help`.
+- **`protor update` ran pip with its output captured, then discarded it.** The user
+  watched "Updating protor to v2.10.0..." for up to two minutes with no sign of life,
+  and on failure was told only "Update failed. Try: pip install --upgrade protor" —
+  never *why*, which is the only part that differs between a permissions failure, a
+  yanked release and a proxy that cannot reach PyPI.
+- **The `extract` preview was the only renderer not built on a Table**, so it put a
+  colon after a variable-length key and the values started wherever that key ended.
+  It also truncated with `[:80]`, which counts codepoints: 80 CJK characters is 160
+  columns, and whether the ellipsis appeared had nothing to do with how wide the line
+  rendered.
+- **40 unreachable lines sat after a `return`** in `engine.py`: a second
+  implementation of the JS filename collision logic, complete with its own
+  docstring, referencing an attribute that does not exist.
+
+### Internal
+
+- **A CI job now fails the test that leaks a module patch, not the one it breaks.**
+  A test patched `protor.engine.fetch` and restored `parse_html` in a `finally` but
+  not `fetch`. It passed in isolation, passed in its own file, and then failed a
+  schema-extraction test in a different file with zero records, four hundred tests
+  later — a failure that reads as a product bug in the extractor. Gated on
+  `PROTOR_CHECK_ISOLATION` because it costs ~8% of the suite.
+- **Deleted `RunState`, `status_line` and `LiveDisplay.state`.** Written, given a
+  docstring claiming `RunState` was "the only thing that describes what is
+  happening", exported, and tested — with no caller outside their own tests. The
+  claim was false and the parallel abstraction was a trap for the next reader.
+- **Removed `_AD_PATH_PATTERNS`/`_AD_FILE_PATTERNS` from the blocklist**: compiled,
+  never referenced, and wiring them in would block every image on a page and
+  ordinary path segments like `/log/`.
 
 ## v2.9.0 - 2026-10-03
 
