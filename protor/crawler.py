@@ -515,6 +515,7 @@ class Crawler:
         auto_scale: bool = False,
         live: bool = True,
         allow_internal_redirects: bool = False,
+        download_js: bool = False,
     ) -> None:
         self.start_url = start_url
         self.max_pages = max_pages
@@ -524,6 +525,7 @@ class Crawler:
         self.auto_scale = auto_scale
         self._live = live
         self._allow_internal_redirects = allow_internal_redirects
+        self._download_js = download_js
 
         self._base_domain = urlparse(start_url).netloc
         self._state = _State(max_pages=max_pages)
@@ -674,6 +676,7 @@ class Crawler:
             live_render=lambda: _render(self._state, str(self.output_dir)),
             live=self._live,
             allow_internal_redirects=self._allow_internal_redirects,
+            download_js=self._download_js,
         )
         await engine.arun()
 

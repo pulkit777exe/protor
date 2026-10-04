@@ -674,7 +674,17 @@ class TestHostileMarkup:
         assert "DEEP" in page.text_content
 
     def test_decomposed_check_is_not_quadratic(self):
-        """getattr(tag,'decomposed') walks the subtree per tag via bs4 __getattr__."""
+        """
+        `getattr(tag, "decomposed")` walks the subtree per tag via bs4
+        `__getattr__`, which made a page cost ~625 ms.
+
+        Measured as the *best* of several runs, and warmed up first. A single
+        un-warmed wall-clock sample is not a measurement of this function: under
+        load it read 75 us/tag — 940x the real cost — which would look exactly
+        like the regression this test exists to catch, and send whoever saw it
+        hunting a phantom. Noise can only add time, so the fastest observed run is
+        the one closest to the cost of the code.
+        """
         import time
 
         from bs4 import BeautifulSoup
@@ -683,11 +693,22 @@ class TestHostileMarkup:
 
         deep = BeautifulSoup("<div>" * 600 + "<p>x</p>" + "</div>" * 600, "lxml")
         tags = deep.find_all(True)
-        start = time.perf_counter()
-        for t in tags:
-            _is_decomposed(t)
-        per_tag = (time.perf_counter() - start) / len(tags)
-        assert per_tag < 5e-6, f"{per_tag * 1e6:.2f} us/tag is too slow (was ~625 ms/page)"
+
+        def one_pass() -> float:
+            start = time.perf_counter()
+            for t in tags:
+                _is_decomposed(t)
+            return (time.perf_counter() - start) / len(tags)
+
+        # Warm up first: the initial execution pays import-time and allocator
+        # costs that say nothing about the function being measured.
+        one_pass()
+
+        best = min(one_pass() for _ in range(5))
+        # Real cost is ~0.08 us/tag. The ceiling sits an order of magnitude above
+        # that so ordinary machine noise cannot trip it, while still being ~7800x
+        # under the ~625 ms/page the old implementation cost.
+        assert best < 5e-6, f"{best * 1e6:.2f} us/tag is too slow (was ~625 ms/page)"
 
 
 # ── robots.txt semantics ─────────────────────────────────────────────────────
@@ -1238,3 +1259,51 @@ class TestDomainFilterIsCaseInsensitive:
         """Case-insensitivity must not turn the filter off."""
         stats = await self._scrape_with(tmp_path, monkeypatch, "other.com")
         assert stats.scraped == 0
+
+
+class TestMaxTargetsIsADispatchCeiling:
+    """
+    `--max-pages` bounds requests, not just successes.
+
+    The spawn loop compares ``stats.total`` — scraped + errors + blocked — against
+    the ceiling, so a *skipped* URL would not advance it and the ceiling would
+    not bound anything. Nothing can skip: the parser yields same-host links only,
+    so a recursive crawl never hands the domain filter a URL to reject. That is
+    the reason the ceiling holds, and it is an invariant rather than luck — if
+    the parser's host check were loosened, the ceiling would quietly become a
+    suggestion with nothing left to say so.
+    """
+
+    async def test_dispatch_never_exceeds_the_ceiling(self, tmp_path, monkeypatch):
+        import protor.engine as engine_mod
+        from protor.engine import RecursiveSource
+        from protor.fetcher import FetchResult
+
+        async def fake_fetch(session, url, **kwargs):
+            # Every page links to the whole site, so the frontier never empties.
+            body = (
+                "<html><body>"
+                + "".join(f'<p><a href="https://ex.com/p{i}">x</a></p>' for i in range(30))
+                + "</body></html>"
+            )
+            return FetchResult(text=body, nbytes=len(body))
+
+        monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+
+        for ceiling in (1, 2, 5):
+            engine = CrawlEngine(
+                queue=StaticQueue(["https://ex.com/"]),
+                link_source=RecursiveSource(),
+                output_dir=tmp_path / str(ceiling),
+                max_targets=ceiling,
+                allowed_domain="ex.com",
+                concurrency=4,
+            )
+            stats = await engine.arun()
+            assert stats.dispatched <= ceiling, (
+                f"ceiling {ceiling} spawned {stats.dispatched} tasks"
+            )
+            assert stats.total == stats.dispatched, (
+                f"a dispatched URL neither succeeded, failed nor blocked: "
+                f"total={stats.total} dispatched={stats.dispatched}"
+            )

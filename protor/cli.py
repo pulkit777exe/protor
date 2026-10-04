@@ -180,6 +180,7 @@ def _cmd_crawl(args: argparse.Namespace) -> None:
         auto_scale=args.auto_scale,
         live=not args.no_live,
         allow_internal_redirects=args.allow_internal_redirects,
+        download_js=args.js,
     ).crawl()
 
 
@@ -300,6 +301,15 @@ def _cmd_update(args: argparse.Namespace) -> None:
             console.print(f"  {info('Update available! Run: protor update')}\n")
         else:
             console.print(f"\n  protor is already up to date (v{current})\n")
+        return
+
+    # Refuse to install over an editable checkout only once there is something to
+    # install. Returning before the check made `--check` — documented as "only
+    # check for updates, don't install" — report nothing at all in a dev tree,
+    # which is where a person is most likely to run it.
+    if editable:
+        console.print(f"\n  {err('Editable install detected.')}")
+        console.print(f"  {info('Update via: git pull && pip install -e .')}\n")
         return
 
     console.print(f"\n  Current: {err(current)}  |  Latest: {info(latest)}")
@@ -608,6 +618,16 @@ def _build_parser() -> argparse.ArgumentParser:
         "--auto-scale",
         action="store_true",
         help="automatically adjust concurrency based on success rates",
+    )
+    cp.add_argument(
+        "--js",
+        action="store_true",
+        help=(
+            "also download each page's JavaScript files into the site's js/ "
+            "directory (off by default: a crawl can cover thousands of pages, "
+            "and scraping pulls a script bundle per page. `protor scrape` does "
+            "download them by default, and this is the same switch)"
+        ),
     )
     _add_output_flags(cp)
     cp.set_defaults(func=_cmd_crawl)

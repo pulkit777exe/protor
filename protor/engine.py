@@ -258,6 +258,10 @@ class CrawlEngine:
         self._cache = cache
         self._headers = headers
         self._hooks = hooks
+        # Script filenames this run has already reserved, keyed by site
+        # directory and then by URL, so a second page of the same site cannot be
+        # handed a name the first used. See _reserve_js_filename.
+        self._js_names: dict[str, dict[str, str]] = {}
         self._extraction_schema = extraction_schema
         self._blocklist = blocklist
         self._allow_internal_redirects = allow_internal_redirects
@@ -525,7 +529,7 @@ class CrawlEngine:
                             download_file(
                                 session,
                                 jurl,
-                                js_dir / self._js_filename(i, jurl, taken),
+                                js_dir / self._reserve_js_filename(site_dir.name, i, jurl, taken),
                             )
                         ): i
                         for i, jurl in enumerate(js_links)
@@ -600,10 +604,23 @@ class CrawlEngine:
         """
         Return a collision-free filename for a downloaded script.
 
-        Basenames are not unique across CDNs (``/static/vendor.js`` and
-        ``/lib/vendor.js`` both wanted ``vendor.js``), which silently
-        overwrote earlier downloads while the manifest still listed every URL.
-        A short hash of the full URL keeps distinct files distinct.
+        Two collisions have to be avoided, and they are not the same one.
+
+        *Within one page*, basenames are not unique across the CDNs it pulls
+        from — ``/static/vendor.js`` and ``/lib/vendor.js`` both wanted
+        ``vendor.js``, which silently overwrote earlier downloads while the
+        manifest still listed every URL.
+
+        *Across pages of one site*, the scripts share a directory: ``js_dir`` is
+        per-domain, not per-page. Two pages of a site routinely load the same
+        ``app.js`` path — one tagged with a cache-busting query, one not, which
+        the server answers differently — and the second download overwrote the
+        first. Measured: a two-page scrape left one file on disk where both
+        manifests listed a script, and the first page's copy was unrecoverable.
+
+        So a name already used in this site directory is disambiguated by
+        :meth:`_reserve_js_filename`, which is the part that can see what is
+        already on disk.
         """
         name = Path(urlparse(jurl).path).name
         stem = safe_filename(Path(name).stem if name else "") or f"script-{index}"
@@ -617,6 +634,83 @@ class CrawlEngine:
         candidate = f"{stem}.{digest}{suffix}"
         if taken is not None:
             taken.add(candidate)
+        return candidate
+
+    def _reserve_js_filename(
+        self, site_key: str, index: int, jurl: str, taken: set[str] | None = None
+    ) -> str:
+        """
+        Pick a filename for a script in *site_key*'s ``js/`` directory.
+
+        :meth:`_js_filename` decides a name from the URL alone. This adds the one
+        thing it cannot see — what this site directory already holds — and keys
+        the result by URL, which matters in both directions:
+
+        * The *same* URL returns the *same* filename. A crawl visits fifty pages
+          that all load ``jquery.js``; without this, fifty copies would be
+          downloaded and saved under fifty hashed names.
+        * A *different* URL with the same basename gets a distinct file. That is
+          the clobber: ``app.js`` and ``app.js?v=2`` share a basename, are served
+          differently, and the second download used to overwrite the first while
+          both manifests listed a script.
+
+        Reservation happens before the download is scheduled, so two pages
+        fetched concurrently cannot be handed the same name. Nothing awaits
+        between the lookup and the store, which is what makes that safe without a
+        lock.
+        """
+        by_url = self._js_names.setdefault(site_key, {})
+        existing = by_url.get(jurl)
+        if existing is not None:
+            if taken is not None:
+                taken.add(existing)
+            return existing
+
+        candidate = self._js_filename(index, jurl, taken)
+        if candidate in by_url.values():
+            digest = hashlib.sha256(jurl.encode("utf-8")).hexdigest()[:8]
+            stem, _, suffix = candidate.rpartition(".")
+            candidate = f"{stem or candidate}.{digest}.{suffix}"
+            if taken is not None:
+                taken.add(candidate)
+        by_url[jurl] = candidate
+        return candidate
+        """
+        Return a collision-free filename for a downloaded script.
+
+        Two collisions have to be avoided, and they are not the same one.
+
+        *Within one page*, basenames are not unique across the CDNs it pulls
+        from — ``/static/vendor.js`` and ``/lib/vendor.js`` both wanted
+        ``vendor.js``, which silently overwrote earlier downloads while the
+        manifest still listed every URL.
+
+        *Across pages of one site*, the scripts share a directory: ``js_dir`` is
+        per-domain, not per-page, and the ``taken`` set is rebuilt per page. Two
+        pages of a site routinely load the same ``app.js`` path — one tagged with
+        a cache-busting query, one not, which the server answers differently —
+        and the second download overwrote the first. Measured: a two-page scrape
+        left one file on disk where both manifests listed a script, and the
+        first page's copy was unrecoverable.
+
+        So a name that another page already used on disk is disambiguated by a
+        hash of the full URL. The query string is part of that identity, which is
+        the whole point: ``app.js`` and ``app.js?v=2`` are different resources
+        that share a basename.
+        """
+        name = Path(urlparse(jurl).path).name
+        stem = safe_filename(Path(name).stem if name else "") or f"script-{index}"
+        suffix = Path(name).suffix if name else ".js"
+        candidate = f"{stem}{suffix}"
+        if taken is not None:
+            taken.add(candidate)
+        # `taken` is this page's names; `occupied` is what the site directory
+        # already holds, from this page or any page scraped before it.
+        if candidate in self._js_names_taken:
+            digest = hashlib.sha256(jurl.encode("utf-8")).hexdigest()[:8]
+            candidate = f"{stem}.{digest}{suffix}"
+            if taken is not None:
+                taken.add(candidate)
         return candidate
 
     def _skip(
