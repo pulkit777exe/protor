@@ -18,14 +18,48 @@ def sample_result():
 
 
 class TestFormatChoices:
-    def test_choices_count(self):
-        assert len(FORMAT_CHOICES) == 4
+    """
+    `json` joined the list because `analyze` already wrote `analysis.json`
+    unconditionally, whatever `--format` said. The file existed; asking for it by
+    name was an "invalid choice" error, and the two definitions of "the report" were
+    separate code paths that could have drifted.
+    """
 
     def test_expected_formats(self):
-        assert "markdown" in FORMAT_CHOICES
-        assert "csv" in FORMAT_CHOICES
-        assert "html" in FORMAT_CHOICES
-        assert "text" in FORMAT_CHOICES
+        for fmt in ("markdown", "json", "csv", "html", "text"):
+            assert fmt in FORMAT_CHOICES, fmt
+
+    def test_every_choice_can_be_formatted(self):
+        """A choice argparse accepts must not raise from `format_output`."""
+        for fmt in FORMAT_CHOICES:
+            assert format_output(sample_result_for(fmt), fmt)
+
+    def test_json_is_the_same_document_the_separate_write_produced(self):
+        """
+        One definition of the report.
+
+        `_to_json` is `to_dict`, which is what the unconditional `save_json` used, so
+        asking for json must produce that document and not a near relative.
+        """
+        import json
+
+        from protor.formatters import format_output
+
+        payload = json.loads(format_output(sample_result_for("json"), "json"))
+        assert payload == sample_result_for("json").to_dict()
+
+
+def sample_result_for(_fmt: str = "markdown"):
+    """A minimal AnalysisResult, built per call so callers cannot mutate a shared one."""
+    from protor.models import AnalysisResult
+
+    return AnalysisResult(
+        model="llama3",
+        focus="general",
+        timestamp="2026-01-01 00:00:00",
+        sites_analyzed=1,
+        analysis='# report\n\nBody with a quote: "hello".',
+    )
 
 
 class TestFormatOutput:
@@ -89,3 +123,74 @@ class TestWriteOutput:
         path = write_output(sample_result, out_dir)
         assert path.exists()
         assert path.parent == out_dir
+
+
+class TestJsonIsWrittenOnce:
+    """
+    `--format json` used to write `analysis.json` twice.
+
+    `analyze` wrote it unconditionally and separately, then `write_output` wrote the
+    same document to the same path because that is what the format maps to. The file
+    is byte-identical either way, so no content assertion can see it — the cost is a
+    redundant write, and the visible half was the "saved" line naming one path twice.
+    """
+
+    def _analyze(self, fmt: str, tmp_path, monkeypatch):
+        import protor.analyzer as analyzer_mod
+
+        calls: list[dict] = []
+        monkeypatch.setattr(analyzer_mod, "create_backend", lambda *a, **k: _FakeBackend())
+        monkeypatch.setattr(analyzer_mod, "_stream_backend", lambda llm, prompt: "# report")
+        monkeypatch.setattr(
+            analyzer_mod,
+            "save_json",
+            lambda data, path: calls.append({"path": path, "data": data}),
+        )
+        analyzer_mod.analyze(
+            [{"url": "https://ex.com", "domain": "ex.com", "text_content": "x"}],
+            output_dir=tmp_path / fmt,
+            fmt=fmt,
+        )
+        return calls
+
+    def test_json_is_not_also_written_by_the_separate_path(self, tmp_path, monkeypatch):
+        """One definition of the report, written once, whichever format asked for it."""
+        assert self._analyze("json", tmp_path, monkeypatch) == []
+
+    def test_another_format_still_gets_analysis_json(self, tmp_path, monkeypatch):
+        """The control: `analysis.json` is a contract, not a side effect of `--format json`."""
+        calls = self._analyze("markdown", tmp_path, monkeypatch)
+        assert len(calls) == 1, calls
+        assert calls[0]["path"].name == "analysis.json"
+
+    def test_the_saved_line_names_it_once(self, tmp_path, monkeypatch):
+        import io
+
+        import protor.analyzer as analyzer_mod
+        from protor import theme
+
+        buf = io.StringIO()
+        monkeypatch.setattr(
+            analyzer_mod,
+            "console",
+            theme.ProtorConsole(file=buf, width=100, force_terminal=False, highlight=False),
+        )
+        monkeypatch.setattr(analyzer_mod, "create_backend", lambda *a, **k: _FakeBackend())
+        monkeypatch.setattr(analyzer_mod, "_stream_backend", lambda llm, prompt: "# report")
+        analyzer_mod.analyze(
+            [{"url": "https://ex.com", "domain": "ex.com", "text_content": "x"}],
+            output_dir=tmp_path / "j",
+            fmt="json",
+        )
+        named = [line for line in buf.getvalue().splitlines() if "analysis.json" in line]
+        assert len(named) == 1, buf.getvalue()
+
+
+class _FakeBackend:
+    display_name = "Fake"
+
+    def check_available(self) -> bool:
+        return True
+
+    def start_hint(self) -> str:
+        return ""

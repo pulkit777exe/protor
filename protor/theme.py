@@ -139,7 +139,12 @@ ERR_STYLED = f"[red]{ERR}[/red]"
 #: reporting, but it is not a completed crawl.
 WARN_STYLED = "[yellow]![/yellow]"
 SKIP = "-"
-SPIN = "◌" if _can_encode("◌") else "o"
+#: Marks a row that is in flight. Not a spinner, and not called `SPIN` any more:
+#: nothing here animates a glyph. The *motion* is the live view repainting at 10Hz,
+#: and a static marker in a cell that redraws reads as activity perfectly well — an
+#: animated character in a cell that only repaints when something changes would not.
+#: Named for what it marks rather than for an animation it does not do.
+ACTIVE = "◌" if _can_encode("◌") else "o"
 ARROW = "→" if _can_encode("→") else "->"
 
 # ── console (shared instance; importable) ────────────────────────────────────

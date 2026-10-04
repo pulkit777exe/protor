@@ -32,6 +32,7 @@ from rich.live import Live
 
 from .theme import ERR, SafeTable, muted
 from .theme import console as _console
+from .theme import err_console as _err_console
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Iterator, Mapping
@@ -373,8 +374,12 @@ def print_failure_reasons(counts: Mapping[str, int]) -> None:
     if hidden > 0:
         table.add_row("", "", muted(f"+ {hidden} more distinct reason(s)"))
 
-    _console.print()
-    _console.print(table)
+    # stderr, because this is the answer to "why did my run fail?" and nothing
+    # else. stdout carries the report of what succeeded; a user who redirects it to
+    # a file wants the successes, and piping it into another tool should not have a
+    # table of HTTP status codes arrive as data. Same rule as `_abort`.
+    _err_console.print()
+    _err_console.print(table)
 
 
 #: Assumed terminal height when nothing knows better. Rich reports 25 for a

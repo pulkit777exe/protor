@@ -294,9 +294,12 @@ disambiguated the same way when two origins serve the same basename.
 
 ```
 analysis/
-├── analysis.md          # readable report (or .txt/.csv/.html per --format)
-└── analysis.json        # raw data
+├── analysis.md          # readable report (or .json/.txt/.csv/.html per --format)
+└── analysis.json        # raw data, always written
 ```
+
+`--format json` names the raw document as the report rather than treating it as a
+separate byproduct, so it is written once and reported once.
 
 ## real examples
 

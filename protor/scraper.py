@@ -33,12 +33,12 @@ from .progress import normalise_reason, print_failure_reasons, visible_rows
 from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
 from .theme import (
+    ACTIVE,
     ERR,
     ERR_STYLED,
     OK,
     OK_STYLED,
     SKIP,
-    SPIN,
     WARN_STYLED,
     SafeTable,
     bright,
@@ -195,7 +195,7 @@ def _build_table(
         elif status == "waiting":
             s = Text(safe("  · waiting"), style="grey35")
         elif status == "fetching":
-            s = Text(f"  {SPIN} fetch", style="yellow")
+            s = Text(f"  {ACTIVE} fetch", style="yellow")
         elif status == "blocked":
             s = Text(f"  {ERR} blocked", style="red")
         elif status == "skipped":
@@ -205,9 +205,9 @@ def _build_table(
             s = Text(f"  {SKIP} skipped", style="grey50")
         elif status.startswith("js:"):
             n = status.split(":")[1]
-            s = Text(f"  {SPIN} js ({n})", style="cyan")
+            s = Text(f"  {ACTIVE} js ({n})", style="cyan")
         else:
-            s = Text(f"  {SPIN} {status}", style="yellow")
+            s = Text(f"  {ACTIVE} {status}", style="yellow")
 
         cells: dict[str, Any] = {
             "#": str(r.get("idx", "")),

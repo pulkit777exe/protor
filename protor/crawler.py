@@ -62,11 +62,11 @@ from .progress import normalise_reason, print_failure_reasons, visible_rows
 from .rate_limiter import DomainRateLimiter
 from .scaler import AutoScaler
 from .theme import (
+    ACTIVE,
     ERR,
     OK,
     OK_STYLED,
     SKIP,
-    SPIN,
     WARN_STYLED,
     SafeTable,
     bright,
@@ -542,7 +542,7 @@ def _render(state: _State, output_dir: str, height: int | None = None) -> Group:
         elif entry.status == "skip":
             s = Text(f"{SKIP} skipped", style="grey50")
         else:
-            s = Text(f"{SPIN} ...", style="yellow")
+            s = Text(f"{ACTIVE} ...", style="yellow")
         log_t.add_row(str(i), content(entry.domain), s)
 
     return Group(Rule(style="grey23"), stat, Rule(style="grey23"), log_t)

@@ -793,7 +793,7 @@ class TestFailureReasonsAreReported:
         buf = io.StringIO()
         # The grouping moved to protor.progress so the crawler can print the same
         # summary; the write happens there, so that is what has to be redirected.
-        monkeypatch.setattr("protor.progress._console", Console(file=buf, width=100))
+        monkeypatch.setattr("protor.progress._err_console", Console(file=buf, width=100))
         _print_failure_reasons(rows)
         out = buf.getvalue()
         assert "timeout" in out and "2" in out, "grouped the repeated cause"

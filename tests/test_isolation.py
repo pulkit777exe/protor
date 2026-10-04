@@ -13,8 +13,11 @@ the module layout changes, and it will report a clean suite while doing it.
 
 from __future__ import annotations
 
+import io
+
 import pytest
 
+from protor import theme
 from tests.conftest import _module_snapshot
 
 
@@ -137,3 +140,43 @@ class TestStdoutIsTheReportAndStderrIsTheDiagnosis:
             assert isinstance(getattr(theme, name), theme.ProtorConsole), name
         assert theme.err_console.stderr is True
         assert theme.console.stderr is False
+
+    def test_failure_reasons_are_a_diagnosis_not_a_result(self, capsys, tmp_path):
+        """
+        The other half of the split, and the one that was left inconsistent.
+
+        `print_failure_reasons` answers "why did my run fail?" — it is a table of
+        HTTP status codes and DNS failures. It was on stdout, so `protor crawl url >
+        log` filled the log with them and a script piping stdout got a table of
+        errors arriving as data, while every *other* diagnostic in the tool had
+        already moved to stderr.
+        """
+        import protor.progress as progress_mod
+
+        buf = io.StringIO()
+        original = progress_mod._err_console
+        progress_mod._err_console = theme.ProtorConsole(
+            file=buf, width=100, force_terminal=False, highlight=False
+        )
+        try:
+            progress_mod.print_failure_reasons({"blocked by robots.txt": 1})
+        finally:
+            progress_mod._err_console = original
+
+        assert "robots.txt" in buf.getvalue(), buf.getvalue()
+
+    def test_the_summary_stays_on_stdout(self, capsys, tmp_path):
+        """The control: moving the reasons must not move the counts with them."""
+        import sys
+
+        from protor.cli import cli
+
+        old = sys.argv
+        sys.argv = ["protor", "version"]
+        try:
+            cli()
+            captured = capsys.readouterr()
+        finally:
+            sys.argv = old
+        assert captured.out.strip(), "the report stream is empty"
+        assert captured.err == "", captured.err

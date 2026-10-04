@@ -601,17 +601,23 @@ def analyze(
     )
 
     out = ensure_output_dir(output_dir)
-    save_json(result.to_dict(), out / "analysis.json")
-
     report_path = write_output(result, out, fmt)
+
+    # `analysis.json` was written unconditionally and separately, so `--format json`
+    # would write the same file twice and the "saved" line below would name it twice.
+    # One definition of the report, written once, whichever format asked for it.
+    json_path = out / "analysis.json"
+    if report_path != json_path:
+        save_json(result.to_dict(), json_path)
 
     # One path per line. They were both on one line with two spaces between them,
     # which is 104 characters at the default output directory — so at 80 columns the
     # second path wrapped to the left margin and read as a separate fact rather than
     # as a continuation, and there was no telling which line belonged to what.
+    written = [report_path] if report_path == json_path else [report_path, json_path]
     console.print(f"  {OK_STYLED} {label('saved')}")
-    console.print(f"      {muted(str(report_path))}")
-    console.print(f"      {muted(str(out / 'analysis.json'))}")
+    for path in written:
+        console.print(f"      {muted(str(path))}")
     console.print()
     return result
 

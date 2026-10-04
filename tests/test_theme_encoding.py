@@ -19,7 +19,7 @@ class TestEncodingAwareTokens:
     def test_tokens_never_contain_unencodable_characters(self):
         """Every token must be encodable by the terminal it is about to print to."""
         encoding = theme._output_encoding()
-        for token in (theme.OK, theme.ERR, theme.SPIN, theme.ARROW, theme.SKIP):
+        for token in (theme.OK, theme.ERR, theme.ACTIVE, theme.ARROW, theme.SKIP):
             token.encode(encoding)
 
     def test_glyphs_are_pretty_when_the_terminal_allows_it(self):

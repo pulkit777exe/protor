@@ -1272,7 +1272,7 @@ class TestTheCrawlExplainsItsFailures:
 
         buf = io.StringIO()
         monkeypatch.setattr("protor.crawler.console", Console(file=buf, width=100))
-        monkeypatch.setattr("protor.progress._console", Console(file=buf, width=100))
+        monkeypatch.setattr("protor.progress._err_console", Console(file=buf, width=100))
 
         await _crawl(site, output_dir=tmp_path, max_pages=10)
 
@@ -1298,7 +1298,7 @@ class TestTheCrawlExplainsItsFailures:
 
         buf = io.StringIO()
         monkeypatch.setattr("protor.crawler.console", Console(file=buf, width=100))
-        monkeypatch.setattr("protor.progress._console", Console(file=buf, width=100))
+        monkeypatch.setattr("protor.progress._err_console", Console(file=buf, width=100))
 
         await _crawl(site, output_dir=tmp_path, max_pages=10)
 
@@ -1339,12 +1339,12 @@ class TestTheCrawlExplainsItsFailures:
         buf = io.StringIO()
         import protor.progress as progress_mod
 
-        original = progress_mod._console
-        progress_mod._console = Console(file=buf, width=100)
+        original = progress_mod._err_console
+        progress_mod._err_console = Console(file=buf, width=100)
         try:
             print_failure_reasons(crawler._state.reasons)
         finally:
-            progress_mod._console = original
+            progress_mod._err_console = original
 
         assert "50" in buf.getvalue(), buf.getvalue()
 

@@ -97,13 +97,13 @@ class TestSkippedIsNotDrawnAsWork:
     def test_skipped_is_not_the_in_progress_glyph(self):
         """The specific bug: `◌` in yellow for a page that will never change."""
         cell = self._status_cell("skipped")
-        assert theme.SPIN not in _plain(str(cell)), "a finished page is drawn as spinning"
+        assert theme.ACTIVE not in _plain(str(cell)), "a finished page is drawn as spinning"
         assert cell.style == "grey50", f"skipped should be quiet, got {cell.style!r}"
 
     def test_fetching_still_looks_like_work(self):
         """The control: the skip glyph must not have leaked onto live rows."""
         cell = self._status_cell("fetching")
-        assert theme.SPIN in _plain(str(cell))
+        assert theme.ACTIVE in _plain(str(cell))
         assert cell.style == "yellow"
 
 
@@ -422,12 +422,12 @@ class TestALongValueIsNotLeftToTheTerminal:
         buf = StringIO()
         import protor.progress as progress_mod
 
-        original = progress_mod._console
-        progress_mod._console = Console(file=buf, width=80, force_terminal=False)
+        original = progress_mod._err_console
+        progress_mod._err_console = Console(file=buf, width=80, force_terminal=False)
         try:
             print_failure_reasons({long: 12})
         finally:
-            progress_mod._console = original
+            progress_mod._err_console = original
 
         lines = [line for line in buf.getvalue().splitlines() if line.strip()]
         assert all(len(line) <= 80 for line in lines), lines
@@ -450,12 +450,12 @@ class TestALongValueIsNotLeftToTheTerminal:
         buf = StringIO()
         import protor.progress as progress_mod
 
-        original = progress_mod._console
-        progress_mod._console = Console(file=buf, width=80, force_terminal=False)
+        original = progress_mod._err_console
+        progress_mod._err_console = Console(file=buf, width=80, force_terminal=False)
         try:
             print_failure_reasons({"blocked by robots.txt": 7})
         finally:
-            progress_mod._console = original
+            progress_mod._err_console = original
         assert "7" in buf.getvalue(), buf.getvalue()
 
     def test_the_saved_paths_are_one_per_line(self, tmp_path, monkeypatch):
