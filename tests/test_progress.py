@@ -84,11 +84,11 @@ class TestLiveEnabled:
 class TestLiveDisplay:
     def test_update_is_a_no_op_when_disabled(self):
         """
-        Updates cost nothing when live is disabled; only the exit render runs.
+        Updates cost nothing when live is disabled.
 
         Piped output must not receive cursor-up escapes, and it must not be
-        re-rendered per event either — the single render on exit is what prints
-        the per-result detail a pipe is promised, not each update.
+        re-rendered per event either. Detail reaches a pipe through
+        :meth:`LiveDisplay.line` instead, once per result, as it happens.
         """
         calls: list[int] = []
 
@@ -101,7 +101,27 @@ class TestLiveDisplay:
             display.update()
             display.update()
             assert calls == [], "no per-event rendering when disabled"
-        assert calls == [1], "exactly one render, on exit"
+            display.line("one line per result")
+            display.line("and another")
+        assert calls == [], "the frame is never rendered for a pipe"
+
+    def test_a_disabled_display_writes_one_plain_line_per_call(self):
+        """
+        The promise the README makes for `protor scrape ... | tee log`.
+
+        A pipe used to get a header, silence for the length of the run, and a
+        table at the end — which URLs had failed appeared nowhere until the end,
+        and nothing at all appeared while the work ran.
+        """
+        console = _console()
+        with live_display(lambda: "frame", console=console, enabled=False) as display:
+            display.line("first result")
+            display.line("second result")
+
+        out = console.file.getvalue()
+        assert out.count("first result") == 1
+        assert out.count("second result") == 1
+        assert "\x1b" not in out, "a pipe must not receive escape codes"
 
     def test_renders_the_final_state_on_exit(self):
         """Whatever the rate limit did, the last frame is on screen."""
@@ -111,13 +131,16 @@ class TestLiveDisplay:
             renders["n"] += 1
             return f"frame {renders['n']}"
 
-        with live_display(render, console=_console(), enabled=False) as display:
+        # A terminal console, or the display disables itself and the live path is
+        # never exercised at all.
+        with live_display(render, console=_terminal_console()) as display:
             assert display.state is RunState.IDLE
-            assert renders["n"] == 0, "nothing is rendered while the block runs"
-        # Disabled mode renders once, on exit, and prints it: the README promises
-        # a pipe "one clean line per result", and a header plus an aggregate left
-        # the user no record of which URLs failed.
-        assert renders["n"] == 1
+            # Entering the block draws once, so the frame is on screen before any
+            # work has happened rather than after the first event.
+            assert renders["n"] == 1, "the first frame is drawn on entry"
+            display.update(force=True)
+            assert renders["n"] >= 2, "a forced update redraws"
+        assert renders["n"] >= 2, "the last frame is on screen at exit"
 
     def test_state_transitions_are_tracked(self):
         with live_display(lambda: "", console=_console()) as display:
@@ -265,33 +288,41 @@ class TestEnvironmentFlags:
 
 class TestDisabledDisplayStillPrintsTheResult:
     """
-    A pipe gets the detail, not only the caller's summary line.
+    A pipe gets a line per result, not only the caller's summary line.
 
     The README promises `protor scrape ... | tee log` writes "one clean line per
-    result". It did not: with animation off, ``render()`` was never called, so a
-    piped run printed the header, one aggregate, and the index path — which URLs
-    failed appeared nowhere.
+    result". It did not: with animation off nothing was written while the work ran
+    at all, so a ten-minute scrape logged a header, then ten minutes of nothing,
+    then a block. The engine now writes each finished row through
+    :meth:`LiveDisplay.line`.
     """
 
-    def test_the_final_state_is_printed_once(self, capsys):
+    def test_each_line_is_printed_once_as_it_arrives(self, capsys):
         console = Console(file=None, width=80, force_terminal=False, legacy_windows=False)
         console.file = io.StringIO()
-        with live_display(lambda: "row for https://a.example", console=console, enabled=False):
-            pass
-        assert console.file.getvalue().count("row for https://a.example") == 1
+        with live_display(lambda: "never rendered", console=console, enabled=False) as display:
+            display.line("row for https://a.example")
+            display.line("row for https://b.example")
+
+        out = console.file.getvalue()
+        assert out.count("row for https://a.example") == 1
+        assert out.count("row for https://b.example") == 1
+        assert "never rendered" not in out, "the table would only repeat the lines"
 
     def test_transient_false_still_prints_when_disabled(self):
         """
         The engine passes transient=False, so its summary survives.
 
-        With animation off there is no Live holding a frame to erase, and that
-        caller's aggregate line is exactly the one that says nothing about which
-        individual URLs failed — so the detail is printed either way.
+        With animation off there is no Live holding a frame to erase, so a result
+        line is the only record of an individual URL — which is the whole point.
         """
         console = Console(file=None, width=80, force_terminal=False, legacy_windows=False)
         console.file = io.StringIO()
-        with live_display(lambda: "row", console=console, enabled=False, transient=False):
-            pass
+        with live_display(
+            lambda: "row", console=console, enabled=False, transient=False
+        ) as display:
+            display.line("row")
+
         assert console.file.getvalue().count("row") == 1
 
     def test_a_failing_render_does_not_break_the_command(self):
@@ -400,3 +431,17 @@ class TestTheBatchLiveTableIsBounded:
         # Unbounded this measured 8,760 ms for 3,000 rows. A generous bound
         # still catches a regression to rendering everything.
         assert elapsed < 1.0, f"rendering 3,000 rows took {elapsed * 1e3:.0f}ms"
+
+    def test_a_live_display_does_not_also_write_the_line(self, tmp_path):
+        """
+        The control on `line()`: while animating, the table already carries the row.
+
+        Printing it as well would scroll one extra line past the live region for
+        every page of a large crawl, which is the noise the table exists to avoid.
+        """
+        console = _terminal_console()
+        with live_display(lambda: "frame", console=console) as display:
+            assert display._live is not None, "this test needs the live path"
+            display.line("a result line")
+
+        assert "a result line" not in console.file.getvalue()

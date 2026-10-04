@@ -244,8 +244,10 @@ progress is redrawn in place while a crawl or scrape runs, and the model's
 answer streams as it arrives. three things about that:
 
 - **pipes and CI get plain output.** `protor scrape ... | tee log` writes one
-  clean line per result with no cursor-up escape codes. Animation is skipped
-  automatically when stdout is not a terminal, or when `CI` is set.
+  clean line per result as each one finishes — status, domain, size, time, and
+  the reason if it failed — with no cursor-up escape codes and no table
+  repeated at the end. Animation is skipped automatically when stdout is not a
+  terminal, or when `CI` is set.
 - **`--no-live` forces plain output** on `scrape`, `run` and `crawl` when you
   want it even on a real terminal.
 - **terminals that cannot encode the glyphs still work.** `✓` and `→` are

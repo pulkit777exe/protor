@@ -40,11 +40,13 @@ from . import config
 from .fetcher import download_file, fetch, random_user_agent
 from .models import SiteManifest
 from .parser import looks_like_html, parse_html
-from .progress import live_display
+from .progress import LiveDisplay, live_display
 from .robots import check_robots
 from .theme import console
 from .utils import (
     canonicalize_url,
+    human_bytes,
+    human_duration,
     manifest_filename,
     page_filename,
     safe_filename,
@@ -172,6 +174,18 @@ class CrawlStats:
 
 
 # ── the engine ───────────────────────────────────────────────────────────────
+
+
+#: Status -> (glyph, word) for the one-line-per-result format a pipe gets. Kept here
+#: rather than in scraper.py so the engine, which is what knows when a row has an
+#: outcome, does not have to import a renderer to describe one.
+_STATUS_GLYPHS = {"done": "✓", "error": "✗", "blocked": "✗", "skipped": "-"}
+_STATUS_WORDS = {
+    "done": "done",
+    "error": "error",
+    "blocked": "blocked",
+    "skipped": "skipped",
+}
 
 
 class CrawlEngine:
@@ -306,6 +320,8 @@ class CrawlEngine:
         # per page, so a 40,000-page crawl kept about 1.9 GB that nothing read.
         self._manifests: list[SiteManifest] = []
         self._collect_manifests = collect_manifests
+        # Set for the duration of arun() when there is a display to write to.
+        self._display: LiveDisplay | None = None
         # Hosts the caller named, which the ad/analytics blocklist must not
         # second-guess. `--block-ads` exists to stop a page pulling a tracker off
         # a CDN; a user who typed `protor scrape https://www.facebook.com
@@ -363,7 +379,11 @@ class CrawlEngine:
         if render is None:
             return await self._start(session)
         with live_display(render, console=console, transient=False, enabled=self._live) as display:
-            return await self._start(session, on_tick=display.update)
+            self._display = display
+            try:
+                return await self._start(session, on_tick=display.update)
+            finally:
+                self._display = None
 
     def _connector_limit(self) -> int:
         """Connection-pool ceiling: static for batch, scaler-aware for crawls."""
@@ -780,10 +800,42 @@ class CrawlEngine:
         if self._auto_scaler is not None:
             self._auto_scaler.record(success)
 
+    #: Statuses a row never leaves. A row reaching one of these has an outcome, so
+    #: it is worth a line of its own when there is no table to put it in.
+    _TERMINAL_STATUSES = frozenset({"done", "error", "blocked", "skipped"})
+
     def _emit(self, status: str, url: str, row: dict[str, Any]) -> None:
+        if status in self._TERMINAL_STATUSES and self._display is not None:
+            self._display.line(self._result_line(status, url, row))
         if self._on_status is not None:
             with contextlib.suppress(Exception):
                 self._on_status(status, url, row)
+
+    def _result_line(self, status: str, url: str, row: dict[str, Any]) -> str:
+        """
+        One row of a piped run, as a single plain line.
+
+        The alternative was a header, silence for the length of the run, and a
+        table at the end — which is what a pipe and a CI log used to get, and what
+        the README describes as "one clean line per result". Deliberately not a
+        Table: a box drawn 3,000 times in a log file is noise, and a table's width
+        is meaningless when nothing wraps it.
+        """
+        domain = str(row.get("domain") or url)
+        nbytes = human_bytes(row.get("bytes") or 0)
+        parts = [
+            f"  {_STATUS_GLYPHS.get(status, '-')} {_STATUS_WORDS.get(status, status)}".rstrip()
+        ]
+        parts.append(f"{domain[:60]}")
+        if row.get("bytes"):
+            parts.append(nbytes)
+        if row.get("ms"):
+            parts.append(human_duration(row.get("ms")))
+        if row.get("js"):
+            parts.append(f"{row['js']} js")
+        if status != "done" and row.get("note"):
+            parts.append(f"- {str(row['note'])[:80]}")
+        return "  ".join(parts)
 
     def _safe_hook(self, hook: Callable[..., Any], url: str, ctx: dict[str, Any]) -> None:
         with contextlib.suppress(Exception):

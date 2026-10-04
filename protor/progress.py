@@ -24,7 +24,6 @@ handle the same problems:
 
 from __future__ import annotations
 
-import contextlib
 import os
 import re
 import time
@@ -140,6 +139,8 @@ class LiveDisplay:
     ``update`` is safe to call as often as the caller likes; it renders at most
     ``per_second`` times. ``note`` writes a line that scrolls above the live
     region — the correct way to emit a message while a Live block is active.
+    ``line`` is the mirror image: it writes one plain line only when there is no
+    live region, which is what makes a piped run readable as it happens.
     """
 
     _render: Callable[[], Any]
@@ -178,6 +179,21 @@ class LiveDisplay:
     def note(self, message: str) -> None:
         """Print *message* so it scrolls above the live region and persists."""
         self._console.print(message)
+
+    def line(self, message: str) -> None:
+        """
+        Print one plain line, but only when there is no live region.
+
+        A pipe and a CI log got one aggregate at the end and nothing at all while
+        the work ran, so a ten-minute scrape logged a header, then ten minutes of
+        nothing, then a table. The README has promised "one clean line per result"
+        for exactly this case.
+
+        A no-op while animating, because then the table already carries the row and
+        the line would scroll past it.
+        """
+        if self._live is None:
+            self._console.print(message)
 
 
 @contextmanager
@@ -231,8 +247,9 @@ def live_display(
         # a frame, so erasing one is not a concern — and the callers that pass
         # `transient=False` (the engine does, so its summary survives) are exactly
         # the ones whose aggregate line says nothing about individual results.
-        with contextlib.suppress(Exception):
-            con.print(render())
+        # The per-result lines the engine emits as rows finish are the detail here,
+        # so the final table would only repeat them. `contextlib.suppress` because
+        # display code must never be able to end a run.
         return
 
     display = LiveDisplay(

@@ -235,3 +235,74 @@ class TestScrapeMultiple:
     def test_scrape_multiple_custom_output(self, mock_console):
         result = scrape_multiple([], output_dir="/tmp/protor_test_output")
         assert "protor_test_output" in result
+
+
+class TestAPipedRunSaysWhatHappened:
+    """
+    A pipe used to get a header, silence, and a block at the end.
+
+    Nothing at all was written while the work ran, so a ten-minute scrape logged a
+    header, then ten minutes of nothing, then a summary — and which URLs had failed
+    appeared nowhere until the run was over. The README has promised "one clean line
+    per result" for exactly this case since before the promise was true.
+
+    These drive `scrape_multiple` with `live=False`, which is what a redirect or a
+    CI log gets whether or not stdout is a terminal.
+    """
+
+    def test_one_line_per_result_as_it_finishes(self, tmp_path, monkeypatch):
+        import io
+
+        from rich.console import Console
+
+        import protor.engine as engine_mod
+        import protor.scraper as scraper_mod
+        from protor.fetcher import FetchResult
+
+        pages = {
+            "https://ex.com/": "<html><body><p>index</p></body></html>",
+            "https://ex.com/a": "<html><body><p>a</p></body></html>",
+        }
+        from protor.exceptions import FetchError
+
+        async def fake_fetch(session, url, **kwargs):
+            if url == "https://ex.com/missing":
+                # `fetch` raises on an error status rather than returning one, so
+                # the stub has to as well — and it must not, or the retry backoff
+                # turns a 404 into half a minute of test time.
+                raise FetchError(url, "HTTP 404")
+            return FetchResult(
+                text=pages[url], nbytes=len(pages[url]), status=200, content_type="text/html"
+            )
+
+        monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+
+        async def robots_ok(url, session, user_agent=None):
+            return True
+
+        monkeypatch.setattr(engine_mod, "check_robots", robots_ok)
+
+        buf = io.StringIO()
+        # The result lines go to the console the *engine* holds, not the one the
+        # scraper prints its own summary to.
+        monkeypatch.setattr(
+            engine_mod, "console", Console(file=buf, width=100, force_terminal=False)
+        )
+        monkeypatch.setattr(
+            scraper_mod, "console", Console(file=buf, width=100, force_terminal=False)
+        )
+
+        # scrape_multiple is synchronous: it owns its own event loop.
+        scraper_mod.scrape_multiple(
+            ["https://ex.com/", "https://ex.com/a", "https://ex.com/missing"],
+            str(tmp_path),
+            live=False,
+        )
+
+        out = buf.getvalue()
+        assert "\\x1b" not in out, f"a pipe must not receive escape codes:\n{out!r}"
+        assert "✓ done" in out, out
+        assert "404" in out, f"the failure and its reason are missing:\n{out}"
+        # One line per result, and no table repeating them at the end.
+        assert out.count("✓ done") == 2, out
+        assert "Domain" not in out, "the table duplicates the lines"
