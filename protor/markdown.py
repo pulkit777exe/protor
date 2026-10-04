@@ -323,7 +323,19 @@ def _process_element(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: in
                     break
         lines.append("")
         lines.append(f"```{lang}")
-        lines.extend([ln.rstrip() for ln in text.rstrip().split("\n")] or [""])
+        # Appended one at a time, and never with `extend`: `_Lines.append` is
+        # where the character budget is charged, so bypassing it let one code
+        # block produce 151,897 characters against a 40,000 cap — and because the
+        # budget was never exceeded as far as `capped` was concerned, the
+        # `[truncated]` marker never appeared either, so the caller had no way to
+        # tell the page had been cut. One `<pre>` was enough; scraped pages are
+        # full of minified bundles. Stopping at the cap also stops paying for the
+        # rest of the block, which is the same reason the callbacks bail on
+        # `capped`.
+        for line in text.rstrip().split("\n"):
+            lines.append(line.rstrip())
+            if lines.capped:
+                return
         lines.append("```")
         lines.append("")
         return
@@ -452,7 +464,14 @@ def _process_list(tag: Tag, base_url: str, lines: _Lines, depth: int) -> None:
         body = _render_li_body(item, base_url)
         if body:
             lines.append(f"{indent}{prefix} {body[0]}")
-            lines.extend(f"{indent}  {ln}" for ln in body[1:])
+            # Charged through `append` for the same reason as the code-block
+            # case above: `extend` skips the budget, so a list item with a long
+            # body was emitted in full and, being invisible to `capped`, carried
+            # no truncation marker either.
+            for line in body[1:]:
+                lines.append(f"{indent}  {line}")
+                if lines.capped:
+                    return
 
         if nested:
             _process_list(nested, base_url, lines, depth + 1)

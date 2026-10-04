@@ -457,3 +457,69 @@ def test_noise_check_still_matches_on_class_or_id():
     tags = soup.find_all("div")
     assert [_is_noise(t) for t in tags] == [True, True, True, False]
     assert _is_noise(soup.find("p")) is False
+
+
+# ── the budget cannot be side-stepped ─────────────────────────────────────────
+
+
+def test_one_huge_code_block_is_capped_end_to_end():
+    """
+    A single oversized block, which per-block charges never see.
+
+    The budget is charged by ``_Lines.append``. Two sites added lines with
+    ``list.extend`` instead, which skips it: one ``<pre>`` holding a minified
+    bundle produced 151,897 characters against a 40,000 cap — and since the
+    budget was never exceeded as far as ``capped`` was concerned, no
+    ``[truncated]`` marker was added either, so the caller could not tell the
+    page had been cut.
+
+    The existing capped test builds its page from many separate blocks, which
+    charge normally, so it passed throughout.
+    """
+    from protor.config import MAX_MARKDOWN_CHARS
+    from protor.parser import parse_html
+
+    body = "\n".join(f"line {i} " + "x" * 40 for i in range(3000))
+    _, page = parse_html(
+        f"<html><body><pre><code>{body}</code></pre></body></html>",
+        "https://example.com/",
+    )
+
+    assert len(page.markdown_content) <= MAX_MARKDOWN_CHARS + 32, (
+        f"one code block produced {len(page.markdown_content):,} characters "
+        f"against a {MAX_MARKDOWN_CHARS:,} cap"
+    )
+    assert page.markdown_content.endswith("[truncated]"), "the cut was not marked"
+
+
+def test_one_huge_list_item_is_capped_end_to_end():
+    """
+    The same bypass on the list-continuation path.
+
+    ``_render_li_body`` returns a block per paragraph, so an item with hundreds
+    of paragraphs emits hundreds of continuation lines — all of them through
+    ``extend``, so none of them charged.
+    """
+    from protor.config import MAX_MARKDOWN_CHARS
+    from protor.parser import parse_html
+
+    item = (
+        "<li><p>heading</p>"
+        + "".join(f"<p>body paragraph {j} " + "y" * 60 + "</p>" for j in range(2000))
+        + "</li>"
+    )
+    _, page = parse_html(f"<html><body><ul>{item}</ul></body></html>", "https://example.com/")
+
+    assert len(page.markdown_content) <= MAX_MARKDOWN_CHARS + 32, (
+        f"one list item produced {len(page.markdown_content):,} characters"
+    )
+    assert page.markdown_content.endswith("[truncated]")
+
+
+def test_a_block_within_budget_is_untouched_by_the_charging():
+    """The fix must not cost anything on a page that fits."""
+    import protor.markdown as markdown
+
+    soup = BeautifulSoup(_page(12), "lxml")
+    clean_soup(soup)
+    assert markdown.soup_to_markdown(soup, max_chars=40_000) == markdown.soup_to_markdown(soup)
