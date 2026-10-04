@@ -369,3 +369,67 @@ class TestTableCellsAreSanitisedToo:
         ]
         assert not offenders, f"these reach past SafeTable: {offenders}"
         assert protor.analyzer and protor.crawler and protor.scraper
+
+
+class TestStaleTokensStillDegrade:
+    """
+    The glyph tokens are decided at import; that is not the safety mechanism.
+
+    `OK = "✓" if _can_encode("✓") else "+"` reads `sys.stdout` once, at import.
+    Swapping stdout afterwards — a daemon, an embedding app, a test harness — leaves
+    them stale, and the module's own framing suggested they were load-bearing. They
+    are not: `ProtorConsole.print` routes every string through `safe()`, whose
+    substitution table is keyed on the literal glyphs rather than on these names.
+
+    Pinned because it is an emergent property of two independent mechanisms. Route the
+    tokens around `safe()`, or key the table on the token instead of the glyph, and
+    the protection disappears without anything failing.
+    """
+
+    def _render(self, monkeypatch, encoding, text):
+        monkeypatch.setattr(theme, "_output_encoding", lambda: encoding)
+        buf = StringIO()
+        # ProtorConsole, not a plain Console: the degradation is its doing, and a
+        # plain one would show this test asserting on rich rather than on protor.
+        theme.ProtorConsole(file=buf, width=80, force_terminal=False).print(text)
+        return buf.getvalue()
+
+    def test_a_token_decided_for_another_terminal_still_degrades(self, monkeypatch):
+        stale = "\u2713"  # what OK would be if stdout had been utf-8 at import
+        assert not stale.isascii(), "the token should be unencodable for cp1252"
+
+        out = self._render(monkeypatch, "cp1252", f"  {stale} done")
+
+        assert out.isascii(), f"a stale token reached a cp1252 terminal: {out!r}"
+        assert "+ done" in out, out
+
+    def test_it_is_the_table_doing_it_not_the_token(self, monkeypatch):
+        """A glyph the table does not name degrades too, so nothing is token-specific."""
+        out = self._render(monkeypatch, "ascii", "  \u2660 done")
+        assert out.isascii(), out
+        assert "\u2660" not in out, out
+
+    def test_on_an_encodable_terminal_nothing_is_substituted(self, monkeypatch):
+        """The guard must not cost a UTF-8 terminal its glyphs."""
+        out = self._render(monkeypatch, "utf-8", "  \u2713 done")
+        assert "\u2713" in out, out
+
+    def test_the_table_covers_the_glyphs_the_module_uses(self):
+        """
+        Why the stale case is safe, as a fact about the data rather than a claim
+        about a hypothetical refactor.
+
+        The keys are the literal glyphs, so a token still holding a fancy glyph
+        matches on the way out no matter what the token was decided as. An earlier
+        version of this test asserted that keying the table on `theme.OK` instead
+        would break it — which is indistinguishable from the real thing on a UTF-8
+        system, since there `OK` *is* the glyph. It passed against a mutation that
+        changed nothing, which is worse than no test at all.
+        """
+        keys = {fancy for fancy, _ in theme._FALLBACKS}
+        for glyph in ("\u2713", "\u2717", "\u25cc", "\u2192"):
+            assert glyph in keys, f"{glyph!r} is used by the module but not in the table"
+
+        # Every key must be a non-ASCII glyph, since a key the terminal could encode
+        # would never be reached.
+        assert all(not k.isascii() for k in keys), keys

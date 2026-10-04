@@ -605,9 +605,13 @@ def analyze(
 
     report_path = write_output(result, out, fmt)
 
-    console.print(
-        f"  {OK_STYLED} {label('saved')} {muted(str(report_path))}  {muted(str(out / 'analysis.json'))}"
-    )
+    # One path per line. They were both on one line with two spaces between them,
+    # which is 104 characters at the default output directory — so at 80 columns the
+    # second path wrapped to the left margin and read as a separate fact rather than
+    # as a continuation, and there was no telling which line belonged to what.
+    console.print(f"  {OK_STYLED} {label('saved')}")
+    console.print(f"      {muted(str(report_path))}")
+    console.print(f"      {muted(str(out / 'analysis.json'))}")
     console.print()
     return result
 

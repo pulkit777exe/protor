@@ -108,7 +108,21 @@ _FALLBACKS: tuple[tuple[str, str], ...] = (
     ("…", "..."),
 )
 
-# ── glyphs (degraded when the terminal cannot encode them) ────────────────────
+# ── glyphs ────────────────────────────────────────────────────────────────────
+#
+# Decided once, at import, from whatever `sys.stdout` was then — so they are a
+# *nicety*, not the mechanism. Nothing depends on them being right: every string
+# that reaches a terminal goes through :func:`safe`, whose substitution table is
+# keyed on the literal glyphs rather than on these names, so a token that has gone
+# stale still degrades on the way out. Swapping stdout after import — a daemon, an
+# embedding app, a test harness — therefore costs nothing but a choice between the
+# token chosen at import and the one `safe()` picks at write time, and both are
+# ASCII.
+#
+# The guarantee is :func:`safe` plus `_EncodingSafeFile`, not these four lines.
+# That is worth stating because the reverse framing — "the tokens are degraded, so
+# encoding is handled" — reads as load-bearing and invites someone to delete the
+# part that actually is.
 OK = "✓" if _can_encode("✓") else "+"
 ERR = "✗" if _can_encode("✗") else "x"
 
@@ -227,6 +241,17 @@ class SafeTable(Table):
         super().add_row(*[_degrade(r) for r in renderables], **kwargs)  # type: ignore[arg-type]
 
 
+# `soft_wrap=True` is a deliberate choice, and turning it off was measured and
+# rejected. Without it rich word-wraps at the console width, which looks like the fix
+# for a long line and is not: rich does not indent a continuation, so the wrapped
+# remainder lands at column 0 and reads as a separate fact — the exact defect
+# `soft_wrap` was not causing in the first place. It also broke a command across two
+# lines ("protor models --backend llama" / "cpp"), which is worse than a long line
+# when the reader is about to retype it.
+#
+# So long values are given a bounded presentation of their own instead: a table
+# column, or one fact per line. See `print_failure_reasons` and the analyzer's
+# saved-path line.
 console = ProtorConsole(highlight=False, soft_wrap=True)
 
 #: Where diagnostics go.

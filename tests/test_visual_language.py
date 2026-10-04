@@ -399,3 +399,127 @@ class TestTheCrawlSaysHowLongAndHowFast:
                 f"{len(out.splitlines())} lines into {height}; _LOG_RESERVED is "
                 f"{_LOG_RESERVED} and should be one higher"
             )
+
+
+class TestALongValueIsNotLeftToTheTerminal:
+    """
+    Rich does not indent a wrapped continuation, so an unbounded value in an
+    f-string wraps to column 0 and reads as a separate fact.
+
+    The obvious fix — `soft_wrap=False` — was tried and is worse. It word-wraps at
+    the console width, so the remainder still lands at column 0, and it split a
+    command across two lines ("protor models --backend llama" / "cpp"), which is
+    worse than a long line when the reader is about to retype it. `soft_wrap=True`
+    stays; long values get a bounded presentation of their own.
+
+    These two were the ones left over: everything else is already a Table.
+    """
+
+    def test_a_failure_reason_folds_inside_its_own_column(self):
+        from protor.progress import print_failure_reasons
+
+        long = "Fetch failed for 'https://a-really-long-hostname.example.com/deep/path': HTTP 403"
+        buf = StringIO()
+        import protor.progress as progress_mod
+
+        original = progress_mod._console
+        progress_mod._console = Console(file=buf, width=80, force_terminal=False)
+        try:
+            print_failure_reasons({long: 12})
+        finally:
+            progress_mod._console = original
+
+        lines = [line for line in buf.getvalue().splitlines() if line.strip()]
+        assert all(len(line) <= 80 for line in lines), lines
+        assert len(lines) > 1, f"the reason did not wrap at all:\n{lines}"
+
+        # The continuation is indented to the reason column. An f-string's
+        # continuation starts at column 0, which is the whole defect: it reads as a
+        # new fact rather than as the tail of the line above.
+        reason_col = lines[0].index("Fetch failed")
+        for line in lines[1:]:
+            indent = len(line) - len(line.lstrip())
+            assert indent >= reason_col, (
+                f"continuation at column {indent}, not {reason_col}: {line!r}"
+            )
+
+    def test_the_count_stays_attached_to_its_cause(self):
+        """A folded reason must not lose the number that says how often it happened."""
+        from protor.progress import print_failure_reasons
+
+        buf = StringIO()
+        import protor.progress as progress_mod
+
+        original = progress_mod._console
+        progress_mod._console = Console(file=buf, width=80, force_terminal=False)
+        try:
+            print_failure_reasons({"blocked by robots.txt": 7})
+        finally:
+            progress_mod._console = original
+        assert "7" in buf.getvalue(), buf.getvalue()
+
+    def test_the_saved_paths_are_one_per_line(self, tmp_path, monkeypatch):
+        """
+        Two paths and two spaces between them is 104 characters at the default output
+        directory, so at 80 columns the second wrapped to the left margin and there
+        was no telling which line belonged to what.
+        """
+        import protor.analyzer as analyzer_mod
+
+        buf = StringIO()
+        # Swap the console's *file*, not the console. Constructing a replacement
+        # loses `soft_wrap=True`, which is the setting under test — and then the
+        # test measures rich's default wrapping and passes against the very change
+        # it was written for. That happened twice before this line existed.
+        assert analyzer_mod.console.soft_wrap, "the setting under test is not set"
+        monkeypatch.setattr(analyzer_mod.console, "file", buf)
+
+        monkeypatch.setattr(analyzer_mod, "create_backend", lambda *a, **k: _FakeBackend())
+        monkeypatch.setattr(analyzer_mod, "_stream_backend", lambda llm, prompt: "# report")
+        monkeypatch.setattr(
+            analyzer_mod, "write_output", lambda result, out, fmt: out / "report.md"
+        )
+
+        analyzer_mod.analyze(
+            [{"url": "https://ex.com", "domain": "ex.com", "text_content": "page text"}],
+            output_dir=tmp_path / "a-long-output-directory-name",
+        )
+
+        lines = [line for line in buf.getvalue().splitlines() if line.strip()]
+        assert lines, "nothing was printed"
+
+        # One path per line, and no line holding both. The defect was a single line
+        # with two paths and two spaces between them — 104 characters at the default
+        # output directory — so at 80 columns the second wrapped to the left margin
+        # and there was no telling which line belonged to what.
+        #
+        # Deliberately *not* asserting the lines fit in 80. Under `soft_wrap=True` a
+        # single path longer than the terminal is still emitted whole and wrapped by
+        # the terminal, which is a separate decision with its own reasoning (turning
+        # soft_wrap off breaks copy-pasted commands across two lines). This test's
+        # tmp_path makes those paths 127 characters, which no real output directory
+        # does; the property worth pinning is the separation.
+        report = [line for line in lines if line.rstrip().endswith("report.md")]
+        index = [line for line in lines if line.rstrip().endswith("analysis.json")]
+        assert len(report) == 1, lines
+        assert len(index) == 1, lines
+        assert report[0] != index[0]
+        assert all(line.count("report.md") + line.count("analysis.json") <= 1 for line in lines)
+
+
+class _FakeBackend:
+    """What `analyze` touches on a backend: availability and a display name."""
+
+    display_name = "Fake"
+
+    def check_available(self) -> bool:
+        return True
+
+    def start_hint(self) -> str:
+        return ""
+
+
+def _write_markdown(result, out, fmt):
+    path = out / "report.md"
+    path.write_text("# report", encoding="utf-8")
+    return path

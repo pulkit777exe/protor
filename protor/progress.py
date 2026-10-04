@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from rich.live import Live
 
-from .theme import ERR, muted
+from .theme import ERR, SafeTable, muted
 from .theme import console as _console
 
 if TYPE_CHECKING:
@@ -360,11 +360,21 @@ def print_failure_reasons(counts: Mapping[str, int]) -> None:
     shown = ranked[:MAX_REASONS_SHOWN]
     hidden = len(ranked) - len(shown)
 
-    _console.print()
+    # A Table rather than an f-string, because the reason is an exception message
+    # with no length bound and an unbounded value in an f-string is exactly what
+    # makes a line wrap at the left margin and read as a separate fact. A column
+    # folds inside itself, keeping the count and the cause visually attached.
+    table = SafeTable(box=None, show_header=False, show_edge=False, padding=(0, 2))
+    table.add_column(ERR, justify="right", width=3, style="red")
+    table.add_column("count", justify="right", width=5, style="grey74")
+    table.add_column("reason", ratio=1, overflow="fold", style="grey50")
     for reason, count in shown:
-        _console.print(f"  {ERR} {count:>5}  {muted(reason)}")
+        table.add_row(ERR, f"{count:>5}", muted(reason))
     if hidden > 0:
-        _console.print(f"  {muted(f'+ {hidden} more distinct reason(s)')}")
+        table.add_row("", "", muted(f"+ {hidden} more distinct reason(s)"))
+
+    _console.print()
+    _console.print(table)
 
 
 #: Assumed terminal height when nothing knows better. Rich reports 25 for a
