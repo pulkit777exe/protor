@@ -164,8 +164,15 @@ class CrawlStats:
     bytes_total: int = 0
     dispatched: int = 0
     #: Pages the server confirmed are unchanged (HTTP 304). A subset of
-    #: ``scraped`` — they were served from the cache — and the number that tells
-    #: a re-crawl apart from a first one.
+    #: ``scraped`` — they were served from the cache.
+    #:
+    #: Only the 304 path counts. A page served from a *fresh* cache entry, within
+    #: its TTL, never reaches the server, so it is not counted here even though it
+    #: was equally not re-downloaded. The docstring used to claim this number
+    #: "tells a re-crawl apart from a first one", which is false in exactly the case
+    #: a user is most likely to hit: re-crawl within the TTL and it reads 0, the
+    #: same as a first crawl. The honest statement is that it counts *revalidations
+    #: the server confirmed*, which is narrower than "unchanged pages".
     unchanged: int = 0
 
     @property
@@ -311,6 +318,19 @@ class CrawlEngine:
         self._js_taken_names: dict[str, set[str]] = {}
         # Page filenames reserved per site directory, for the same reason.
         self._page_names: dict[str, dict[str, str]] = {}
+        # The same page names the other way round, for the same reason as
+        # _js_taken_names: "is this basename already taken here?" is asked once per
+        # page and was answered by scanning every page reserved so far.
+        #
+        # Deliberately *not* bounded, unlike the JS table. This one holds exactly
+        # one entry per page saved, so its size is the run's own page count —
+        # already capped by `max_targets`, which is the ceiling the user asked for.
+        # Bounding it would mean forgetting which filenames are in use, and the
+        # whole point of the table is that `/a/b.html` and `/a-b.html` cannot both
+        # be handed `a-b.html`. The JS table needed a bound because it holds
+        # MAX_JS_FILES entries per page, so its size is pages x 15 for state only
+        # the newest few pages ever read.
+        self._page_taken_names: dict[str, set[str]] = {}
         self._extraction_schema = extraction_schema
         self._blocklist = blocklist
         self._allow_internal_redirects = allow_internal_redirects
@@ -806,15 +826,41 @@ class CrawlEngine:
         that visits them in a different order would swap the two files. That is a far
         smaller problem than losing a page outright, and it keeps every existing
         filename stable — a hash on every page would rename all of them.
+
+        "Is this name already taken here?" used to be ``name in by_url.values()``:
+        every filename in that site's directory, compared one at a time, once per
+        new page. That is quadratic in the crawl — measured 7,998,000 comparisons
+        for 4,000 pages (exactly N²/2) and 646 ms of pure CPU, which extrapolates
+        to ~65 s over a 40,000-page run, spent deciding whether a page needed a
+        hash. The names are now tracked in a set keyed the other way round.
         """
         by_url = self._page_names.setdefault(site_key, {})
         if url in by_url:
             return by_url[url]
-        if name in by_url.values():
+        by_name = self._page_taken_names.setdefault(site_key, set())
+        if name in by_name:
             stem, dot, suffix = name.rpartition(".")
-            digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
-            name = f"{stem}{dot}{digest}.{suffix}" if dot else f"{name}-{digest}"
+            # The digest goes between the stem and the extension — `a-b.1f3c.html`,
+            # not `a-b.1f3chtml`, which drops the dot and leaves a file nothing
+            # recognises as HTML.
+            #
+            # The prefix widens rather than truncating: 32 bits over tens of
+            # thousands of names is unlikely rather than impossible, and a clash here
+            # overwrites a page.
+            sha = hashlib.sha256(url.encode("utf-8")).hexdigest()
+
+            def disambiguated(width: int) -> str:
+                return f"{stem}.{sha[:width]}.{suffix}" if dot else f"{name}-{sha[:width]}"
+
+            for width in (8, 16, 32, 64):
+                candidate = disambiguated(width)
+                if candidate not in by_name:
+                    name = candidate
+                    break
+            else:  # pragma: no cover - 64 hex digits is the whole digest
+                name = disambiguated(64)
         by_url[url] = name
+        by_name.add(name)
         return name
 
     def _js_reservation_limit(self) -> int:

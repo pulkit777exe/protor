@@ -141,7 +141,11 @@ class UpdateOutcome:
     """
 
     ok: bool
-    #: pip's stderr, already trimmed, for the failure case.
+    #: Why it failed, in one sentence: pip's exit code, a timeout, or the OSError
+    #: that stopped it starting. Not pip's own output — pip is deliberately left
+    #: writing to the terminal, so there is nothing of its to hand back, and this
+    #: is the one thing that differs between a permissions failure, a yanked
+    #: release and a proxy that cannot reach PyPI.
     reason: str = ""
 
 

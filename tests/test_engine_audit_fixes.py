@@ -542,3 +542,142 @@ class TestJsReservationStillBehaves:
     def test_a_free_name_is_still_preferred(self, tmp_path):
         engine = _engine_for_js(tmp_path)
         assert engine._reserve_js_filename("site", 0, "https://x.com/a/jquery.js") == "jquery.js"
+
+
+# ── 4. the same scan, in the page table ───────────────────────────────────────
+
+
+class TestPageReservationIsNotLinear:
+    """
+    The JS twin of :class:`TestJsReservationIsNotLinear`, in the page table.
+
+    ``_reserve_page_filename`` asked ``name in by_url.values()`` — every page
+    filename reserved for that site, compared one at a time — once per page.
+    Exactly N²/2 comparisons for N pages: measured 7,998,000 for 4,000 pages and
+    646 ms of pure CPU, extrapolating to ~65 s over a 40,000-page crawl, spent
+    deciding whether a page needed a hash. Worse than the JS case in one respect
+    — no ``MAX_JS_FILES`` multiplier, it is per *page* — and it sat directly
+    beside the fixed JS table, which is how it survived the audit: the same
+    defect, one function over, applied to the thing the crawl actually writes.
+
+    Unlike the JS table this one is deliberately **not** bounded. It holds one
+    entry per page saved, so its size is the run's own page count, already capped
+    by ``max_targets``. Bounding it would mean forgetting which filenames are in
+    use, and forgetting that is what lets two pages share one file.
+    """
+
+    def test_reserving_many_pages_does_not_compare_quadratically(self):
+        import time
+
+        class CountingValues(dict):
+            """A dict whose ``.values()`` compares in Python.
+
+            A counting spy would not work: the real check is one C-level scan of a
+            view either way, so a counter sees a single call regardless of how many
+            elements it walks. Making the walk happen in Python is what makes the
+            cost visible at all.
+            """
+
+            comparisons = 0
+
+            def values(self):
+                for value in super().values():
+                    CountingValues.comparisons += 1
+                    yield value
+
+        engine = CrawlEngine.__new__(CrawlEngine)
+        engine._page_names = {"site": CountingValues()}
+        engine._page_taken_names = {}
+
+        started = time.perf_counter()
+        for i in range(2000):
+            engine._reserve_page_filename("site", f"https://ex.com/a/page{i}.html", f"page{i}.html")
+        elapsed = time.perf_counter() - started
+
+        assert CountingValues.comparisons == 0, (
+            f"{CountingValues.comparisons} filename comparisons for 2000 pages: "
+            f"the lookup went back to a scan"
+        )
+        # Linear work at ~0.4us/page is under 50ms here; the quadratic form took
+        # ~160ms for this count. A loose bound, because this is a wall-clock
+        # assertion and the comparison count above is the real one.
+        assert elapsed < 0.05, f"2000 reservations took {elapsed * 1e3:.0f} ms"
+
+    def test_the_cost_does_not_grow_with_the_crawl(self):
+        """The property that matters: per-page cost flat as the crawl deepens."""
+        import time
+
+        def us_per_page(n: int) -> float:
+            engine = CrawlEngine.__new__(CrawlEngine)
+            engine._page_names = {}
+            engine._page_taken_names = {}
+            started = time.perf_counter()
+            for i in range(n):
+                engine._reserve_page_filename(
+                    "s", f"https://ex.com/a/page{i}.html", f"page{i}.html"
+                )
+            return (time.perf_counter() - started) * 1e6 / n
+
+        small = us_per_page(1000)
+        large = us_per_page(8000)
+        assert large < small * 4, (
+            f"per-page cost grew from {small:.2f}us at 1,000 pages to "
+            f"{large:.2f}us at 8,000 -- that is the quadratic shape"
+        )
+
+    def test_a_collided_page_keeps_its_extension(self):
+        """
+        The digest belongs between the stem and the extension.
+
+        ``a-b.1f3c.html``, not ``a-b.1f3chtml``: dropping the dot leaves a file
+        nothing recognises as HTML, which is a new failure introduced alongside the
+        fix for the old one. Caught by printing the actual output rather than by
+        mutation — a mutation of the lookup leaves this behaviour untouched, so
+        nothing would have flagged it.
+        """
+        engine = CrawlEngine.__new__(CrawlEngine)
+        engine._page_names = {}
+        engine._page_taken_names = {}
+
+        first = engine._reserve_page_filename("s", "https://ex.com/a/b.html", "a-b.html")
+        second = engine._reserve_page_filename("s", "https://ex.com/a-b.html", "a-b.html")
+
+        assert first != second, "the collision was not resolved"
+        assert second.endswith(".html"), f"the extension was lost: {second}"
+        assert second.count(".") == 2, f"the digest was not separated: {second}"
+
+    def test_a_collision_without_an_extension_still_resolves(self):
+        """The no-suffix branch is a separate code path, and was written separately."""
+        engine = CrawlEngine.__new__(CrawlEngine)
+        engine._page_names = {}
+        engine._page_taken_names = {}
+
+        names = {
+            engine._reserve_page_filename("s", f"https://ex.com/{p}", "a-b") for p in ("a/b", "a-b")
+        }
+        assert len(names) == 2, names
+
+    def test_the_same_url_still_gets_the_same_name(self):
+        """The property the table exists for, re-asserted against the new lookup."""
+        engine = CrawlEngine.__new__(CrawlEngine)
+        engine._page_names = {}
+        engine._page_taken_names = {}
+
+        first = engine._reserve_page_filename("s", "https://ex.com/a/b.html", "a-b.html")
+        again = engine._reserve_page_filename("s", "https://ex.com/a/b.html", "a-b.html")
+        assert first == again
+        assert first == "a-b.html", "the first claimant should keep the plain name"
+
+    def test_two_sites_do_not_collide_with_each_other(self):
+        """The set is keyed per site, like the dict it mirrors."""
+        a = CrawlEngine.__new__(CrawlEngine)
+        b = CrawlEngine.__new__(CrawlEngine)
+        for engine in (a, b):
+            engine._page_names = {}
+            engine._page_taken_names = {}
+
+        assert (
+            a._reserve_page_filename("one.com", "https://one.com/a/b.html", "a-b.html")
+            == b._reserve_page_filename("two.com", "https://two.com/a/b.html", "a-b.html")
+            == "a-b.html"
+        )

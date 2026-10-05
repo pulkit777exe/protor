@@ -3,7 +3,7 @@
 ## v2.10.0 - 2026-10-05
 
 Twenty-eight fixes from five read-only audits, plus the closing of the
-cross-module gap the first four could not reach on their own. 1,519 → 1,701
+cross-module gap the first four could not reach on their own. 1,519 → 1,707
 tests. Every fix was reproduced before it was made and mutation-checked after —
 the fix reverted, the new test confirmed failing, the fix restored — and the
 load-bearing ones re-verified against harnesses sharing no code with the
@@ -344,7 +344,7 @@ committed tests.
   ordinary path segments like `/log/`.
 - **177 new tests across five audit files** (`test_engine_audit_fixes.py`,
   `test_fetch_audit_fixes.py`, `test_llm_audit_fixes.py`,
-  `test_extractor_audit_fixes.py`, `test_support_audit_fixes.py`), 1,519 → 1,701.
+  `test_extractor_audit_fixes.py`, `test_support_audit_fixes.py`), 1,519 → 1,707.
   Each class documents what was broken and why it mattered, and each was
   mutation-checked — the fix reverted, the new test confirmed failing, the fix
   restored. Two tests were found vacuous in the process and rewritten: one
@@ -385,6 +385,20 @@ committed tests.
   temporary directory, and a test asserts the real file's mtime is unchanged after a
   cache-writing run. The by-product was 1,165 entries across 233 dead local ports
   accumulating in a developer's cache.
+- **The same quadratic scan was still there in the page table.** Having fixed the JS
+  filename reservation for it, the identical defect sat one function over, applied to
+  the thing a crawl actually writes: `_reserve_page_filename` scanned every page
+  filename for that site once per page. Exactly N²/2 comparisons — 7,998,000 for
+  4,000 pages, 646 ms of CPU, extrapolating to ~65 s over a 40,000-page run. It
+  survived the audit because it looks like the already-fixed case. Not bounded, unlike
+  the JS table, and deliberately so: this one holds a single entry per page saved, so
+  its size is the run's own page count, already capped by `max_targets` — and
+  forgetting which filenames are in use is precisely what lets two pages share a
+  file. Now 0.4 µs/page, flat from 2,000 to 8,000.
+- **`UpdateOutcome.reason` was documented as pip's trimmed stderr.** pip's output is
+  deliberately not captured — that was its own earlier fix — so `reason` is a
+  synthesised sentence about the exit code or the exception, and the field docstring
+  said otherwise.
 
 ## v2.9.0 - 2026-10-03
 

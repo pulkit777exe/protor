@@ -294,6 +294,7 @@ class TestPageFilenames:
 
         engine = CrawlEngine.__new__(CrawlEngine)
         engine._page_names = {}
+        engine._page_taken_names = {}
         names = [
             engine._reserve_page_filename("x.com", url, page_filename(url))
             for url in ("https://x.com/a/b.html", "https://x.com/a-b.html")
@@ -307,6 +308,7 @@ class TestPageFilenames:
 
         engine = CrawlEngine.__new__(CrawlEngine)
         engine._page_names = {}
+        engine._page_taken_names = {}
         first = engine._reserve_page_filename("x.com", "https://x.com/a/b.html", "a-b.html")
         second = engine._reserve_page_filename("x.com", "https://x.com/a/b.html", "a-b.html")
         assert first == second
@@ -324,6 +326,7 @@ class TestPageFilenames:
 
         engine = CrawlEngine.__new__(CrawlEngine)
         engine._page_names = {}
+        engine._page_taken_names = {}
         names = [
             engine._reserve_page_filename("x.com", url, page_filename(url))
             for url in ("https://x.com/", "https://x.com/index.html")
@@ -342,6 +345,7 @@ class TestPageFilenames:
 
         engine = CrawlEngine.__new__(CrawlEngine)
         engine._page_names = {}
+        engine._page_taken_names = {}
         for url, expected in (
             ("https://x.com/docs/a.html", "docs-a.html"),
             ("https://x.com/a.html", "a.html"),
