@@ -260,6 +260,9 @@ answer streams as it arrives. three things about that:
   that is what you want. Everything that reports *what happened* — the results
   table, the run's summary, `protor version`, the model's answer — stays on
   stdout.
+- **`PROTOR_CACHE_DIR` moves the `--cache` store** if you want it somewhere else —
+  a per-project directory, or a scratch path in CI. It defaults to
+  `~/.cache/protor/http`.
 
 ## what the focus modes do
 

@@ -14,6 +14,8 @@ the module layout changes, and it will report a clean suite while doing it.
 from __future__ import annotations
 
 import io
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -180,3 +182,50 @@ class TestStdoutIsTheReportAndStderrIsTheDiagnosis:
             sys.argv = old
         assert captured.out.strip(), "the report stream is empty"
         assert captured.err == "", captured.err
+
+
+class TestTheSuiteDoesNotWriteToTheRealCache:
+    """
+    ``HTTPCache()`` with no argument opens ``~/.cache/protor/http/index.json``,
+    and every one in the suite does. So a test run writes to the developer's real
+    cache — and, because an instance rewrites the whole file from its own in-memory
+    copy on flush, one test's on-disk edit is undone by the next unrelated flush.
+
+    That is not theoretical: ``test_a_304_is_reported_as_unchanged`` ages every
+    entry to force a revalidation, and intermittently failed because the aging was
+    reverted before the re-crawl read it. The conftest fixture redirects the cache;
+    this pins that it actually did, rather than trusting the fixture's existence.
+    """
+
+    def test_the_real_cache_is_untouched_by_a_cache_writing_run(self, tmp_path):
+        from protor.http_cache import CacheEntry, HTTPCache
+
+        real = Path.home() / ".cache" / "protor" / "http" / "index.json"
+        before = real.stat().st_mtime_ns if real.exists() else None
+
+        # Whatever the fixture configured, this is the directory in force now.
+        # Asserted against the pytest base temp dir rather than this test's own
+        # tmp_path: the fixture is session-wide, so the directory is a sibling of
+        # this test's, not a child of it.
+        in_use = HTTPCache()._cache_dir
+        assert str(in_use).startswith(tempfile.gettempdir()), (
+            f"HTTPCache() is writing to {in_use}, which is neither an explicit "
+            f"cache_dir nor under the system temp directory -- the isolation "
+            f"fixture is not in force"
+        )
+
+        HTTPCache().put("https://isolation.example/x", CacheEntry(body="b", nbytes=1))
+        HTTPCache().flush()
+
+        after = real.stat().st_mtime_ns if real.exists() else None
+        assert after == before, (
+            "the real cache's index was rewritten by a test run; the fixture "
+            "redirected HTTPCache but something else still holds the real path"
+        )
+
+    def test_an_explicit_directory_still_wins_over_the_fixture(self, tmp_path):
+        """The fixture is a default, not an override of an explicit choice."""
+        from protor.http_cache import HTTPCache
+
+        mine = tmp_path / "mine"
+        assert HTTPCache(mine)._cache_dir == mine

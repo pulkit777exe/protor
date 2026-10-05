@@ -104,3 +104,18 @@ SCALING_COOLDOWN: float = 5.0  # seconds between scaling adjustments
 CHECKPOINT_FILENAME: str = "crawl_checkpoint.json"
 
 # ── paths ─────────────────────────────────────────────────────────────────────
+
+#: Where `HTTPCache` keeps its index and bodies when no directory is named.
+#:
+#: Overridable because the default is the user's *real* `~/.cache`, and a test
+#: suite that reaches it has two problems at once. It cannot be isolated: every
+#: `HTTPCache()` with no argument opens the same `index.json`, and any instance
+#: still holding an older copy in memory writes the whole file back on flush. So
+#: one test's on-disk edit — ageing entries to force a revalidation — is undone
+#: by the next unrelated test to flush, and the failure looks like a timing bug
+#: in the crawl rather than shared mutable state. It also leaves the developer's
+#: real cache full of entries pointing at a test server's dead port.
+#:
+#: Read once at import, like `OLLAMA_BASE`. Setting it per-process is what the
+#: suite needs; a test that wants a private cache can still pass `cache_dir=`.
+HTTP_CACHE_DIR: str | None = os.environ.get("PROTOR_CACHE_DIR") or None

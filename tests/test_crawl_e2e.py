@@ -1129,10 +1129,20 @@ class TestRecrawlReportsWhatChanged:
         Aged by two hours rather than to zero: past the TTL, so it revalidates,
         but inside ``stale_ttl``, past which the entry is discarded outright and
         there is nothing left to revalidate with.
+
+        The path comes from ``protor.config``, not ``Path.home()``: the conftest
+        fixture points the cache at a temporary directory for the whole run, and
+        a hard-coded home path would edit a file nothing reads — which is how this
+        test came to fail intermittently, since the aging silently stopped taking
+        effect and a later test's flush had been undoing it besides.
         """
         import time
 
-        index = Path.home() / ".cache" / "protor" / "http" / "index.json"
+        from protor.config import HTTP_CACHE_DIR
+
+        index = (
+            Path(HTTP_CACHE_DIR) if HTTP_CACHE_DIR else Path.home() / ".cache" / "protor" / "http"
+        ) / "index.json"
         if not index.exists():
             return
         data = json.loads(index.read_text(encoding="utf-8"))

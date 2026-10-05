@@ -98,6 +98,49 @@ def _no_leaked_module_patches() -> Iterator[None]:
         )
 
 
+@pytest.fixture(autouse=True)
+def _http_cache_in_tmp(tmp_path_factory: pytest.TempPathFactory) -> Iterator[None]:
+    """
+    Keep every ``HTTPCache`` in the suite out of the developer's real cache.
+
+    Session-scoped in effect — one directory for the whole run, set before any
+    test imports a cache — because the default is a *single* file at
+    ``~/.cache/protor/http/index.json`` that every ``HTTPCache()`` with no
+    argument opens. Two consequences, both observed rather than theorised:
+
+    * An instance holds its own copy of the index in memory and writes the whole
+      file back on ``flush``. The recrawl tests force a revalidation by ageing
+      every entry in that file; any other test flushing afterwards restores the
+      original timestamps, so the revalidation never happens and
+      ``test_a_304_is_reported_as_unchanged`` fails — intermittently, depending on
+      which test happened to run next. Demonstrated directly: age an index, let a
+      second cache put one entry and flush, and the aged entries come back fresh.
+    * The run leaves entries pointing at a test server's dead port in the user's
+      real cache, which then grows without bound — 1,165 entries across 233 hosts
+      here, none of them ever fetchable again.
+
+    Set on ``protor.config`` rather than ``os.environ`` because
+    ``HTTP_CACHE_DIR`` is read at import time, which has already happened by the
+    time any fixture runs; rebinding the name is what the code actually reads.
+    A test wanting a private cache can still pass ``cache_dir=`` explicitly, which
+    takes precedence.
+    """
+    import protor.config
+    import protor.http_cache
+
+    previous = protor.config.HTTP_CACHE_DIR
+    cache_dir = tmp_path_factory.mktemp("http-cache")
+    protor.config.HTTP_CACHE_DIR = str(cache_dir)
+    # Already bound into this module's namespace at import; rebind it too so the
+    # fixture works even if the import order ever changes.
+    protor.http_cache.HTTP_CACHE_DIR = str(cache_dir)
+    try:
+        yield
+    finally:
+        protor.config.HTTP_CACHE_DIR = previous
+        protor.http_cache.HTTP_CACHE_DIR = previous
+
+
 # ── HTTP test doubles ─────────────────────────────────────────────────────────
 #
 # These implement the *real* async context manager protocol. Hand-rolled

@@ -20,6 +20,10 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
+# A real import, not TYPE_CHECKING: the value is read in __init__ at runtime.
+# config imports nothing from this module, so there is no cycle.
+from .config import HTTP_CACHE_DIR
+
 #: Seconds a sweep of the bodies directory stays good for. The sweep is one
 #: readdir plus one stat per body file, so its cost tracks the size of a cache
 #: that only ever grows: 0.5 ms for 200 files, 4.8 ms for 2,000, 20 ms for
@@ -135,8 +139,12 @@ class HTTPCache:
         *,
         sweep_interval: float | None = None,
     ) -> None:
-        self._cache_dir = (
-            Path(cache_dir) if cache_dir else Path.home() / ".cache" / "protor" / "http"
+        # PROTOR_CACHE_DIR first, then an explicit argument, then the user's real
+        # cache -- see the note on HTTP_CACHE_DIR. The order means a test can point
+        # the whole process at a temporary directory without threading a path
+        # through every call site, and a caller that names a directory still wins.
+        self._cache_dir = Path(
+            cache_dir or HTTP_CACHE_DIR or (Path.home() / ".cache" / "protor" / "http")
         )
         self._bodies_dir = self._cache_dir / "bodies"
         self._bodies_dir.mkdir(parents=True, exist_ok=True)

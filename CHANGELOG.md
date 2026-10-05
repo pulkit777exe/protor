@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## v2.10.0 - 2026-10-05
+
+Twenty-eight fixes from five read-only audits, plus the closing of the
+cross-module gap the first four could not reach on their own. 1,519 → 1,701
+tests. Every fix was reproduced before it was made and mutation-checked after —
+the fix reverted, the new test confirmed failing, the fix restored — and the
+load-bearing ones re-verified against harnesses sharing no code with the
+committed tests.
 
 ### Performance
 
@@ -314,6 +321,11 @@
 - **`HTTPCache.put` overrode the caller's TTLs and mutated its object.** The
   cache's values are store-level policy — `prune` sweeps every entry against one
   window — so they win, and both docstrings now say so instead of the opposite.
+- **Script requests went out under a different identity than the page they came
+  from.** `download_file` took no `user_agent` and sent no headers, so the
+  identity `check_robots` was asked about and the one the site saw were different
+  strings — for most of a run's traffic, since `--download-js` is the default.
+  The engine's own comment claimed otherwise and was silently wrong.
 
 ### Internal
 
@@ -332,7 +344,7 @@
   ordinary path segments like `/log/`.
 - **177 new tests across five audit files** (`test_engine_audit_fixes.py`,
   `test_fetch_audit_fixes.py`, `test_llm_audit_fixes.py`,
-  `test_extractor_audit_fixes.py`, `test_support_audit_fixes.py`), 1,519 → 1,696.
+  `test_extractor_audit_fixes.py`, `test_support_audit_fixes.py`), 1,519 → 1,701.
   Each class documents what was broken and why it mattered, and each was
   mutation-checked — the fix reverted, the new test confirmed failing, the fix
   restored. Two tests were found vacuous in the process and rewritten: one
@@ -349,6 +361,30 @@
 - **`_prepare_context` had its first four lines twice** — a leftover duplicate of
   the `limit`/`not data` guard, invisible because the second copy computes the
   same thing.
+- **Two of the new tests could not see the bug they were written for.** The
+  User-Agent test spied on `download_file`, so it passed with the argument
+  ignored — a spy proves the caller passed something, not that the callee used
+  it, and building a header then never sending it is exactly that mistake. It
+  now asserts against a real HTTP server's view of both requests. And the gate's
+  re-measure test asserted on a live timing inside `check_scaling`, so it failed
+  once in a full-suite run and passed four standalone runs; reproducing load
+  deliberately did not reproduce it, so it was machine state rather than signal.
+  It now stubs the re-measure and pins the decision.
+- **Two `fake_download` stand-ins were broken by their own fix.** They took three
+  positional parameters, so the call that started passing `user_agent` raised
+  `TypeError` and both tests reported "the script was never downloaded" — a
+  failure that reads like a product bug and was a broken double.
+- **The test suite wrote to the real `~/.cache/protor`.** Every `HTTPCache()` with
+  no argument opens the same `index.json`, and an instance rewrites the whole file
+  from its own in-memory copy on flush — so one test's on-disk edit was undone by
+  the next unrelated flush. That is why `test_a_304_is_reported_as_unchanged` failed
+  intermittently: it ages every entry to force a revalidation, and the aging was
+  being reverted before the re-crawl read it. Demonstrated directly — age an index,
+  let a second cache put one entry and flush, and the aged entries come back fresh.
+  `PROTOR_CACHE_DIR` now redirects the default, a conftest fixture points it at a
+  temporary directory, and a test asserts the real file's mtime is unchanged after a
+  cache-writing run. The by-product was 1,165 entries across 233 dead local ports
+  accumulating in a developer's cache.
 
 ## v2.9.0 - 2026-10-03
 
