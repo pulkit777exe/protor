@@ -32,6 +32,21 @@
   ignores its argument while animating, because the table already carries the row,
   but the caller built the string first: 1.2us per finished page, 48ms over a
   40,000-page crawl for nothing. `wants_lines` asks first, at 52ns.
+- **A page resolved its own links twice.** The parser collects each href and the
+  Markdown renderer resolves it again to write `[text](url)`: 2,106 `urljoin` calls
+  for 1,200 distinct pairs on a 1,320-link page, 43% redundant at 4us each, and
+  **28% of `parse_html`**. `resolve_url` memoises on `(base, href)` — 1.07x on
+  `parse_html`, markdown byte-identical, measured round-robin. Two mechanisms keep it
+  safe and are not interchangeable: the key carries the base (correctness) and the
+  cache is cleared per parse (memory only). Testing either alone leaves the other
+  untestable.
+- **Not done: replacing BeautifulSoup with lxml.** Profiled rather than assumed, and
+  the numbers do not justify it as a fix. `BeautifulSoup(html, "lxml")` is 49% of a
+  parse while `lxml.html.fromstring(html)` is 3% — so the *wrapper*, not the parser,
+  is the cost. That is the expensive half to remove: 130 call sites across
+  `_Harvest`, `clean_soup` and the Markdown renderer, including 50 `isinstance(Tag)`
+  checks, plus a `decompose()`-based unreachability guard that depends on bs4's
+  identity semantics. It is a rewrite with a green suite at stake, not a gap.
 - **The noise-pattern split cost 18% of the noise pass** if done as two regexes
   (8.90ms against 7.56ms over 2000 classed tags, measured round-robin so machine
   drift could not favour a variant), because every tag carrying a class pays for
