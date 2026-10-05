@@ -17,13 +17,14 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from urllib.parse import urljoin, urlparse
+from urllib.parse import urlparse
 
 from bs4 import BeautifulSoup, Tag
 
 from .config import MAX_MARKDOWN_CHARS, MAX_TEXT_CHARS
 from .markdown import clean_soup, soup_to_markdown
 from .models import SiteMetadata
+from .utils import clear_url_cache, resolve_url
 
 __all__ = [
     "ParsedPage",
@@ -141,6 +142,11 @@ def parse_soup(
     *strip_guessed_noise* is passed through to :func:`clean_soup`; see
     :data:`protor.markdown._NOISE_PATTERN` for what it gives up.
     """
+    # One page owns the URL cache for its duration: the harvest below and the
+    # Markdown renderer further down both resolve this page's hrefs, and they are
+    # the two halves of the duplication `resolve_url` exists to collapse.
+    clear_url_cache()
+
     # Links, JS references and metadata come off the raw tree in a single walk,
     # because the canonical noise-filtering pass below removes the scripts and
     # navigational markup they are read from.
@@ -234,7 +240,7 @@ class _Harvest:
         href = tag.get("href")
         if href is None:
             return
-        full = urljoin(self._base_url, str(href)).split("#")[0]
+        full = resolve_url(self._base_url, str(href)).split("#")[0]
         p = urlparse(full)
         if (
             p.netloc == self._base_domain
@@ -248,7 +254,7 @@ class _Harvest:
         src = tag.get("src")
         if src is None:
             return
-        full = urljoin(self._base_url, str(src))
+        full = resolve_url(self._base_url, str(src))
         if full.startswith("http") and full not in self._js_seen:
             self._js_seen.add(full)
             self.js_links.append(full)

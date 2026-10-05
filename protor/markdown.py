@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import re
 from typing import TYPE_CHECKING
-from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup, Tag
 
@@ -23,6 +22,8 @@ from bs4 import BeautifulSoup, Tag
 # behavioural one. ``PageElement`` is the common base of ``NavigableString``
 # and ``Tag``, which is exactly what a run of soup children contains.
 from bs4.element import NavigableString, PageElement
+
+from .utils import resolve_url
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Sequence
@@ -266,7 +267,7 @@ def _render_inline_children(children: Iterable[PageElement], base_url: str, _dep
             src = child.get("src", "")
             if src:
                 alt = child.get("alt", "")
-                parts.append(f"\n\n![{alt}]({urljoin(base_url, str(src))})\n\n")
+                parts.append(f"\n\n![{alt}]({resolve_url(base_url, str(src))})\n\n")
             continue
 
         if _depth >= MAX_RENDER_DEPTH:
@@ -277,7 +278,7 @@ def _render_inline_children(children: Iterable[PageElement], base_url: str, _dep
             href = child.get("href", "")
             text = inner.strip()
             if href and text:
-                parts.append(f"[{text}]({urljoin(base_url, str(href))})")
+                parts.append(f"[{text}]({resolve_url(base_url, str(href))})")
             elif text:
                 parts.append(text)
             continue

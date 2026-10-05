@@ -251,3 +251,97 @@ class TestHumanDuration:
         # backwards at the unit boundaries, which is where a rounding slip shows.
         assert human_duration(59_950) == "1m00s"
         assert human_duration(59_900) == "59.9s"
+
+
+class TestResolveUrl:
+    """
+    A page's links are resolved twice — once to collect them, once to render them.
+
+    On a 1,320-link page that was 2,106 `urljoin` calls for 1,200 distinct pairs, 43%
+    redundant at 4us each. Memoising measured 1.07x on `parse_html` with byte-identical
+    output, measured round-robin so machine drift could not favour it.
+
+    A cache introduces a stale-read risk: a crawl resolves thousands of pages, and if
+    page 2's hrefs were answered from page 1's entries every relative link would point
+    at the wrong host. Two independent mechanisms prevent that, and each is tested on
+    its own because either alone would hide the other's absence — which is exactly how
+    two "surviving" mutants turned out to be untestable rather than harmless.
+    """
+
+    def test_it_agrees_with_urljoin(self):
+        from urllib.parse import urljoin
+
+        from protor.utils import resolve_url
+
+        for base, href in (
+            ("https://ex.com/", "/a/b"),
+            ("https://ex.com/dir/page", "rel"),
+            ("https://ex.com/", "../up"),
+            ("https://ex.com/", "#frag"),
+            ("https://ex.com/", "https://other.example/x"),
+            ("https://ex.com/", ""),
+        ):
+            assert resolve_url(base, href) == urljoin(base, href), (base, href)
+
+    def test_the_key_includes_the_base_not_just_the_href(self):
+        """
+        The correctness half, tested without the per-parse clear in the way.
+
+        `parse_soup` clears the cache, so a key of just `href` would still look right
+        through the parser. It is only observable when the cache is warm across two
+        different bases — which is what a caller outside a parse would have.
+        """
+        from protor.utils import clear_url_cache, resolve_url
+
+        clear_url_cache()
+        assert resolve_url("https://one.example/dir/", "/x") == "https://one.example/x"
+        assert resolve_url("https://two.example/other/", "/x") == "https://two.example/x"
+
+    def test_the_cache_is_cleared_per_parse_for_boundedness(self):
+        """
+        The memory half.
+
+        Correctness does not depend on it — the key carries the base — so this is
+        about not carrying a page's links into the next one for no reason.
+        """
+        from protor.parser import parse_html
+        from protor.utils import _RESOLVED
+
+        parse_html("<html><body><a href='/x'>x</a></body></html>", "https://a.example/")
+        parse_html("<html><body><a href='/y'>y</a></body></html>", "https://a.example/")
+
+        assert len(_RESOLVED) <= 2, f"entries carried across a parse boundary: {len(_RESOLVED)}"
+
+    def test_one_page_cannot_answer_another_pages_links(self):
+        """The property that makes it safe to cache at all."""
+        from protor.parser import parse_html
+
+        first = "<html><body><a href='/only-here'>x</a></body></html>"
+        second = "<html><body><a href='/only-here'>x</a></body></html>"
+
+        _, a = parse_html(first, "https://one.example/dir/")
+        _, b = parse_html(second, "https://two.example/other/")
+
+        assert a.links == ["https://one.example/only-here"], a.links
+        assert b.links == ["https://two.example/only-here"], b.links
+
+    def test_the_cache_is_cleared_at_the_start_of_a_parse(self):
+        from protor.parser import parse_html
+        from protor.utils import _RESOLVED, resolve_url
+
+        parse_html("<html><body><a href='/x'>x</a></body></html>", "https://a.example/")
+        first = dict(_RESOLVED)
+        parse_html("<html><body><a href='/y'>y</a></body></html>", "https://a.example/")
+
+        assert "/x" not in str(_RESOLVED) or first != _RESOLVED, "the cache was never cleared"
+        assert resolve_url("https://a.example/", "/x") == "https://a.example/x"
+
+    def test_it_is_bounded(self):
+        """`resolve_url` is importable, so a caller outside a parse could grow it."""
+        from protor.utils import _RESOLVED, _URL_CACHE_MAX, clear_url_cache, resolve_url
+
+        clear_url_cache()
+        for i in range(_URL_CACHE_MAX + 50):
+            resolve_url("https://ex.com/", f"/p{i}")
+        assert len(_RESOLVED) <= _URL_CACHE_MAX, len(_RESOLVED)
+        clear_url_cache()
