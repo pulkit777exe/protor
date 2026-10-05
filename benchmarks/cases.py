@@ -225,7 +225,11 @@ def _prepare_context(size: int) -> Any:
     from protor.analyzer import _prepare_context
 
     data = site_batch(size)
-    return len(_prepare_context(data))  # type: ignore[arg-type]
+    # The ignore is gone: `site_batch` yields dicts and `_prepare_context` takes a
+    # Sequence of dict-or-manifest, which mypy now accepts. The annotation it used
+    # to need changed from `list` to `Sequence` precisely so a caller holding
+    # manifests could pass them too.
+    return len(_prepare_context(data))
 
 
 #: Bytes in a 200-block reference page. Reported so the per-block figures can

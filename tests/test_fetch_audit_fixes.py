@@ -808,6 +808,7 @@ class TestHookContextsAgreeAndAreHonoured:
         isolation that does exist: the exception does not escape and the body
         still comes back.
         """
+
         def boom(_url: str, ctx: dict[str, Any]) -> None:
             ctx["headers"]["X-Partial"] = "1"
             raise RuntimeError("bad hook")
@@ -828,6 +829,7 @@ class TestHookContextsAgreeAndAreHonoured:
         be an obscure crash in the middle of the retry loop, where it looks like
         a transport problem rather than a bad hook.
         """
+
         def replace_with_junk(_url: str, ctx: dict[str, Any]) -> None:
             ctx["headers"] = "not a mapping"
 
