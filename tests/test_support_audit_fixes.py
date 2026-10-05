@@ -734,20 +734,26 @@ class TestIsMetadataHostMakesNoDnsCall:
 
         assert netguard.is_metadata_host("metadata.internal.example.com") is False
 
-    def test_the_docstring_still_overstates_it(self):
+    def test_the_docstring_does_not_claim_a_lookup(self):
         """
-        The unfixed half, recorded as an assertion so the gap is visible.
+        The docstring used to promise a resolution the function never performed.
 
-        This one documents the defect rather than pinning the fix: it passes *because*
-        the docstring still claims a lookup. Apply the netguard.py correction and this
-        test fails by design, which is the signal to delete it. The three tests above
-        are the durable ones — they pass either way and describe what the function
-        actually does.
+        On the one function a maintainer would consult before relaxing it — the SSRF
+        guard — that is the most expensive kind of wrong comment: it reads as
+        "names are resolved too", which is exactly the assumption that lets someone
+        add a hostname to a blocklist and believe it is covered. It now states the
+        limit and why it is a limit rather than an oversight.
+
+        Written as the inverse of what it replaced. The original test asserted the
+        *defect* was still present, so it failed the moment the fix landed and had to
+        be deleted by hand; this one fails if the claim ever comes back.
         """
         doc = netguard.is_metadata_host.__doc__ or ""
-        assert "resolves by name to" in doc, (
-            "netguard.is_metadata_host's docstring has been corrected to match the code; "
-            "delete this test, which exists only to record the defect"
+        assert "resolves by name to" not in doc, (
+            "the docstring claims a name resolution the function does not perform"
+        )
+        assert "no name resolution" in doc, (
+            "the docstring should state the limit plainly rather than by omission"
         )
 
 

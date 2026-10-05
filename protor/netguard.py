@@ -86,7 +86,16 @@ def _address_of(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | No
 
 
 def is_metadata_host(host: str) -> bool:
-    """True when *host* is, or resolves by name to, a metadata endpoint."""
+    """
+    True when *host* is a known metadata endpoint, by name or by address.
+
+    Four hostnames and a handful of literal addresses — **no name resolution**.
+    That is a real limit and worth stating plainly: a hostname that *would* resolve
+    to ``169.254.169.254`` is not caught here, and cannot be, because resolving it
+    is itself the DNS request an SSRF filter must not make. The module header
+    records the consequence, which is that a redirect to such a hostname is only
+    caught once it has been resolved and re-checked as an address.
+    """
     if not host:
         return False
     name = host.strip("[]").lower().rstrip(".")
