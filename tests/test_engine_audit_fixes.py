@@ -22,12 +22,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-import pytest
-
 from protor.engine import CrawlEngine, RecursiveSource, StaticQueue, StaticSource
 
 if TYPE_CHECKING:
     from pathlib import Path
+
+    import pytest
 
 # ── doubles ───────────────────────────────────────────────────────────────────
 
@@ -344,27 +344,21 @@ class TestScriptDownloadsArePolite:
                 f"{download['url']} ignored --allow-internal-redirects"
             )
 
-    @pytest.mark.xfail(
-        reason="needs a user_agent parameter on protor.fetcher.download_file",
-        strict=False,
-    )
     async def test_a_script_keeps_the_page_identity(self, tmp_path, monkeypatch):
         """
-        A pinned requirement, not yet met, and deliberately left failing.
+        The engine asks robots.txt about one identity and sends that identity.
 
-        ``download_file`` accepts no ``user_agent``/``headers``, so a script
-        request carries whatever the session's default headers say rather than
-        the agent ``check_robots`` was asked about. It is left as a failing
-        requirement rather than dropped, because the engine's own comment
-        ("one identity for both the question and the request") is a claim
-        someone will read and believe.
+        ``download_file`` took no ``user_agent``, so every script request carried
+        the session's default headers while the page went out as the agent the
+        run had just asked ``check_robots`` about. On the default path
+        (``--download-js``) that is most of a run's traffic, and the two strings
+        a site sees for one page are not the same — the guarantee the engine's
+        own comment states ("one identity for both the question and the
+        request") was silently false for scripts.
 
-        Fixing it needs a signature change in ``protor/fetcher.py``:
-        ``download_file(session, url, dest, *, allow_internal_redirects=False,
-        user_agent=None)``, with ``headers={"User-Agent": user_agent or
-        random_user_agent()}`` on the ``session.get`` call — the same shape
-        :func:`protor.fetcher.fetch` already uses. When it lands, this test goes
-        green and the marker comes off.
+        This test was left as a non-strict xfail naming the signature change it
+        needed, rather than dropped, so the gap stayed visible. It now passes for
+        the same reason it was written.
         """
         seen = self._page_with_scripts(monkeypatch)
         engine = CrawlEngine(

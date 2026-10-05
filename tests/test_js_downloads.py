@@ -18,6 +18,7 @@ from __future__ import annotations
 import http.server
 import json
 import threading
+from typing import ClassVar
 
 import pytest
 
@@ -34,6 +35,11 @@ def _page(title: str, src: str) -> bytes:
         f"<!DOCTYPE html><html><head><title>{title}</title>"
         f"<script src='{src}'></script></head><body><h1>{title}</h1></body></html>"
     ).encode()
+
+
+#: What the server below saw, keyed "page" / "script", so a test can compare the
+#: two identities for one page without standing in for the download.
+_RECEIVED_USER_AGENTS: dict[str, list[str]] = {"page": [], "script": []}
 
 
 class _Site:
@@ -65,6 +71,9 @@ class _Site:
                 ctype = (
                     "application/javascript" if self.path.startswith("/static/") else "text/html"
                 )
+                _RECEIVED_USER_AGENTS["script" if ctype.endswith("javascript") else "page"].append(
+                    self.headers.get("User-Agent", "")
+                )
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
                 self.send_header("Content-Length", str(len(body)))
@@ -74,6 +83,8 @@ class _Site:
         self._server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         self._server.daemon_threads = True
         self._server.handle_error = lambda *_: None
+        _RECEIVED_USER_AGENTS["page"].clear()
+        _RECEIVED_USER_AGENTS["script"].clear()
         self._thread = threading.Thread(target=self._server.serve_forever, daemon=True)
         self._thread.start()
 
@@ -227,6 +238,80 @@ class TestSharedScripts:
         """Hashing is a last resort; readable names are the common case."""
         engine = _engine(tmp_path)
         assert engine._reserve_js_filename("site", 0, "https://x.com/a/jquery.js") == "jquery.js"
+
+
+class TestScriptRequestsCarryAnIdentity:
+    """
+    ``download_file`` takes no ``user_agent`` and sends no headers at all.
+
+    The engine resolves one identity per page, asks ``check_robots`` about it,
+    and hands it to ``fetch`` — then scheduled ``download_file``, which took
+    neither, so every script request went out under the session's default
+    headers. ``--download-js`` is the batch default, so that was most of a run's
+    traffic, and the identity a site was asked about was not the identity it saw.
+    The engine's own comment claims "one identity for both the question and the
+    request"; it was true for pages and false for scripts.
+
+    Asserted against a real HTTP server rather than a spy on ``download_file``:
+    a spy only proves the engine *passed* the argument, and would pass unchanged
+    if the header were built and then never put on the request. This is the
+    shape that mistake takes, and it is why the earlier assertion in
+    ``tests/test_engine_audit_fixes.py`` did not survive its own mutation.
+    """
+
+    @pytest.mark.integration
+    def test_the_engine_agent_is_the_one_the_server_receives(self, site, tmp_path):
+        """The whole path, checked at the socket: one page, its script, one UA."""
+        from protor.scraper import scrape_multiple
+
+        scrape_multiple([f"{site.base}/a"], output_dir=tmp_path, live=False)
+
+        received = _RECEIVED_USER_AGENTS
+        assert received, "the script was never requested"
+        page_agents = received["page"]
+        script_agents = received["script"]
+        assert page_agents and script_agents, received
+
+        # Both came off the same rotation pool entry for this page, so the two
+        # strings are equal -- which is the property being claimed.
+        assert script_agents[0] == page_agents[0], (
+            f"the page went out as {page_agents[0]!r} but its script as "
+            f"{script_agents[0]!r}: one identity is not being kept"
+        )
+        assert script_agents[0], "the script request carried no User-Agent at all"
+
+    def test_download_file_sends_a_pool_agent_when_given_none(self, tmp_path):
+        """A caller that passes nothing must not send an empty User-Agent."""
+        import asyncio
+
+        from protor.fetcher import download_file
+
+        seen: list[str] = []
+
+        class Resp:
+            status = 200
+            headers: ClassVar[dict[str, str]] = {}
+            url = "https://cdn.example/app.js"
+
+            async def read(self) -> bytes:
+                return b"var x = 1;"
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *a):
+                return False
+
+        class Session:
+            def get(self, url, **kwargs):
+                seen.append((kwargs.get("headers") or {}).get("User-Agent", ""))
+                return Resp()
+
+        ok = asyncio.run(
+            download_file(Session(), "https://cdn.example/app.js", tmp_path / "app.js")
+        )
+        assert ok, "the download reported failure"
+        assert seen and seen[0], "no User-Agent was sent on the default path"
 
 
 class TestCrawlJsFlag:

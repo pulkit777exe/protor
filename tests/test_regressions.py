@@ -467,7 +467,11 @@ class TestBlocklistCoversJsDownloads:
 
         monkeypatch.setattr("protor.engine.fetch", fake_fetch)
 
-        async def fake_download(session, url, dest):
+        # **kwargs because download_file takes keyword-only arguments now: the
+        # engine passes user_agent (and allow_internal_redirects when set), and a
+        # stand-in that accepted three positional parameters made the real call
+        # raise TypeError, which surfaced as "the script was never downloaded".
+        async def fake_download(session, url, dest, **kwargs):
             fetched.append(url)
             return True
 
@@ -500,7 +504,11 @@ class TestBlocklistCoversJsDownloads:
 
         monkeypatch.setattr("protor.engine.fetch", fake_fetch)
 
-        async def fake_download(session, url, dest):
+        # **kwargs because download_file takes keyword-only arguments now: the
+        # engine passes user_agent (and allow_internal_redirects when set), and a
+        # stand-in that accepted three positional parameters made the real call
+        # raise TypeError, which surfaced as "the script was never downloaded".
+        async def fake_download(session, url, dest, **kwargs):
             fetched.append(url)
             return True
 

@@ -464,6 +464,7 @@ async def download_file(
     dest: str | Path,
     *,
     allow_internal_redirects: bool = False,
+    user_agent: str | None = None,
 ) -> bool:
     """
     Download *url* to *dest* (best-effort). Returns True on success.
@@ -477,16 +478,27 @@ async def download_file(
     otherwise — so the guarantee the README states without qualification did not
     hold for every request protor makes.
 
+    *user_agent* exists for the same reason :func:`fetch` takes one: the engine
+    resolves an identity once per page, asks ``check_robots`` about it, and sends
+    it. A script downloaded from that page went out with the *session's* default
+    headers instead, so the identity a site was asked about and the identity it
+    saw were different strings — for the majority of a run's traffic, since
+    ``--download-js`` is the default. Defaults to a fresh pool entry rather than
+    the session's, so a standalone caller is no worse off than before; the engine
+    passes its own explicitly.
+
     Best-effort throughout, so a refused hop is a ``False`` rather than an
     exception: a script that will not download is not worth failing a page over.
     """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     current = url
+    headers = {"User-Agent": user_agent or random_user_agent()}
     try:
         for _hop in range(MAX_REDIRECTS + 1):
             async with session.get(
                 current,
+                headers=headers,
                 timeout=aiohttp.ClientTimeout(total=JS_DOWNLOAD_TIMEOUT),
                 allow_redirects=False,
             ) as r:

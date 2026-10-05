@@ -273,7 +273,7 @@ class TestScalingGate:
         assert check_scaling(results) == 1
         assert "SUPERLINEAR" in capsys.readouterr().out
 
-    def test_a_known_case_is_re_measured_before_failing(self, capsys):
+    def test_a_known_case_is_re_measured_before_failing(self, monkeypatch, capsys):
         """
         A single bad sample on a real case is treated as contention, not proof.
 
@@ -281,10 +281,29 @@ class TestScalingGate:
         average 10.9, and was flat in every run once idle. Re-measuring costs a
         few seconds only when there is a signal, and is the difference between a
         gate people trust and one they learn to ignore.
+
+        The re-measure is stubbed flat. Asserting on a live one instead made this
+        test a coin flip: it failed once inside a full-suite run and passed in
+        four consecutive standalone runs, with the load reproduced deliberately
+        failing to move it. What is being pinned is the *decision* — a single bad
+        sample is not enough, and the case is measured again — and the outcome
+        depends on machine state that has nothing to do with the code. The
+        confirming case below covers the other branch.
         """
+        import benchmarks.runner as runner
+
+        calls: list[str] = []
+
+        def flat_again(case, scale, *, repeats=1, machine_us=0.0):
+            calls.append(f"{case.name}/{scale}")
+            return Result(name=case.name, scale=scale, seconds=scale / 100, items=scale)
+
+        monkeypatch.setattr(runner, "measure", flat_again)
         results = [self._r("clean_soup", 200, 1.0), self._r("clean_soup", 800, 6.0)]
         assert check_scaling(results) == 0
-        assert "re-measured" in capsys.readouterr().out
+        out = capsys.readouterr().out
+        assert "re-measured" in out
+        assert calls, "the case was never re-measured, so nothing was re-decided"
 
     def test_a_confirmed_regression_still_fails(self, monkeypatch, capsys):
         """

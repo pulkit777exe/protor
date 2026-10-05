@@ -643,6 +643,7 @@ class CrawlEngine:
                                 session,
                                 jurl,
                                 js_dir / self._reserve_js_filename(site_dir.name, i, jurl, taken),
+                                user_agent,
                             )
                         ): i
                         for i, jurl in enumerate(js_links)
@@ -720,7 +721,7 @@ class CrawlEngine:
     # ── helpers ───────────────────────────────────────────────────────────────
 
     async def _download_js_file(
-        self, session: aiohttp.ClientSession, jurl: str, dest: Path
+        self, session: aiohttp.ClientSession, jurl: str, dest: Path, user_agent: str
     ) -> bool:
         """
         Download one ``<script src>``, under the politeness the page got.
@@ -738,24 +739,20 @@ class CrawlEngine:
         download is not worth failing a page over, so a limiter that refuses to
         hand out a slot yields ``False`` rather than an exception the group
         would have to interpret.
-
-        The one thing still not carried across is the User-Agent: ``fetch``
-        takes ``user_agent`` and ``download_file`` does not, so a script request
-        goes out with the session's default headers while the page went out as
-        the agent ``check_robots`` was asked about. Fixing that needs a
-        signature change in :mod:`protor.fetcher`.
         """
         if self._rate_limiter is not None:
             with contextlib.suppress(Exception):
                 await self._rate_limiter.wait(urlparse(jurl).netloc or jurl)
         if self._allow_internal_redirects:
-            return await download_file(session, jurl, dest, allow_internal_redirects=True)
+            return await download_file(
+                session, jurl, dest, allow_internal_redirects=True, user_agent=user_agent
+            )
         # The default path, spelled out rather than folded into the branch above:
         # `download_file` already defaults to refusing internal redirects, so
         # passing False says nothing. Naming it only when it is True keeps the
-        # common case a plain three-argument call, which is what any
-        # monkeypatched stand-in in the tests is written against.
-        return await download_file(session, jurl, dest)
+        # common case a plain call, which is what any monkeypatched stand-in in
+        # the tests is written against.
+        return await download_file(session, jurl, dest, user_agent=user_agent)
 
     @staticmethod
     def _js_filename(index: int, jurl: str, taken: set[str] | None = None) -> str:
