@@ -206,6 +206,114 @@
 - **40 unreachable lines sat after a `return`** in `engine.py`: a second
   implementation of the JS filename collision logic, complete with its own
   docstring, referencing an attribute that does not exist.
+- **`protor update` never installed anything.** `_is_editable_install` asked
+  whether the package's grandparent directory was an ancestor of the package, and
+  `updater.py` and `__init__.py` always share a parent — so that is true for a
+  plain `pip install protor` exactly as it is for `pip install -e .`. Every wheel
+  install reported itself as a dev tree, `update` refused, and the user was told
+  to run `git pull` in a directory with no git in it. What distinguishes them is
+  the checkout: a `pyproject.toml` or `.git` directly above the package.
+- **`http://169.254.1.1./` was allowed while `169.254.1.1/` was refused.**
+  `ipaddress.ip_address` rejects the trailing-dot spelling, so the link-local
+  range check silently did not run.
+- **`/a/b.html` and `/a-b.html` both wrote `a-b.html`.** `-` is both the path
+  joiner and a legal filename character, so one page silently overwrote the
+  other: two reported as scraped, one file on disk, and the loser's manifest
+  naming the winner's HTML.
+- **`--max-pages 4` issued 31 requests.** The ceiling was tested as
+  `stats.total + len(pending) < max_targets`, and `stats.total` is
+  scraped + errors + blocked — which `_skip` does not advance. A URL the engine
+  fetched and then declined spent a request and nothing else. The docstring
+  excused this on the grounds that nothing could skip, because "the parser yields
+  same-host links exclusively"; a same-host `<a href>` to a `manual.pdf` skips
+  just as readily, and that is the common case on the sites a crawl is pointed
+  at. `stats.total` keeps its meaning — a PDF is not a scraped page — but the
+  budget now counts dispatches.
+- **Every script download bypassed the rate limiter and the pinned User-Agent.**
+  The page waited on the limiter and computed an agent, then scheduled
+  `download_file(...)`, which took neither. `--download-js` is the batch default,
+  so most of a run's traffic went out unthrottled with the session's default
+  identity.
+- **A cache-write failure destroyed a successfully fetched page.** `cache.put` sat
+  inside the `try` under neither handler, so an `OSError` escaped `fetch`
+  uncaught — not even a `FetchError` — and the engine recorded a hard failure for
+  a page it had already fetched, having written no HTML.
+- **Page bodies were decoded UTF-8 unconditionally.** A page served as
+  `text/html; charset=windows-1251` had every non-ASCII byte replaced with
+  U+FFFD, silently, and the corruption reached the saved HTML, the manifest, the
+  extracted data and non-ASCII link hrefs — so links dropped out of the crawl
+  frontier — then was cached so every later read reproduced it. The declared
+  charset is honoured; nothing is guessed when nothing is declared.
+- **An empty SSE stream was written to disk as a completed analysis.** A stream
+  carrying no text — empty body, keepalives only, or llama.cpp's mid-stream
+  `data: {"error": {...}}` frame, which arrives with HTTP 200 — produced an empty
+  `AnalysisResult`, a written `analysis.json`, "saved" and exit 0.
+- **`requests` exceptions escaped as tracebacks.** The module docstring states
+  every user-facing failure is a `ProtorError` subclass, "the contract `cli.cli()`
+  relies on". Three `stream()` implementations and three of four `list_models()`
+  called `requests` bare, so a runtime dying between the availability check and
+  the POST produced a full traceback.
+- **`protor models` exited 0 against a dead runtime.** `list_runtime_models` caught
+  `Exception`, printed `Could not list models: [Errno 111] Connection refused`, and
+  returned — indistinguishable, to a script, from a runtime with no models.
+- **A stale selector on a `multiple` field reported data.** The emptiness guard was
+  `v not in (None, "")`, and a list is never either, so `{"tags": [null, null]}`
+  counted as a successful extraction while the identical stale selector on a
+  scalar field exited 1. `multiple` also returned a *scalar* default on zero
+  matches, so one schema produced two record shapes.
+- **`--base-url http://localhost:11434/` produced `//api/generate`.**
+  `resolve_base_url` strips trailing slashes and a test has pinned that since
+  `http://host:1234//v1/models` was a real bug — but only on the registry path.
+  Path prefixes like `http://host:5001/v1/` are preserved, which is the point.
+- **A schemaless `OLLAMA_HOST` reported Ollama as stopped.** `export
+  OLLAMA_HOST=0.0.0.0:11434` is how Ollama documents binding to all interfaces;
+  `requests` raised `MissingSchema`, `_probe` swallowed it, and the value was
+  reported invalid without saying so.
+- **The scaler escalated concurrency on a window it never consumed.** Ten
+  successes then a stall — the exact condition the scaler exists to react to —
+  climbed 4 → 6 → 8 → … → 20 across cooldowns, because no new samples arrive to
+  change the window. Five times the request rate against a host that had gone
+  quiet.
+- **`robots.txt` was fetched without the identity it evaluated.** `_load_robots`
+  took no agent at all, so the crawl judged rules against one of 15 rotated
+  agents while sending a fixed Chrome/124 — and all 15 pool entries start
+  `Mozilla/5.0`, so urllib reduced the evaluated identity to `mozilla` and a
+  `User-agent: Chrome`-specific robots.txt was never consulted. The sitemap path
+  was worse: no headers at all, so aiohttp's default `Python/3.x aiohttp/3.y`.
+- **`is_allowed()` read a different cache than `check_robots(cache=…)` wrote.** The
+  documented flow — an owned `RobotsCache` per crawl — left the public reader
+  answering True for URLs the owned cache blocks, and that False "allowed" is
+  indistinguishable from a real one.
+- **`probing()` ignored the module's own `live_enabled()`.** `CI=true` in a
+  container with a pty emitted cursor escapes into a CI log, and `PROTOR_NO_LIVE=1`
+  was silently overridden. The encoding half was worse: the gate refused only
+  `ascii`, while `theme.py` names cp1252 as a case the glyph fallback exists for —
+  a Windows console passed the gate and then raised `UnicodeEncodeError` from
+  inside rich's spinner.
+- **`type: "attribute"` with no `attribute` blamed the wrong thing.** `FIELD_TYPES`
+  whitelists the type and `validate()` never checked the field, so the schema
+  loaded and failed per page — after the fetch, on disk — reporting "unknown type
+  'attribute'" for a type the author got right. Its `regex` sibling reported
+  *success*, returning the element's entire text.
+- **`SiteManifest.from_dict` was never called.** `protor analyze --file
+  answer.json` on `{"note": "hi"}` yielded the *keys* as strings and raised
+  `AttributeError` from a module the user never named, as a traceback.
+  `_load_index` now routes every row through `from_dict`, which is what makes
+  the argument checkable.
+- **A `before_fetch` hook's `headers` dict was written and never read.** A hook
+  setting `ctx["headers"]["Authorization"]` got no error and no header.
+- **`_probe`'s comment promised a 401 would be surfaced by "the backend's own
+  check"; no check does.** Rather than delete the promise, all four
+  `list_models()` implementations now raise `AuthError` on 401/403, so the
+  diagnosis appears where the user ran the command. The
+  401-counts-as-running decision is untouched.
+- **`InvalidManifestError` documented a shape that cannot occur.** It said the
+  partial record it tolerates is "the shape a run killed mid-write leaves"; the
+  only writer dumps manifest-by-manifest, so an interrupted index is truncated
+  JSON, which fails to parse before any record is read.
+- **`HTTPCache.put` overrode the caller's TTLs and mutated its object.** The
+  cache's values are store-level policy — `prune` sweeps every entry against one
+  window — so they win, and both docstrings now say so instead of the opposite.
 
 ### Internal
 
@@ -222,6 +330,25 @@
 - **Removed `_AD_PATH_PATTERNS`/`_AD_FILE_PATTERNS` from the blocklist**: compiled,
   never referenced, and wiring them in would block every image on a page and
   ordinary path segments like `/log/`.
+- **177 new tests across five audit files** (`test_engine_audit_fixes.py`,
+  `test_fetch_audit_fixes.py`, `test_llm_audit_fixes.py`,
+  `test_extractor_audit_fixes.py`, `test_support_audit_fixes.py`), 1,519 → 1,696.
+  Each class documents what was broken and why it mattered, and each was
+  mutation-checked — the fix reverted, the new test confirmed failing, the fix
+  restored. Two tests were found vacuous in the process and rewritten: one
+  asserted against a variable that did not exist (so the hook raised `NameError`,
+  was suppressed, and cleared nothing), and one mutation left the code under test
+  in place, which is evidence about the mutation rather than about the tests.
+- **Two existing tests were pinning behaviour the fixes had to change**, and both
+  had been passing for the wrong reason. `test_listing_failure_is_reported`
+  asserted the printed text of a path that now raises. `test_run_command` in the
+  integration suite wrote a `{"sites": [...]}` index — a shape nothing produces —
+  and passed only because `analyze_with_runtime` was mocked, so the malformed
+  index was never looked at; with the fix in place the old fixture fails, which is
+  what makes the new one meaningful.
+- **`_prepare_context` had its first four lines twice** — a leftover duplicate of
+  the `limit`/`not data` guard, invisible because the second copy computes the
+  same thing.
 
 ## v2.9.0 - 2026-10-03
 
