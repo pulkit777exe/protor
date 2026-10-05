@@ -53,17 +53,31 @@ class CacheEntry:
     status: int = 200
     timestamp: float = 0.0
     #: Seconds the entry may be served without revalidating.
+    #:
+    #: A *default*, not a per-entry override: :meth:`HTTPCache.put` applies the
+    #: cache's own ``ttl`` to every entry it stores, so a value set here is
+    #: replaced the moment the entry is cached. Retention is a property of the
+    #: store rather than of one row — :meth:`HTTPCache.prune` sweeps every entry
+    #: against a single window, so entries with windows of their own would leave
+    #: one directory holding two policies at once.
     ttl: int = 3600
     #: Extra seconds the entry is *retained* after it goes stale, so its
     #: ETag/Last-Modified can still be sent. Without this window, expiry deletes
     #: the validators and every "conditional" request silently degrades into a
     #: full re-download.
+    #:
+    #: As with :attr:`ttl`, this is a default that :meth:`HTTPCache.put` replaces
+    #: with the cache's own ``stale_ttl``.
     stale_ttl: int = 86_400
     #: Byte length of the body as stored. Recorded so a body file that vanished
     #: from disk is distinguishable from a response that really was empty:
     #: without it a missing file was served as a successful empty page.
-    #: Indexes written before this field existed load with 0, which simply
-    #: disables the check for them.
+    #:
+    #: The accessors now detect a missing or damaged body directly, so this is
+    #: no longer load-bearing for correctness — it remains as a cheap integrity
+    #: check for a body that is present but the wrong length, which is what a
+    #: truncated write produces. Indexes written before this field existed load
+    #: with 0, which simply disables the check for them.
     nbytes: int = 0
     #: The response's own Content-Type, carried through the cache so a cached
     #: body can still be recognised as not-a-page. Cached entries from before
@@ -164,18 +178,27 @@ class HTTPCache:
 
     # ── persistence ──────────────────────────────────────────────────────────
 
-    def _with_body(self, url: str, entry: CacheEntry) -> CacheEntry:
+    def _with_body(self, url: str, entry: CacheEntry) -> CacheEntry | None:
         """
-        *entry* with its body read from disk, leaving the indexed entry alone.
+        *entry* with its body read from disk, or None when there is none to read.
 
         A copy rather than the stored object, so the body lives exactly as long
         as the caller's reference. Attaching it to the indexed entry is what the
         docstring above says no longer happens — the read is lazy, but it was
         never dropped, which is the half that matters.
+
+        Returning None is the point: an entry whose body cannot be read is not an
+        entry the caller can serve, and saying otherwise is what made a deleted
+        body come back as an empty page. It is also the answer
+        :meth:`_load_index` already gives at open time, when it drops an index
+        entry whose body file is missing — the same store, one answer.
         """
         if entry.body:
             return entry
-        return replace(entry, body=self._read_body(url))
+        body = self._read_body(url)
+        if body is None:
+            return None
+        return replace(entry, body=body)
 
     def _load_index(self) -> dict[str, CacheEntry]:
         """
@@ -241,11 +264,26 @@ class HTTPCache:
         except OSError:
             return set()
 
-    def _read_body(self, url: str) -> str:
+    def _read_body(self, url: str) -> str | None:
+        """
+        The stored body for *url*, or None when there is not one to read.
+
+        None is not an empty string. A zero-byte body file is a response that
+        really was empty, and ``get`` serves it; a *missing* one is a cache that
+        cannot answer, and conflating the two is how a deleted body came back as
+        a blank page reported as a successful scrape.
+
+        ``UnicodeDecodeError`` is handled here for the same reason
+        :meth:`_load_index` handles it for ``index.json``: a body truncated
+        mid-character by an interrupted write is damage, and the reader that
+        tolerates damage to the index must tolerate it to the bodies too. It
+        used to catch only ``OSError``, so that one file raised a bare codec
+        error out of :meth:`entry_for` to a caller with no way to interpret it.
+        """
         try:
             return self._body_path(url).read_text(encoding="utf-8")
-        except OSError:
-            return ""
+        except (OSError, UnicodeDecodeError):
+            return None
 
     def _drop_body(self, url: str) -> None:
         """Delete a URL's body file so the cache cannot grow without bound."""
@@ -375,6 +413,14 @@ class HTTPCache:
         into a full re-download every time. Retention is bounded by
         :meth:`prune`, which discards entries past ``ttl + stale_ttl``.
 
+        None also means *the body is not there*: the index entry exists but its
+        body file has been deleted or damaged behind the cache's back, and
+        serving that as an entry whose ``.body`` is ``""`` reported a blank page
+        as a successful scrape. This accessor used to do exactly that, while
+        :func:`protor.fetcher.fetch` independently compared ``nbytes`` against
+        the body it read and re-downloaded — one store, two answers to the same
+        question. Both say None now.
+
         The body is read from disk on demand, so only requested pages are
         resident in memory.
         """
@@ -390,6 +436,12 @@ class HTTPCache:
         This is what a caller needs to choose between serving and revalidating:
         :meth:`get` returns None once stale, which is exactly the state a 304
         refers to.
+
+        None when the body cannot be read, for the same reason as :meth:`get` —
+        a revalidation that would serve nothing is better reported as a miss than
+        as an entry the caller has to check a second time. The validators are not
+        lost with it: they remain in the index, so :meth:`conditional_headers`
+        and the next :meth:`prune` still see them.
         """
         entry = self._index.get(url)
         return self._with_body(url, entry) if entry is not None else None
@@ -405,18 +457,38 @@ class HTTPCache:
             self._dirty = True
 
     def put(self, url: str, entry: CacheEntry) -> None:
-        """Store a cache entry for *url* (body written once, index marked dirty)."""
-        entry.timestamp = time.time()
-        entry.ttl = self._ttl
-        entry.stale_ttl = self._stale_ttl
-        entry.nbytes = len(entry.body.encode("utf-8"))
+        """
+        Store a cache entry for *url* (body written once, index marked dirty).
+
+        The cache's own ``ttl`` and ``stale_ttl`` are authoritative and are
+        stamped onto the entry it stores; whatever the caller set on the two
+        fields is a default it did not get to keep. See :attr:`CacheEntry.ttl`
+        for why per-entry retention windows are not offered.
+
+        *entry* is not modified. It used to have four of its fields rewritten —
+        ``timestamp``, ``ttl``, ``stale_ttl`` and ``nbytes`` — so a caller
+        holding the object afterwards found it describing something the store
+        never agreed to. ``_index`` now holds the stamped copy, which is also
+        what makes the stored entry the one thing that can be aged, marked dirty
+        and serialised without the caller's object changing underneath it.
+        """
+        body = entry.body
+        stored = replace(
+            entry,
+            timestamp=time.time(),
+            ttl=self._ttl,
+            stale_ttl=self._stale_ttl,
+            nbytes=len(body.encode("utf-8")),
+            # Metadata only. Attaching the body to the indexed entry made the
+            # cache fully resident in RAM again — measured 11.4 MiB held across
+            # 500 entries of 24 kB, and it was never released, since nothing
+            # cleared it. The caller's copy keeps the body it passed in; the
+            # index does not.
+            body="",
+        )
         self._bodies_dir.mkdir(parents=True, exist_ok=True)
-        self._body_path(url).write_text(entry.body, encoding="utf-8")
-        # Metadata only. Attaching the body to the indexed entry made the cache
-        # fully resident in RAM again — measured 11.4 MiB held across 500 entries
-        # of 24 kB, and it was never released, since nothing cleared it. The
-        # caller's copy keeps the body it passed in; the index does not.
-        self._index[url] = replace(entry, body="")
+        self._body_path(url).write_text(body, encoding="utf-8")
+        self._index[url] = stored
         self._dirty = True
 
     def conditional_headers(self, url: str) -> dict[str, str]:

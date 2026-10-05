@@ -2,15 +2,17 @@
 
 Public API
 ----------
-    check_robots(url, session, user_agent="*") → bool
-    is_allowed(url, user_agent="*") → bool
+    check_robots(url, session, user_agent="*", cache=…) → bool
+    is_allowed(url, user_agent="*", cache=…) → bool
     clear_cache() → None
-    RobotsCache(ttl=…) → owned cache, for per-crawl isolation
+    RobotsCache(ttl=…, user_agent=…) → owned cache, for per-crawl isolation
 
-:func:`check_robots` and :func:`is_allowed` share a process-wide default cache so
-a caller can ask a question without owning anything. A crawler that runs more
-than one independent crawl should own a :class:`RobotsCache` per run and pass it
-in, so one run can never inherit another's policies.
+:func:`check_robots` and :func:`is_allowed` both default to a process-wide
+cache, so a caller can ask a question without owning anything. Both take the same
+optional ``cache=``, and a crawler that runs more than one independent crawl
+should own a :class:`RobotsCache` per run and pass it to *both* — then the write
+and the read cannot land in different caches, and one run can never inherit
+another's policies.
 """
 
 from __future__ import annotations
@@ -42,6 +44,17 @@ def _base_of(url: str) -> str:
     return f"{parsed.scheme}://{parsed.netloc}"
 
 
+#: What this module announces itself as when the caller has declared no identity.
+#:
+#: RFC 9309 §2.2.1: a crawler whose product token matches no group is governed by
+#: the ``User-agent: *`` group, and ``*`` is the token the spec reserves for "any
+#: other crawler". Sending it asks the site exactly the question the site
+#: reserves for an unidentified client — and, unlike sending nothing, it is never
+#: quietly answered by aiohttp's own ``Python/3.x aiohttp/3.y``, which is how the
+#: sitemap path used to announce itself.
+_WILDCARD_IDENTITY = "*"
+
+
 class _Policy(RobotFileParser):
     """
     A robots policy with an explicit, typed allow-everything flag.
@@ -64,18 +77,33 @@ class _Policy(RobotFileParser):
         return policy
 
 
-async def _load_robots(base: str, session: aiohttp.ClientSession) -> RobotFileParser | None:
+async def _load_robots(
+    base: str,
+    session: aiohttp.ClientSession,
+    user_agent: str = _WILDCARD_IDENTITY,
+) -> RobotFileParser | None:
     """
     Fetch and parse robots.txt for *base*. Returns ``None`` if the fetch failed.
 
     Deliberately knows nothing about caching: its only job is to decide whether
     the site gave us an answer *at all*. That distinction — "allow everything"
     versus "we could not ask" — is the one the caller must not blur.
+
+    *user_agent* is sent as the ``User-Agent`` header, because a site may answer
+    differently depending on who is asking — Google serves a crawler-specific
+    robots.txt, and plenty of sites publish a ``User-agent: <browser>`` group at
+    all. Asking without it means the body parsed here is the body some *other*
+    identity was served, which is the mirror image of evaluating one identity
+    while transmitting another. The default is the RFC 9309 "no identity declared"
+    token rather than whatever the session would otherwise have sent: an inherited
+    default is an identity nobody in this call stack chose.
     """
     robots_url = urljoin(base, "/robots.txt")
     try:
         timeout = aiohttp.ClientTimeout(total=DEFAULT_TIMEOUT)
-        async with session.get(robots_url, timeout=timeout) as resp:
+        async with session.get(
+            robots_url, timeout=timeout, headers={"User-Agent": user_agent}
+        ) as resp:
             if resp.status == 200:
                 policy = _Policy()
                 policy.parse((await resp.text()).splitlines())
@@ -126,10 +154,19 @@ class RobotsCache:
     An engine should own one of these per crawl. Owning it is what makes the
     cache testable: a test constructs its own instance instead of reaching into
     module globals to reset state that a previous test left behind.
+
+    *user_agent* is the identity this cache announces itself with when it fetches
+    a policy, and it defaults to the RFC 9309 "no identity declared" token. Set it
+    when the crawl has an identity to declare — the point being that it is stated
+    once, here, rather than inherited from whatever headers the session happens to
+    carry. Nothing in this module reads ``config``: an identity is the caller's to
+    choose, and the one thing that must never happen is deciding it twice in two
+    places.
     """
 
-    def __init__(self, ttl: float = _DEFAULT_TTL) -> None:
+    def __init__(self, ttl: float = _DEFAULT_TTL, user_agent: str = _WILDCARD_IDENTITY) -> None:
         self._entries: dict[str, _Entry] = {}
+        self._user_agent = user_agent
         # In-flight fetches, so concurrent page checks for one host share a
         # single request. Without this the cache check happened before the await
         # and every concurrent worker missed it: 6 concurrent pages meant 6
@@ -150,13 +187,17 @@ class RobotsCache:
         """
         return self._fresh(_base_of(url))
 
-    def is_allowed(self, url: str, user_agent: str = "*") -> bool:
+    def is_allowed(self, url: str, user_agent: str = _WILDCARD_IDENTITY) -> bool:
         """
         Check *url* against the policy already cached for its host. Never fetches.
 
         Returns True when no policy is cached, because there is nothing to
         enforce. This is a cheap re-check of a URL whose host is already known;
         it does not honour robots.txt on its own. Use :meth:`check` for that.
+
+        ``True`` here is ambiguous between "the site's rules allow it" and "no
+        policy in hand", and the two mean opposite things for a caller that is
+        about to fetch. Use :meth:`lookup` to tell them apart.
         """
         policy = self.lookup(url)
         if policy is None:
@@ -192,7 +233,7 @@ class RobotsCache:
         self,
         url: str,
         session: aiohttp.ClientSession,
-        user_agent: str = "*",
+        user_agent: str = _WILDCARD_IDENTITY,
     ) -> bool:
         """
         Fetch the host's robots.txt if needed and report whether *url* is allowed.
@@ -201,17 +242,22 @@ class RobotsCache:
         could not be fetched, because then the rules are unknown. The failure is
         not remembered, so the next page tries again; see :meth:`_policy_for`.
 
-        ``user_agent`` is the identity the rules are evaluated against and must be
-        the string the request will actually send. See :func:`check_robots` for
-        why that matters.
+        ``user_agent`` is the identity the rules are evaluated against, and it is
+        also the identity the fetch is made under: passing a different one to
+        :func:`check_robots` and to the page request is what this module's docs
+        warn against, so both halves now take the same argument. See
+        :func:`check_robots` for why that matters.
         """
-        policy = await self._policy_for(_base_of(url), session)
+        policy = await self._policy_for(_base_of(url), session, user_agent)
         if policy is None:
             return True
         return policy.can_fetch(user_agent, url)
 
     async def _policy_for(
-        self, base: str, session: aiohttp.ClientSession
+        self,
+        base: str,
+        session: aiohttp.ClientSession,
+        user_agent: str | None = None,
     ) -> RobotFileParser | None:
         """
         Return the host's policy, collapsing a concurrent burst onto one fetch.
@@ -231,7 +277,11 @@ class RobotsCache:
 
         task = self._inflight.get(base)
         if task is None:
-            task = asyncio.ensure_future(_load_robots(base, session))
+            # The identity is the caller's, defaulted to the cache's own. It is
+            # never read off the session: an inherited session header is an
+            # identity nobody here chose, which is the whole defect.
+            agent = self._user_agent if user_agent is None else user_agent
+            task = asyncio.ensure_future(_load_robots(base, session, agent))
             task.add_done_callback(_discard_outcome)
             self._inflight[base] = task
 
@@ -292,7 +342,7 @@ _default_cache = RobotsCache()
 async def check_robots(
     url: str,
     session: aiohttp.ClientSession,
-    user_agent: str = "*",
+    user_agent: str = _WILDCARD_IDENTITY,
     *,
     cache: RobotsCache | None = None,
 ) -> bool:
@@ -303,8 +353,9 @@ async def check_robots(
     not be fetched, because then the rules are unknown. An unknown answer is
     never cached, so the next page asks again.
 
-    ``user_agent`` is the identity the rules are evaluated against, and it must
-    be the string the request actually sends. Evaluating one identity while
+    ``user_agent`` is the identity the rules are evaluated against, and it is
+    also the identity the robots.txt request is sent under — both halves take
+    this one argument, so they cannot drift. Evaluating one identity while
     transmitting another asks the site about a policy it never agreed to: urllib
     reduces the argument to the token before the first "/", so the full
     "Mozilla/5.0 … Chrome/124.0.0.0 Safari/537.36" string scores as the identity
@@ -322,15 +373,35 @@ async def check_robots(
     return await target.check(url, session, user_agent)
 
 
-def is_allowed(url: str, user_agent: str = "*") -> bool:
+def is_allowed(
+    url: str,
+    user_agent: str = _WILDCARD_IDENTITY,
+    *,
+    cache: RobotsCache | None = None,
+) -> bool:
     """
     Check *url* against the policy already cached for its host, without fetching.
 
-    Thin wrapper over the process-wide default cache, kept because it is the
-    cheap way to re-check a URL on a host the crawl already has a policy for.
-    Returns True when nothing is cached. See :meth:`RobotsCache.is_allowed`.
+    Kept because it is the cheap way to re-check a URL on a host the crawl
+    already has a policy for. Returns True when nothing is cached. See
+    :meth:`RobotsCache.is_allowed`.
+
+    ``cache`` mirrors :func:`check_robots`, and it has to. These two are the read
+    and write halves of one decision, so reading the default cache after writing
+    an owned one made "allowed" mean two different things depending on which
+    argument was passed — True because the site's rules permitted it, or True
+    because a cache this call never consulted had nothing to say. Pass the cache
+    the crawl owns and the pair cannot answer differently about the same URL.
+
+    An owned cache is never written into the default: that is the other half of
+    the guarantee, and it is why the default is consulted only when no cache is
+    named rather than as a fallback.
+
+    ``True`` is still ambiguous on its own — "allowed" versus "nothing cached" are
+    the same boolean. :meth:`RobotsCache.lookup` distinguishes them.
     """
-    return _default_cache.is_allowed(url, user_agent)
+    target = cache if cache is not None else _default_cache
+    return target.is_allowed(url, user_agent)
 
 
 def clear_cache() -> None:

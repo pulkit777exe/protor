@@ -50,6 +50,15 @@ class AutoScaler:
             return self.concurrency
 
         rate = sum(self._results) / len(self._results)
+        # Spend the window. These samples have just decided something, and a
+        # decision that leaves its evidence on the books gets re-made once per
+        # cooldown for as long as nothing newer arrives — and the nothing-newer
+        # case is the site stalling, which is exactly what this class exists to
+        # react to. Ten successes then silence drove 4 → 6 → 8 → … → 20: five
+        # times the request rate against a host that had already gone quiet.
+        # Clearing makes the next decision need fresh samples, so a stalled crawl
+        # holds its concurrency instead of amplifying it.
+        self._results.clear()
         old = self.concurrency
 
         if rate >= self._up and self.concurrency < self._max:

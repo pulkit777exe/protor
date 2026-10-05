@@ -127,7 +127,16 @@ class TestListRuntimeModels:
         list_runtime_models("not-a-runtime")
         assert "Unknown runtime" in captured_err()
 
-    def test_listing_failure_is_reported(self, monkeypatch, captured_err):
+    def test_listing_failure_is_reported(self, monkeypatch):
+        """
+        A failed listing raises rather than returning.
+
+        It used to print "Could not list models: socket died" and return, so
+        `protor models` exited 0 against a dead runtime — indistinguishable from
+        a runtime with no models, to anything reading the exit code. The
+        diagnosis is now the typed error's own message, which `cli.cli()`
+        renders once and exits 1 on.
+        """
         import protor.llm_backends as lb
 
         def boom(self):
@@ -135,8 +144,11 @@ class TestListRuntimeModels:
 
         monkeypatch.setattr(lb.OllamaBackend, "list_models", boom)
         monkeypatch.setattr(lb.OllamaBackend, "check_available", lambda self: True)
-        list_runtime_models("ollama")
-        assert "socket died" in captured_err()
+
+        with pytest.raises(RuntimeUnavailableError) as exc:
+            list_runtime_models("ollama")
+
+        assert "socket died" in str(exc.value)
 
     def test_shows_dash_when_no_size_is_reported(self, monkeypatch, captured):
         _stub_models(monkeypatch, ["m"], size=None)

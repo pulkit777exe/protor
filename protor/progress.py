@@ -30,7 +30,7 @@ from typing import TYPE_CHECKING, Any
 
 from rich.live import Live
 
-from .theme import ERR, SafeTable, muted
+from .theme import ACTIVE, ARROW, ERR, OK, SafeTable, muted
 from .theme import console as _console
 from .theme import err_console as _err_console
 
@@ -65,6 +65,30 @@ def _env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() not in _FALSY
 
 
+#: The glyphs every live frame in this module draws. ``theme`` resolves each of
+#: them to an ASCII stand-in when the terminal cannot carry it, so reading these
+#: names here answers the question for *this* process's rendering rather than for
+#: a hardcoded list of marks.
+_GLYPHS = f"{OK}{ERR}{ACTIVE}{ARROW}"
+
+
+def _carries_glyphs(encoding: str) -> bool:
+    """
+    Whether *encoding* can carry this module's glyphs out and back unchanged.
+
+    Encoding alone is not enough, and cp1252 is why: it encodes an em dash to
+    byte 0x97, which decodes back as a C1 control character — the frame renders a
+    control character where a dash belongs. Requiring the round trip rejects those
+    encodings along with the ones that cannot encode the glyph at all, which is
+    the same test ``theme._can_encode`` makes for ``sys.stdout``.
+    """
+    try:
+        raw = _GLYPHS.encode(encoding)
+        return raw.decode(encoding) == _GLYPHS
+    except (UnicodeEncodeError, UnicodeDecodeError, LookupError):
+        return False
+
+
 def live_enabled(con: Console | None = None) -> bool:
     """
     Whether in-place rendering can work here.
@@ -73,15 +97,21 @@ def live_enabled(con: Console | None = None) -> bool:
     produces an unreadable transcript of escape codes. Rich already honours
     ``TERM`` (including ``dumb``) and ``NO_COLOR`` for the terminal's own
     capabilities; this adds the "is anyone watching" half of the question, which
-    Rich cannot see. An ascii-capable terminal is refused too — the glyphs would
-    be replaced on every repaint.
+    Rich cannot see. A terminal whose encoding cannot carry the glyphs is refused
+    too — every repaint would replace or mangle them, and on cp1252 that is a
+    ``UnicodeEncodeError`` from the middle of the frame rather than a cosmetic
+    substitution.
+
+    The single gate for all animation in this module: ``live_display`` and
+    ``probing`` both route through it, so ``PROTOR_NO_LIVE``, ``CI`` and a
+    legacy console are answered the same way everywhere.
     """
     con = con or _console
     if _env_flag("PROTOR_NO_LIVE"):
         return False
     if _env_flag("CI"):
         return False
-    return bool(con.is_terminal) and con.encoding != "ascii"
+    return bool(con.is_terminal) and _carries_glyphs(con.encoding)
 
 
 class Throttle:
@@ -211,24 +241,24 @@ def live_display(
     enabled = enabled is not False and live_enabled(con)
 
     if not enabled:
-        # Nothing to animate: callers keep calling update() and pay nothing.
+        # Nothing to animate, so this branch writes nothing at all: the frame is
+        # never built and no summary is printed on the way out. `render` is not
+        # called here or on exit, which is the property the disabled path is
+        # actually for — a pipe pays nothing for progress it cannot use.
+        #
+        # The per-result detail a pipe and a CI log get is not a final render; it
+        # is the one plain line per result that callers write through
+        # `LiveDisplay.line` as each row finishes, which is the whole reason
+        # `wants_lines` exists. A `transient=False` caller whose aggregate line
+        # says nothing about individual results is the caller that has to call
+        # `line`, and `render()` cannot help it: the frame is the same table the
+        # live path already drew, so printing it here would only repeat rows the
+        # caller has already written and add a second, differently-shaped
+        # summary to the end of the log.
         display = LiveDisplay(
             _render=render, _live=None, _throttle=Throttle(0), _enabled=False, _console=con
         )
         yield display
-        # Print the final state once, so a pipe still gets the per-result detail
-        # rather than only the summary line the caller prints afterwards. The
-        # README promises "one clean line per result" for a pipe or a CI log, and
-        # this used to deliver the header, one aggregate, and the output path:
-        # which URLs failed was visible nowhere.
-        #
-        # Regardless of `transient`: with animation off there is no Live holding
-        # a frame, so erasing one is not a concern — and the callers that pass
-        # `transient=False` (the engine does, so its summary survives) are exactly
-        # the ones whose aggregate line says nothing about individual results.
-        # The per-result lines the engine emits as rows finish are the detail here,
-        # so the final table would only repeat them. `contextlib.suppress` because
-        # display code must never be able to end a run.
         return
 
     display = LiveDisplay(
@@ -426,9 +456,14 @@ def probing(message: str, con: Console | None = None) -> Iterator[None]:
     which would leave a CI log exactly as blank as before. So both renderings come
     from one message: a spinner where there is a cursor, one plain line where there
     is not.
+
+    The decision is :func:`live_enabled`'s, not ``is_terminal``'s. Asking here
+    instead answered a different question than the rest of the module, so a CI log
+    with a pty (``tty: true``, ``docker -t``) got cursor-up sequences written into
+    it and ``PROTOR_NO_LIVE=1`` was overruled by the switch meant to overrule it.
     """
     target = con or _console
-    if target.is_terminal:
+    if live_enabled(target):
         with target.status(message):
             yield
         return

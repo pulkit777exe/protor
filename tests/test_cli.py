@@ -6,7 +6,8 @@ from unittest.mock import patch
 import pytest
 
 from protor.cli import _abort, _build_parser, _load_index
-from protor.exceptions import DataFileNotFoundError
+from protor.exceptions import DataFileNotFoundError, InvalidManifestError
+from protor.models import SiteManifest
 from protor.utils import get_default_output_dir
 
 
@@ -139,7 +140,27 @@ class TestLoadIndex:
         data = [{"domain": "example.com", "url": "https://example.com"}]
         index_file.write_text(json.dumps(data))
         result = _load_index(str(index_file))
-        assert result == data
+        # Manifests, not the raw dicts: _load_index routes every row through
+        # SiteManifest.from_dict, which is what turns a wrong --file into a
+        # sentence instead of an AttributeError from analyzer._site_header.
+        assert [m.to_dict() for m in result] == [
+            SiteManifest(domain="example.com", url="https://example.com").to_dict()
+        ]
+
+    def test_a_record_that_names_no_page_is_refused(self, tmp_path):
+        """A dict without url/domain raised deep in the analyzer; it raises here."""
+        index_file = tmp_path / "sites_index.json"
+        index_file.write_text(json.dumps([{"note": "hi"}]))
+        with pytest.raises(InvalidManifestError):
+            _load_index(str(index_file))
+
+    def test_a_file_that_is_not_a_list_of_manifests_is_refused(self, tmp_path):
+        """The shape --file most often gets wrong: a dict, or a list of strings."""
+        for payload in ('{"note": "hi"}', '["https://example.com"]'):
+            index_file = tmp_path / "sites_index.json"
+            index_file.write_text(payload)
+            with pytest.raises(InvalidManifestError):
+                _load_index(str(index_file))
 
     def test_load_missing_file(self):
         with pytest.raises(DataFileNotFoundError):

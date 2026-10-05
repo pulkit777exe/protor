@@ -14,15 +14,21 @@ from protor.cli import (
     cli,
 )
 from protor.exceptions import DataFileNotFoundError
+from protor.models import SiteManifest
 
 
 class TestLoadIndex:
     def test_load_existing_file(self, tmp_path):
-        data = [{"url": "https://example.com"}]
+        # domain is identity too, not just url: from_dict requires both, so a
+        # row naming a URL and nothing else names no page.
+        data = [{"url": "https://example.com", "domain": "example.com"}]
         f = tmp_path / "index.json"
         f.write_text(json.dumps(data))
         result = _load_index(str(f))
-        assert result == data
+        # Manifests, not raw dicts -- see cli._load_index on why.
+        assert [m.to_dict() for m in result] == [
+            SiteManifest(url="https://example.com", domain="example.com").to_dict()
+        ]
 
     def test_load_missing_file_raises(self):
         with pytest.raises(DataFileNotFoundError):

@@ -247,9 +247,14 @@ class InvalidManifestError(ProtorError, ValueError):
     is no help when the record arrived from JSON written minutes ago.
 
     Two tiers, because a partial record is not always a wrong one. A record
-    short a *measurement* -- the shape a run killed mid-write leaves -- still
-    names a real page, so it loads with that measurement empty. A record with no
-    ``url``/``domain`` names no page at all, and only that case raises.
+    short a *measurement* still names a real page, so it loads with that
+    measurement empty -- that is the shape of an index from an older version, or
+    a row assembled by hand. A record with no ``url``/``domain`` names no page at
+    all, and only that case raises.
+
+    A run killed mid-write does *not* produce the second shape. The only writer
+    dumps one manifest at a time, so an interrupted index is truncated JSON,
+    which fails to parse before any record is read.
 
     Also a ``ValueError``, since it reports bad data rather than a failed
     operation, so callers already catching ``ValueError`` around parsing keep

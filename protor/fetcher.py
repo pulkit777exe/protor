@@ -17,6 +17,7 @@ import asyncio
 import contextlib
 import random
 from dataclasses import dataclass
+from email.message import Message
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin
@@ -179,6 +180,63 @@ def _from_cache(entry: CacheEntry, *, not_modified: bool = False) -> FetchResult
     )
 
 
+def _declared_charset(content_type: str) -> str | None:
+    """
+    The ``charset`` parameter of a Content-Type header, if it declares one.
+
+    Parsed with :mod:`email`, which is what aiohttp itself uses for this and
+    which gets the fiddly parts right for free: parameter names are
+    case-insensitive, whitespace around ``=`` is not significant, a quoted value
+    is unquoted, and ``charset`` appearing inside another parameter's *value* is
+    not mistaken for the parameter itself.
+
+    Returns None for an absent, empty or unparseable declaration, so "the
+    server did not say" and "the server said nothing useful" take the same
+    path. A non-string value cannot happen for a real header but can for a test
+    double, and must not raise here.
+    """
+    if not isinstance(content_type, str) or not content_type:
+        return None
+    try:
+        message = Message()
+        message["content-type"] = content_type
+        return message.get_content_charset() or None
+    except (TypeError, ValueError):
+        return None
+
+
+def _decode_body(data: bytes, content_type: str) -> str:
+    """
+    Decode a response body, honouring the charset the server declared.
+
+    Decoding every body as UTF-8 regardless of what ``Content-Type`` said put a
+    U+FFFD in place of every non-ASCII byte of a ``windows-1251`` or
+    ``shift_jis`` page, *silently* — replacement never raises. The corruption
+    reached the saved HTML, the manifest, the extracted text, and non-ASCII link
+    hrefs, so those links stopped matching any page and dropped out of the crawl
+    frontier; it was then written to the cache, so every later read reproduced
+    it. :mod:`protor.robots` had been decoding the same responses through
+    ``resp.text()``, which honours the declaration — the fetcher was the odd one
+    out.
+
+    The declared charset is tried first and strictly. If the server lies about
+    it — which is common, and undetectable from here — or names a codec Python
+    does not have, the fallback is UTF-8 with replacement, so a fetch is never
+    lost to a decode. Guessing when nothing is declared is deliberately *not*
+    attempted: a latin-1 page read as cp1252 is silently *wrong* rather than
+    visibly damaged, which is a worse outcome than replacement characters.
+    """
+    charset = _declared_charset(content_type)
+    if charset is not None:
+        try:
+            return data.decode(charset)
+        except (LookupError, UnicodeDecodeError):
+            # An unknown codec name, or bytes that are not in the declared
+            # charset. Both are the server's problem, not the page's.
+            pass
+    return data.decode("utf-8", errors="replace")
+
+
 @dataclass
 class _Response:
     """A completed HTTP response: everything the caller needs, nothing live."""
@@ -270,6 +328,18 @@ async def fetch(
     Each request carries a fresh User-Agent from the rotation pool, so callers
     never mutate a shared session to rotate UAs.
 
+    *hooks* may supply ``before_fetch`` and ``after_fetch`` callbacks, each
+    called as ``hook(url, ctx)``. Both contexts carry ``url``;
+    ``before_fetch``'s also carries ``headers``, the dict the request is built
+    from, so a hook can set one — mutate it, or replace it wholesale. Hooks are
+    user code: one raising never loses the page.
+
+    A body is decoded with the charset its ``Content-Type`` declares, falling
+    back to UTF-8 with replacement. See :func:`_decode_body`.
+
+    Caching never fails a fetch: an unwritable or full cache directory costs the
+    next run a refetch, not this one its page.
+
     Raises FetchError on HTTP >= 400 or connection problems.
     """
     # Read the entry without discarding it: an expired one still carries the
@@ -287,12 +357,22 @@ async def fetch(
         else:
             return _from_cache(entry)
 
-    hook_ctx: dict[str, Any] = {"url": url, "headers": {}}
+    # Built before the hooks run and handed to them, so a hook setting
+    # ctx["headers"]["Authorization"] actually reaches the request. It used to be
+    # built *after* them, from a `headers` key in the context nothing ever read:
+    # a hook's header was written and discarded with no error and no effect.
+    headers: dict[str, str] = {
+        **_conditional_headers(entry),
+        "User-Agent": user_agent or random_user_agent(),
+    }
+    hook_ctx: dict[str, Any] = {"url": url, "headers": headers}
     for hook in (hooks or {}).get("before_fetch", []):
         with contextlib.suppress(Exception):
             hook(url, hook_ctx)
+    # A hook may have replaced the mapping outright rather than mutating it, so
+    # take the result back rather than assuming the identity held.
+    headers = hook_ctx["headers"] if isinstance(hook_ctx.get("headers"), dict) else headers
 
-    headers = {**_conditional_headers(entry), "User-Agent": user_agent or random_user_agent()}
     last_exc: Exception | None = None
 
     for attempt in range(max_retries):
@@ -326,26 +406,41 @@ async def fetch(
                     continue
                 raise FetchError(url, f"HTTP {r.status}")
             data = r.data
-            text = data.decode("utf-8", errors="replace")
-            if cache:
-                cache.put(
-                    url,
-                    CacheEntry(
-                        etag=r.headers.get("ETag"),
-                        last_modified=r.headers.get("Last-Modified"),
-                        body=text,
-                        status=r.status,
-                        content_type=r.headers.get("Content-Type", ""),
-                    ),
-                )
+            content_type = r.headers.get("Content-Type", "")
+            text = _decode_body(data, content_type)
+            if cache is not None:
+                # A cache is a pure optimisation, so it must never be able to
+                # fail a fetch. put() writes a file, and that can fail for
+                # reasons that have nothing to do with the page: a read-only
+                # cache directory, a full disk, a name collision. It raised
+                # OSError, which is neither TimeoutError nor
+                # aiohttp.ClientError, so it escaped fetch entirely — not even
+                # as the FetchError the docstring promises — and the caller saw
+                # an exception for a page already fetched, with no HTML written
+                # and a hard failure recorded for it. The cost of an unwritable
+                # cache is a refetch next time.
+                with contextlib.suppress(OSError):
+                    cache.put(
+                        url,
+                        CacheEntry(
+                            etag=r.headers.get("ETag"),
+                            last_modified=r.headers.get("Last-Modified"),
+                            body=text,
+                            status=r.status,
+                            content_type=content_type,
+                        ),
+                    )
             for hook in (hooks or {}).get("after_fetch", []):
                 with contextlib.suppress(Exception):
-                    hook(url, {"status": r.status, "body": text})
+                    # `url` here as well as in before_fetch: the two contexts
+                    # disagreed on shape, and a hook logging a request saw the
+                    # URL for one phase of it and not the other.
+                    hook(url, {"url": url, "status": r.status, "body": text})
             return FetchResult(
                 text=text,
                 nbytes=len(data),
                 status=r.status,
-                content_type=r.headers.get("Content-Type", ""),
+                content_type=content_type,
             )
         except TimeoutError as exc:
             last_exc = exc

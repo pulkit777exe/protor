@@ -4,11 +4,22 @@ All public structs are dataclasses so they're trivially serialisable,
 comparable in tests, and self-documenting.
 
 Reading a manifest back is deliberately two-tier. A record short a *measurement*
--- a run killed mid-write leaves exactly those -- loads with that measurement
-empty, because the page it describes is still worth keeping. A record with no
-``url``/``domain`` names no page at all, so it raises `InvalidManifestError`
-listing what it lacked. Tolerating that too would turn a wrong file (an LLM
-response, a list of URLs) into a wall of empty manifests that look valid.
+loads with that measurement empty, because the page it describes is still worth
+keeping: such a record comes from an index written by an older version, or from a
+row somebody assembled by hand, not from a run of this one. (A run killed
+mid-write does *not* produce it — the only writer dumps one manifest at a time,
+so a kill leaves a truncated document that ``json.loads`` rejects, not a
+half-populated one.) A record with no ``url``/``domain`` names no page at all, so
+it raises `InvalidManifestError` listing what it lacked. Tolerating that too
+would turn a wrong file (an LLM response, a list of URLs) into a wall of empty
+manifests that look valid.
+
+That refusal only helps if the index is actually *read through* ``from_dict``,
+and today nothing in the package does: ``cli._load_index`` hands the analyzer
+whatever ``json.loads`` returned, so a wrong ``--file`` surfaces as an
+``AttributeError`` deep in ``analyzer._prepare_context`` instead of as the
+sentence this module is written to produce. See the audit note on
+``SiteManifest.from_dict`` for the one-line change that closes it.
 """
 
 from __future__ import annotations
@@ -77,16 +88,30 @@ class SiteManifest:
 
         Identity (``url``, ``domain``) is required: a record without it names no
         page, and tolerating that would turn a wrong file into a wall of empty
-        manifests that look valid. Measurements default, because a run killed
-        mid-write leaves exactly those missing and the page is still worth
-        keeping. Raises :class:`InvalidManifestError` naming what was missing.
+        manifests that look valid. Measurements default, because a record can
+        legitimately lack them — an index from an older version, a row assembled
+        by hand — while still naming a real page. Raises
+        :class:`InvalidManifestError` naming what was missing.
+
+        That error is both a :class:`~protor.exceptions.ProtorError` and a
+        ``ValueError``, so a caller that routes its index through here (rather
+        than passing raw dicts on) turns a wrong ``--file`` into a message naming
+        the file instead of an ``AttributeError`` traceback.
+
+        .. note::
+           Nothing in the package calls this yet. ``cli._load_index`` should be
+           the caller: ``[SiteManifest.from_dict(row, source=path) for row in
+           rows]``, raising :class:`InvalidManifestError` straight through to
+           ``cli.cli()``, which already catches both of its base classes.
         """
         if not isinstance(d, dict):
-            where = f"{source}: " if source is not None else ""
+            # No `where` prefix: __post_init__ already renders the source, so
+            # adding it here read "/tmp/x.json: /tmp/x.json: expected a manifest
+            # object" the moment the first caller passed source=.
             raise InvalidManifestError(
                 missing_fields=_MANIFEST_IDENTITY,
                 source=source,
-                detail=f"{where}expected a manifest object, got {type(d).__name__}",
+                detail=f"expected a manifest object, got {type(d).__name__}",
             )
 
         data = dict(d)  # never pop from the caller's dict
@@ -104,11 +129,11 @@ class SiteManifest:
 
         raw_meta = data.pop("metadata", None)
         if raw_meta is not None and not isinstance(raw_meta, dict):
-            where = f"{source}: " if source is not None else ""
+            # No `where` prefix; see the note on the isinstance check above.
             raise InvalidManifestError(
                 missing_fields=("metadata",),
                 source=source,
-                detail=f"{where}metadata must be an object, got {type(raw_meta).__name__}",
+                detail=f"metadata must be an object, got {type(raw_meta).__name__}",
             )
         # Unknown metadata keys are dropped rather than raising: an index written
         # by a newer protor must still load in an older one.

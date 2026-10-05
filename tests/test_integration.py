@@ -67,8 +67,15 @@ class TestCLIIntegration:
         site_dir = os.path.join(self.temp_dir, "example_com")
         os.makedirs(site_dir, exist_ok=True)
         json_path = os.path.join(site_dir, "sites_index.json")
+        # A bare JSON *array* of manifests, which is what _write_manifest_index
+        # produces. This fixture was a {"sites": [...]} object instead — a shape
+        # nothing writes — and `_load_index` iterating it handed the key "sites"
+        # to the analyzer. It passed only because analyze_with_runtime was mocked
+        # out; with the mock in place the malformed index was never looked at.
         with open(json_path, "w", encoding="utf-8") as f:
-            json.dump({"sites": [{"url": "https://example.com", "title": "Example"}]}, f)
+            json.dump(
+                [{"url": "https://example.com", "domain": "example.com", "title": "Example"}], f
+            )
 
         mock_scrape_multiple.return_value = json_path
         mock_analyze.return_value = "analysis.md"

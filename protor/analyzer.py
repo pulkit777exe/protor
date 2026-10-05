@@ -19,10 +19,11 @@ from rich import box
 from rich.text import Text
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
     from pathlib import Path
 
 from .config import ANALYSIS_MAX_DATA_CHARS, OLLAMA_BASE
-from .exceptions import ModelListUnavailableError, RuntimeUnavailableError
+from .exceptions import ModelListUnavailableError, ProtorError, RuntimeUnavailableError
 from .formatters import write_output
 from .llm_backends import LLMBackend, ModelInfo, OllamaBackend, create_backend
 from .models import AnalysisResult, SiteManifest
@@ -179,10 +180,23 @@ def list_runtime_models(
         )
         err_console.print()
         return
+    except ProtorError:
+        # Already a diagnosis: the runtime's name, the URL it tried, the command
+        # to start it, or the auth hint. cli.cli() renders it and exits 1.
+        #
+        # This used to be `except Exception: print; return`, which reported a
+        # failed listing as a successful command — `protor models` exiting 0
+        # against a dead runtime, indistinguishable from "no models". The
+        # backends now raise typed errors precisely so this can stop guessing.
+        raise
     except Exception as exc:
-        err_console.print(f"  {err(f'Could not list models: {exc}')}")
-        err_console.print()
-        return
+        # Genuinely unexpected. Still typed, still non-zero: the alternative is a
+        # traceback, and the alternative before that was a green exit code.
+        raise RuntimeUnavailableError(
+            getattr(llm, "display_name", backend),
+            str(url),
+            f"listing models failed: {exc}",
+        ) from exc
 
     if not models:
         err_console.print(f"  {warn('No models available.')}")
@@ -352,7 +366,7 @@ def _site_header(i: int, site: dict[str, Any] | SiteManifest, desc_budget: int) 
 
 
 def _prepare_context(
-    data: list[dict[str, Any] | SiteManifest], max_chars: int | None = None
+    data: Sequence[dict[str, Any] | SiteManifest], max_chars: int | None = None
 ) -> str:
     """
     Flatten site data into a concise LLM context string.
@@ -365,10 +379,6 @@ def _prepare_context(
     For very large batches the descriptions shorten and then drop before any
     site is dropped, and the result is guaranteed to fit within *max_chars*.
     """
-    limit = max_chars or ANALYSIS_MAX_DATA_CHARS
-    if not data:
-        return ""
-
     limit = max_chars or ANALYSIS_MAX_DATA_CHARS
     if not data:
         return ""
@@ -476,7 +486,7 @@ def _unavailable_error(backend: str, base_url: str | None) -> Exception:
 
 
 def analyze(
-    data: list[dict[str, Any] | SiteManifest],
+    data: Sequence[dict[str, Any] | SiteManifest],
     model: str = "llama3",
     focus: str = "general",
     output_dir: str | Path = "analysis",
@@ -623,7 +633,7 @@ def analyze(
 
 
 def analyze_with_ollama(
-    data: list[dict[str, Any] | SiteManifest],
+    data: Sequence[dict[str, Any] | SiteManifest],
     model: str = "llama3",
     focus: str = "general",
     output_dir: str | Path = "analysis",
@@ -646,7 +656,7 @@ def analyze_with_ollama(
 
 
 def analyze_with_runtime(
-    data: list[dict[str, Any] | SiteManifest],
+    data: Sequence[dict[str, Any] | SiteManifest],
     backend: str = "ollama",
     model: str = "llama3",
     focus: str = "general",

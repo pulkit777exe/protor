@@ -45,6 +45,7 @@ from .exceptions import (
 from .extractor import ExtractionSchema
 from .formatters import FORMAT_CHOICES
 from .llm_backends import BACKEND_CHOICES
+from .models import SiteManifest
 from .runtimes import RUNTIMES, get_runtime, runtime_names
 from .scraper import scrape_multiple
 from .theme import (
@@ -63,7 +64,7 @@ from .updater import check_for_update, perform_update
 from .utils import get_default_output_dir, load_json, safe_filename, validate_url
 
 if TYPE_CHECKING:
-    from .models import SiteManifest
+    from collections.abc import Sequence
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -82,7 +83,7 @@ def _abort(msg: str, hint: str = "") -> NoReturn:
     sys.exit(1)
 
 
-def _load_index(path: str) -> list[dict[str, Any] | SiteManifest]:
+def _load_index(path: str) -> list[SiteManifest]:
     """
     Load a sites index written by `scrape`.
 
@@ -90,12 +91,22 @@ def _load_index(path: str) -> list[dict[str, Any] | SiteManifest]:
     at a directory used to escape as a bare ``IsADirectoryError`` traceback from
     ``read_text``, which said nothing about which of the paths on the command
     line was the wrong one.
+
+    Every row goes through :meth:`SiteManifest.from_dict`, which is what makes
+    the file argument checkable. Handing ``json.loads``' output straight to the
+    analyzer meant a record was trusted to be a dict: ``protor analyze --file``
+    on an LLM response or a list of URLs yielded the *keys* as strings, and the
+    first thing to touch one — ``analyzer._site_header`` calling ``.get`` —
+    raised ``AttributeError`` deep inside a module the user never named, as a
+    traceback. ``cli.cli()`` catches :class:`ProtorError` and ``ValueError`, and
+    ``InvalidManifestError`` is both, so the refusal now renders as a sentence
+    naming the file and exits 1.
     """
     p = Path(path)
     if p.is_dir():
         raise DataFileNotFoundError(path, "it is a directory")
     try:
-        result: list[dict[str, Any] | SiteManifest] = list(load_json(path))
+        result = [SiteManifest.from_dict(row, source=path) for row in load_json(path)]
     except FileNotFoundError as exc:
         raise DataFileNotFoundError(path) from exc
     except json.JSONDecodeError as exc:
@@ -177,7 +188,7 @@ def _cmd_run(args: argparse.Namespace) -> None:
 
 
 def _analyze(
-    args: argparse.Namespace, data: list[dict[str, Any] | SiteManifest], out: Path
+    args: argparse.Namespace, data: Sequence[dict[str, Any] | SiteManifest], out: Path
 ) -> None:
     """Shared analysis step for the `analyze` and `run` subcommands."""
     analyze_with_runtime(
@@ -211,6 +222,24 @@ def _cmd_crawl(args: argparse.Namespace) -> None:
         use_sitemaps=getattr(args, "sitemap", False),
         use_cache=getattr(args, "cache", False),
     ).crawl()
+
+
+def _has_data(value: Any) -> bool:
+    """
+    Whether an extracted field value carries data, looking inside lists.
+
+    ``value not in (None, "")`` was the test, and a list is never either — so a
+    ``multiple`` field of ``[None, None]`` read as data. A stale attribute name
+    on a ``multiple`` field therefore reported "Extracted N records", exited 0,
+    and wrote ``{"tags": [null, null]}``, where the same stale name on a scalar
+    field correctly exited 1. Recursing makes the two agree, and stops the
+    emptiness of a nested list from being decided by its type.
+    """
+    if value is None or value == "":
+        return False
+    if isinstance(value, list):
+        return any(_has_data(item) for item in value)
+    return True
 
 
 def _cmd_extract(args: argparse.Namespace) -> None:
@@ -255,7 +284,7 @@ def _cmd_extract(args: argparse.Namespace) -> None:
     # same failure-as-success shape the selector *syntax* check exists to
     # prevent, one level up, and it is what a stale CSS selector looks like
     # after the site redesigns its markup.
-    empty = sum(1 for r in results if not any(v not in (None, "") for v in r.values()))
+    empty = sum(1 for r in results if not any(_has_data(v) for v in r.values()))
 
     if not results or empty == len(results):
         # Non-zero: a script that pipes this into `&&` must not read an empty

@@ -393,17 +393,44 @@ def get_runtime(key: str) -> Runtime:
     return RUNTIMES[normalized]
 
 
+def _with_scheme(url: str) -> str:
+    """
+    Give a bare ``host`` or ``host:port`` an ``http://`` prefix.
+
+    ``OLLAMA_HOST`` is the one registry variable Ollama documents schemaless —
+    ``export OLLAMA_HOST=0.0.0.0:11434`` is the standard way to bind it to every
+    interface — and ``resolve_base_url`` stripped its trailing slash but not its
+    missing scheme, so ``_probe`` built ``0.0.0.0:11434/api/tags``,
+    ``requests`` raised ``MissingSchema``, and ``protor runtimes`` reported a
+    running Ollama as stopped with no hint that the value was valid.
+
+    Local runtimes speak plain HTTP, so a bare host and port cannot mean anything
+    else. Nothing else is rewritten: a value carrying a scheme, a path or
+    credentials is left exactly as given, because those say the user knows what
+    they typed — ``user:pw@host`` in particular is not a host, and guessing
+    ``http://`` on it would corrupt credentials rather than fix a URL.
+    """
+    if not url or "://" in url or "/" in url or "@" in url:
+        return url
+    return f"http://{url}"
+
+
 def resolve_base_url(key: str, override: str | None = None) -> str:
     """
     Resolve a runtime's base URL.
 
     Precedence: explicit *override*, then the runtime's environment variable,
     then its documented default. Trailing slashes are stripped so path
-    concatenation stays predictable.
+    concatenation stays predictable, and a bare ``host:port`` gains an
+    ``http://`` scheme — see :func:`_with_scheme`.
+
+    Normalisation happens after precedence, so one rule covers both the
+    environment variable and an ``--base-url`` typed at the prompt rather than
+    two rules that can drift.
     """
     runtime = get_runtime(key)
     url = override or (os.environ.get(runtime.env_url) if runtime.env_url else None)
-    return (url or runtime.default_url).rstrip("/")
+    return _with_scheme((url or runtime.default_url).rstrip("/"))
 
 
 def resolve_api_key(key: str, override: str | None = None) -> str | None:
@@ -432,13 +459,19 @@ def _probe(runtime: Runtime, timeout: float) -> bool:
     """
     Return True if *runtime* answers its health path at its resolved URL.
 
-    Any status below 500 counts as running, including a 404: "something is
-    listening" is the question being asked, and the backend's own check reports
-    the auth or model problem that follows. The bare base URL is tried only when
-    the health path could not be *reached* at all — a connection error, which is
-    the one answer that cannot distinguish a wrong prefix from a stopped
-    runtime. The 5xx case is a real answer from a broken endpoint, so it counts
-    as not running rather than prompting another request.
+    Any status below 500 counts as running, including a 401 or a 404: "something
+    is listening" is the question this function asks, and ``protor runtimes``
+    answers it for humans. Whether the token or the model is acceptable is a
+    different question, asked by the backend when it makes a real request — its
+    ``list_models`` raises ``AuthError`` on a 401/403, which is where that
+    diagnosis surfaces. (The comment here used to claim the backend's *check*
+    would report it; no check does, and ``check_available`` deliberately returns
+    True on a 401, which is why the listing path is the place the error is
+    raised.) The bare base URL is tried only when the health path could not be
+    *reached* at all — a connection error, which is the one answer that cannot
+    distinguish a wrong prefix from a stopped runtime. The 5xx case is a real
+    answer from a broken endpoint, so it counts as not running rather than
+    prompting another request.
     """
     import requests
 
@@ -451,8 +484,9 @@ def _probe(runtime: Runtime, timeout: float) -> bool:
         status = None
 
     # Any 2xx/3xx/4xx means *something* is listening. Only a connection error
-    # means "not running" — a 401 still proves the server is there, and the
-    # backend's own check will surface the auth problem.
+    # means "not running" — a 401 still proves the server is there. It does not
+    # prove the token is any good: that verdict belongs to the backend's own
+    # listing call, which raises AuthError. See the note on the docstring above.
     if status is not None and status < 500:
         return True
     # A 5xx is a real answer from a broken endpoint, not a working runtime.
