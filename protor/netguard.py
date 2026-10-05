@@ -62,8 +62,21 @@ _METADATA_ADDRESSES = frozenset({"169.254.169.254", "169.254.170.2", "fd00:ec2::
 
 
 def _address_of(host: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
-    """Parse *host* as an IP literal, or None when it is a name."""
-    candidate = host.strip("[]")
+    """
+    Parse *host* as an IP literal, or None when it is a name.
+
+    Normalised first — brackets stripped, lowercased, any trailing dot dropped —
+    because the literal and its trailing-dot spelling are the same address, and
+    ``ipaddress`` rejects the second: ``169.254.1.1.`` raised, so the link-local
+    range check silently did not run and ``http://169.254.1.1./`` was allowed where
+    ``http://169.254.1.1/`` was refused. The divergence sat exactly at the boundary
+    this module exists to enforce.
+
+    Normalising here rather than at the call site fixes every caller at once;
+    ``is_metadata_host`` already did it, which is why the named-address check was
+    never the thing that let a variant through.
+    """
+    candidate = host.strip("[]").lower().rstrip(".")
     if not candidate:
         return None
     try:

@@ -296,6 +296,8 @@ class CrawlEngine:
         # directory and then by URL, so a second page of the same site cannot be
         # handed a name the first used. See _reserve_js_filename.
         self._js_names: dict[str, dict[str, str]] = {}
+        # Page filenames reserved per site directory, for the same reason.
+        self._page_names: dict[str, dict[str, str]] = {}
         self._extraction_schema = extraction_schema
         self._blocklist = blocklist
         self._allow_internal_redirects = allow_internal_redirects
@@ -570,7 +572,9 @@ class CrawlEngine:
 
         try:
             site_dir.mkdir(parents=True, exist_ok=True)
-            html_file = site_dir / page_filename(url)
+            html_file = site_dir / self._reserve_page_filename(
+                site_dir.name, url, page_filename(url)
+            )
             html_file.write_text(result.text, encoding="utf-8")
 
             # With a schema, the guessed-noise patterns yield: a schema's
@@ -729,6 +733,32 @@ class CrawlEngine:
         if taken is not None:
             taken.add(candidate)
         return candidate
+
+    def _reserve_page_filename(self, site_key: str, url: str, name: str) -> str:
+        """
+        Pick the filename for *url* inside *site_key*'s directory.
+
+        :func:`page_filename` flattens a path with ``-``, which is ambiguous:
+        ``/a/b.html`` and ``/a-b.html`` both want ``a-b.html``. Whichever was
+        written second silently overwrote the first — two pages reported as scraped,
+        one file on disk, and the loser's manifest pointing at the winner's HTML.
+
+        The plain name goes to the first URL to claim it and a hash of the full path
+        to any other, which is the same shape as :meth:`_reserve_js_filename`. Both
+        are therefore order-dependent in *which* URL keeps the plain name; a re-crawl
+        that visits them in a different order would swap the two files. That is a far
+        smaller problem than losing a page outright, and it keeps every existing
+        filename stable — a hash on every page would rename all of them.
+        """
+        by_url = self._page_names.setdefault(site_key, {})
+        if url in by_url:
+            return by_url[url]
+        if name in by_url.values():
+            stem, dot, suffix = name.rpartition(".")
+            digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:8]
+            name = f"{stem}{dot}{digest}.{suffix}" if dot else f"{name}-{digest}"
+        by_url[url] = name
+        return name
 
     def _reserve_js_filename(
         self, site_key: str, index: int, jurl: str, taken: set[str] | None = None

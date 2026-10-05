@@ -28,29 +28,69 @@ class TestIsEditableInstall:
         result = _is_editable_install()
         assert result is True
 
-    def test_site_packages_install_false(self):
-        with patch("protor.updater.Path") as mock_path:
-            mock_source = MagicMock()
-            mock_source.resolve.return_value = mock_source
-            mock_source.parents = []
-            mock_project = MagicMock()
-            mock_project.resolve.return_value = mock_project
-            mock_project.__truediv__ = MagicMock(return_value=MagicMock())
+    def test_a_constructed_site_packages_is_not_a_checkout(self, tmp_path):
+        """
+        The wheel case, on real paths.
 
-            def path_factory(p):
-                if "site-packages" in str(p):
-                    return mock_source
-                return mock_project
+        `_is_editable_install` cannot reach it in-process — this repository *is* the
+        project root, so any path predicate anchored on `updater.py`'s own location
+        answers "checkout" for every faked `__file__`. That is precisely how the
+        original mocked test passed against the bug, so the decision is factored into
+        `_looks_like_a_checkout` and tested where the layout can actually be built.
+        """
+        from protor.updater import _looks_like_a_checkout
 
-            mock_path.side_effect = path_factory
+        site_packages = tmp_path / "lib" / "python3.13" / "site-packages" / "protor"
+        site_packages.mkdir(parents=True)
+        assert _looks_like_a_checkout(site_packages) is False
 
-            import protor
+    def test_a_wheel_install_is_not_an_editable_checkout(self, tmp_path, monkeypatch):
+        """
+        The case that made `protor update` useless for most people.
 
-            with patch.object(
-                protor, "__file__", "/usr/lib/python3.13/site-packages/protor/__init__.py"
-            ):
-                result = _is_editable_install()
-                assert result is False
+        `updater.py` and `__init__.py` always share a parent directory, so the old
+        predicate — "the package's grandparent is an ancestor of the package" — is
+        true for a plain `pip install protor` exactly as it is for `pip install -e .`.
+        Every wheel install reported itself as a dev tree, and `update` refused to
+        install anything, telling the user to run `git pull` in a directory with no
+        git in it.
+
+        Built on the real filesystem rather than a mock: the previous version of this
+        test patched `Path` and set `parents = []`, which forced the answer and so
+        passed against the bug it was written for.
+        """
+        import protor
+
+        site_packages = tmp_path / "lib" / "python3.13" / "site-packages"
+        (site_packages / "protor").mkdir(parents=True)
+        assert not (site_packages / "pyproject.toml").exists()
+        monkeypatch.setattr(protor, "__file__", str(site_packages / "protor" / "__init__.py"))
+
+        assert _is_editable_install() is False, "a wheel install read as a dev tree"
+
+    def test_a_source_checkout_is_detected_by_its_project_file(self, tmp_path, monkeypatch):
+        import protor
+
+        checkout = tmp_path / "protor-src"
+        (checkout / "protor").mkdir(parents=True)
+        (checkout / "pyproject.toml").write_text("[project]\nname = 'protor'\n")
+        monkeypatch.setattr(protor, "__file__", str(checkout / "protor" / "__init__.py"))
+
+        assert _is_editable_install() is True
+
+    def test_a_vendored_package_without_a_project_file_is_not_a_checkout(
+        self, tmp_path, monkeypatch
+    ):
+        """A git repository alone is enough, and nothing else is."""
+        import protor
+
+        vendored = tmp_path / "vendor" / "protor"
+        vendored.mkdir(parents=True)
+        monkeypatch.setattr(protor, "__file__", str(vendored / "__init__.py"))
+        assert _is_editable_install() is False
+
+        (tmp_path / "vendor" / ".git").mkdir()
+        assert _is_editable_install() is True
 
 
 class TestCmdUpdate:

@@ -5,6 +5,7 @@ behaviour so it cannot silently regress.
 """
 
 import io
+import pathlib
 from typing import ClassVar
 
 import pytest
@@ -274,6 +275,79 @@ class TestPageFilenames:
         assert a != b
         assert a == "docs-a.html"
         assert b == "blog-a.html"
+
+    def test_flattening_is_ambiguous_and_the_reservation_is_not(self):
+        """
+        `-` is both the path joiner and a legal character in a filename.
+
+        So `/a/b.html` and `/a-b.html` flatten to the same `a-b.html`, and whichever
+        was written second silently overwrote the first: two pages reported as
+        scraped, one file on disk, and the loser's manifest pointing at the winner's
+        HTML. The existing test above cannot see this — it compares two paths that
+        flattening already distinguishes.
+        """
+        from protor.engine import CrawlEngine
+
+        assert page_filename("https://x.com/a/b.html") == page_filename("https://x.com/a-b.html"), (
+            "the ambiguity this guards against has gone; re-read the test"
+        )
+
+        engine = CrawlEngine.__new__(CrawlEngine)
+        engine._page_names = {}
+        names = [
+            engine._reserve_page_filename("x.com", url, page_filename(url))
+            for url in ("https://x.com/a/b.html", "https://x.com/a-b.html")
+        ]
+        assert names[0] != names[1], f"two pages, one filename: {names}"
+        assert names[0] == "a-b.html", "the first claimant keeps the plain name"
+
+    def test_the_same_url_always_gets_the_same_name(self):
+        """A re-crawl must not rename a file it already wrote."""
+        from protor.engine import CrawlEngine
+
+        engine = CrawlEngine.__new__(CrawlEngine)
+        engine._page_names = {}
+        first = engine._reserve_page_filename("x.com", "https://x.com/a/b.html", "a-b.html")
+        second = engine._reserve_page_filename("x.com", "https://x.com/a/b.html", "a-b.html")
+        assert first == second
+
+    def test_a_root_reached_by_two_urls_gets_two_files_rather_than_one(self):
+        """
+        `/` and `/index.html` are deliberately the same filename.
+
+        So a site reachable under both spellings used to write one `index.html` and
+        silently overwrite it. Now the second claimant is hashed, which keeps both
+        bodies. Two files for what is arguably one page is a fair trade against
+        losing one of them.
+        """
+        from protor.engine import CrawlEngine
+
+        engine = CrawlEngine.__new__(CrawlEngine)
+        engine._page_names = {}
+        names = [
+            engine._reserve_page_filename("x.com", url, page_filename(url))
+            for url in ("https://x.com/", "https://x.com/index.html")
+        ]
+        assert len(set(names)) == 2, names
+
+    def test_unambiguous_names_are_unchanged(self):
+        """
+        The control: a hash on every page would rename every file on every disk.
+
+        Which URLs get the suffix depends on visit order, so a re-crawl in a
+        different order can swap the two files. That is a far smaller problem than
+        losing a page, and it is the price of not renaming everything.
+        """
+        from protor.engine import CrawlEngine
+
+        engine = CrawlEngine.__new__(CrawlEngine)
+        engine._page_names = {}
+        for url, expected in (
+            ("https://x.com/docs/a.html", "docs-a.html"),
+            ("https://x.com/a.html", "a.html"),
+        ):
+            got = engine._reserve_page_filename("x.com", url, page_filename(url))
+            assert got == expected, (url, got, expected)
 
 
 # ── hostile inputs must not crash a run ──────────────────────────────────────
@@ -1714,3 +1788,85 @@ class TestBlocklistDoesNotRefuseTheRequestedSite:
         )
         await engine.arun()
         assert fetched == ["https://doubleclick.net/"], "the crawl seed was blocked"
+
+
+class TestTwoPagesDoNotShareOneFileOnDisk:
+    """
+    The flattening collision, proved on disk rather than through the helper.
+
+    `page_filename` derives `a-b.html` from both `/a/b.html` and `/a-b.html`, so one
+    of them silently overwrote the other: two pages reported as scraped, one file on
+    disk, and the loser's manifest naming the winner's HTML. Calling
+    `_reserve_page_filename` directly proves the helper works; only writing two
+    pages proves the engine uses it, and an earlier version of this test checked the
+    helper alone and passed against the call site being deleted.
+    """
+
+    async def test_both_bodies_survive(self, tmp_path, monkeypatch):
+        import protor.engine as engine_mod
+        from protor.fetcher import FetchResult
+
+        bodies = {
+            "https://ex.com/a/b.html": "<html><body><p>the deep one</p></body></html>",
+            "https://ex.com/a-b.html": "<html><body><p>the dashed one</p></body></html>",
+        }
+
+        async def fake_fetch(session, url, **kwargs):
+            return FetchResult(
+                text=bodies[url], nbytes=len(bodies[url]), status=200, content_type="text/html"
+            )
+
+        monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+
+        engine = CrawlEngine(
+            queue=StaticQueue(list(bodies)),
+            link_source=StaticSource(),
+            output_dir=tmp_path,
+            max_targets=2,
+        )
+        stats = await engine.arun()
+
+        assert stats.scraped == 2, stats
+        site = tmp_path / "ex.com"
+        saved = sorted(p.read_text(encoding="utf-8") for p in site.glob("*.html"))
+        assert len(saved) == 2, (
+            f"{len(saved)} file(s) for 2 pages: {[p.name for p in site.glob('*.html')]}"
+        )
+        assert any("the deep one" in t for t in saved), saved
+        assert any("the dashed one" in t for t in saved), saved
+
+    async def test_each_manifest_names_the_file_that_holds_its_own_body(
+        self, tmp_path, monkeypatch
+    ):
+        """The other half of the damage: a manifest pointing at the wrong HTML."""
+        import protor.engine as engine_mod
+        from protor.fetcher import FetchResult
+
+        bodies = {
+            "https://ex.com/a/b.html": "<html><body><p>the deep one</p></body></html>",
+            "https://ex.com/a-b.html": "<html><body><p>the dashed one</p></body></html>",
+        }
+
+        async def fake_fetch(session, url, **kwargs):
+            return FetchResult(
+                text=bodies[url], nbytes=len(bodies[url]), status=200, content_type="text/html"
+            )
+
+        monkeypatch.setattr(engine_mod, "fetch", fake_fetch)
+
+        engine = CrawlEngine(
+            queue=StaticQueue(list(bodies)),
+            link_source=StaticSource(),
+            output_dir=tmp_path,
+            max_targets=2,
+        )
+        await engine.arun()
+
+        for manifest in engine.manifests:
+            assert manifest.html_file, manifest.url
+            on_disk = pathlib.Path(manifest.html_file).read_text(encoding="utf-8")
+            expected = bodies[manifest.url]
+            whose = "its own" if on_disk == expected else "another page's"
+            assert on_disk == expected, (
+                f"{manifest.url} was saved as {manifest.html_file}, which holds {whose} body"
+            )

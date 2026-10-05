@@ -275,3 +275,56 @@ class TestRedirectsOverRealSockets:
             for server in servers:
                 server.shutdown()
                 server.server_close()
+
+
+class TestTheAddressCheckSeesEverySpellingOfAnAddress:
+    """
+    `169.254.1.1.` is the same address as `169.254.1.1`, and it was not refused.
+
+    `ipaddress.ip_address` rejects the trailing-dot form, so the link-local range
+    check silently did not run: `http://169.254.1.1/` was blocked and
+    `http://169.254.1.1./` was allowed. The divergence sat at exactly the boundary
+    this module exists to enforce, one byte apart in spelling.
+    """
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://169.254.1.1/",
+            "http://169.254.1.1./",
+            "http://169.254.169.254./",
+            "http://[169.254.1.1]/",
+        ],
+    )
+    def test_a_link_local_literal_is_refused_however_it_is_spelled(self, url):
+        from protor.netguard import is_blocked_redirect
+
+        assert is_blocked_redirect(url), f"{url} reached a link-local address"
+
+    def test_a_public_address_is_still_allowed(self):
+        """The control: normalising must not start refusing ordinary hosts."""
+        from protor.netguard import is_blocked_redirect
+
+        assert not is_blocked_redirect("https://example.com/")
+        assert not is_blocked_redirect("http://example.com./")
+
+    def test_an_ipv4_mapped_metadata_address_is_refused(self):
+        """
+        The named-address list alone does not catch this, and that is worth knowing.
+
+        `str()` of `::ffff:169.254.169.254` is the hex form `::ffff:a9fe:a9fe`, so
+        the `_METADATA_ADDRESSES` string set misses it — `is_metadata_host` answers
+        False. The redirect is refused anyway, because Python's
+        `IPv6Address.is_link_local` delegates to the mapped IPv4 address and the
+        range check catches it.
+
+        An audit reported this as an unblocked bypass. It is not one, and the test
+        says so: if a future change makes `is_link_local` stop delegating, this is
+        the line that will notice.
+        """
+        from protor.netguard import is_blocked_redirect, is_metadata_host
+
+        assert is_blocked_redirect("http://[::ffff:169.254.169.254]/latest/meta-data/")
+        # The narrower predicate genuinely does not see it, which is why the
+        # range check is load-bearing rather than belt-and-braces.
+        assert is_metadata_host("169.254.169.254") is True

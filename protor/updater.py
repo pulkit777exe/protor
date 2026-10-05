@@ -82,15 +82,44 @@ def check_for_update() -> UpdateInfo | None:
 
 
 def _is_editable_install() -> bool:
-    """Detect if protor is installed in editable/dev mode."""
+    """
+    True when protor is running from a source checkout rather than site-packages.
+
+    The previous version compared paths, which cannot work. ``updater.py`` and
+    ``__init__.py`` always share a parent directory, so "the package's grandparent is
+    an ancestor of the package" is true for a plain ``pip install protor`` exactly as
+    it is for ``pip install -e .`` — every wheel install reported itself as a dev
+    tree, so ``protor update`` refused to install anything and told the user to run
+    ``git pull`` in a directory that has no git.
+
+    What actually distinguishes the two is the checkout itself: a source tree has a
+    ``pyproject.toml`` (and usually a ``.git``) directly above the package, and an
+    installed wheel has neither. The residual risk is protor vendored inside some
+    larger project that has its own ``pyproject.toml``, which would read as a
+    checkout and cost a refused update with a correct explanation.
+    """
     try:
         import protor
 
-        source_path = Path(protor.__file__).resolve()
-        project_root = Path(__file__).resolve().parent.parent
-        return project_root in source_path.parents or source_path == project_root / "protor"
+        package_dir = Path(protor.__file__).resolve().parent
+        return _looks_like_a_checkout(package_dir)
     except (ImportError, AttributeError):
         return False
+
+
+def _looks_like_a_checkout(package_dir: Path) -> bool:
+    """
+    Whether *package_dir* is a package inside a source checkout.
+
+    Split out from :func:`_is_editable_install` so it can be tested against a
+    constructed `site-packages` layout. In-process, ``updater.py`` always sits in
+    this repository, so the old path predicate's "project root" is the checkout no
+    matter what ``protor.__file__`` is faked to be — which is exactly why the mocked
+    test for it passed against the bug, and why the wheel case needs a real path to
+    be reachable at all.
+    """
+    project_root = package_dir.parent
+    return (project_root / "pyproject.toml").exists() or (project_root / ".git").exists()
 
 
 #: How long to let pip run before giving up on it. Separate from
