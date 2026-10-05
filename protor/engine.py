@@ -13,7 +13,7 @@ alike — is one loop with a pluggable queue and link source:
 
 The engine owns the aiohttp session and the rich progress display, emits
 ``on_status``/``on_checkpoint`` events for callers to observe, and guarantees a
-hard ``max_targets`` ceiling on pages scraped.
+hard ``max_targets`` ceiling on pages attempted.
 
 Public API
 ----------
@@ -187,6 +187,10 @@ _STATUS_WORDS = {
     "skipped": "skipped",
 }
 
+#: Script URLs one site's ``js/`` directory will remember. See
+#: :meth:`CrawlEngine._js_reservation_limit`.
+_MAX_JS_RESERVATIONS_PER_SITE = 2048
+
 
 class CrawlEngine:
     """
@@ -213,14 +217,17 @@ class CrawlEngine:
         transient 502 is worth another go — and it is why this is a ceiling over
         work rather than over bandwidth.
 
-        The ceiling counts dispatched URLs through ``stats.total``, which a
-        *skipped* URL does not advance — so it held only because nothing can skip.
-        The parser yields same-host links exclusively, so a recursive crawl can
-        never hand the domain filter a URL to reject, and every dispatched task
-        ends in scraped, error or blocked. That is an invariant rather than a
-        coincidence, and one test now pins it: loosening the parser's host check
-        would otherwise turn this ceiling into a suggestion with nothing to say
-        so.
+        Counted as ``stats.dispatched``, so a page the engine *fetched and then
+        declined* — a PDF, an off-domain link, a URL over the link cap — spends
+        the budget like any other request. It used to be counted through
+        ``stats.total``, which ``_skip`` does not advance, on the stated belief
+        that nothing could skip because the parser yields same-host links only.
+        That belief was false: a same-host ``<a href>`` to a manual.pdf skips
+        just as readily as an off-domain link, and that is the common case on
+        exactly the sites a crawl is pointed at. ``CrawlStats.total`` is
+        unchanged and still scraped + errors + blocked, because a skip is not a
+        success and not a failure and must not be reported as either; it just no
+        longer decides the budget.
     concurrency:
         Number of pages fetched concurrently. When *auto_scaler* is provided,
         this is the initial value only; admission follows the scaler.
@@ -296,6 +303,12 @@ class CrawlEngine:
         # directory and then by URL, so a second page of the same site cannot be
         # handed a name the first used. See _reserve_js_filename.
         self._js_names: dict[str, dict[str, str]] = {}
+        # The same names the other way round — per site directory, a set of the
+        # filenames in use — so "is this basename already taken here?" is a
+        # lookup rather than a scan over every URL reserved so far. One entry per
+        # stored URL, so it is bounded by _js_reservation_limit along with the
+        # dict above.
+        self._js_taken_names: dict[str, set[str]] = {}
         # Page filenames reserved per site directory, for the same reason.
         self._page_names: dict[str, dict[str, str]] = {}
         self._extraction_schema = extraction_schema
@@ -416,12 +429,21 @@ class CrawlEngine:
         fetching: set[str] = set()
 
         def spawn() -> None:
-            # stats.total counts every dispatched page, so failures and blocked
-            # URLs count against max_targets instead of letting the crawl run on.
+            # Over *dispatches*, not over outcomes. stats.total — scraped +
+            # errors + blocked — left out every URL the engine fetched and then
+            # declined, so the ceiling never closed on the one kind of page a
+            # crawl meets most: an index linking thirty PDFs under `--max-pages 4`
+            # fetched all thirty and reported one page scraped. dispatched is
+            # incremented as the task is created, so in-flight work is already
+            # counted and needs no separate term.
+            #
+            # stats.total keeps its old meaning. A skip is neither a success nor
+            # a failure, and folding it in would report a PDF as a page the run
+            # had handled; what it no longer does is decide the budget.
             while (
                 not self._queue.empty
                 and len(pending) < self._admission()
-                and (stats.total + len(pending) < self._max_targets)
+                and stats.dispatched < self._max_targets
             ):
                 url = self._queue.dequeue()
                 if url is None:
@@ -617,7 +639,7 @@ class CrawlEngine:
                     # 404'd and silently dropped files that were really written.
                     tasks = {
                         asyncio.create_task(
-                            download_file(
+                            self._download_js_file(
                                 session,
                                 jurl,
                                 js_dir / self._reserve_js_filename(site_dir.name, i, jurl, taken),
@@ -697,6 +719,44 @@ class CrawlEngine:
 
     # ── helpers ───────────────────────────────────────────────────────────────
 
+    async def _download_js_file(
+        self, session: aiohttp.ClientSession, jurl: str, dest: Path
+    ) -> bool:
+        """
+        Download one ``<script src>``, under the politeness the page got.
+
+        ``download_file`` was called directly from here before, with neither
+        the rate limiter nor ``allow_internal_redirects`` — so a page fetched
+        politely was followed immediately by up to ``MAX_JS_FILES`` unthrottled
+        requests to CDN hosts, on the default path (``--download-js`` is the
+        batch default, so most of a run's traffic). The limiter is keyed on the
+        *script's* own host rather than the page's, because a CDN and the site
+        are different servers with different limits, and holding a CDN to the
+        site's budget — or the reverse — would be neither.
+
+        Best-effort, like ``download_file`` itself: a script that will not
+        download is not worth failing a page over, so a limiter that refuses to
+        hand out a slot yields ``False`` rather than an exception the group
+        would have to interpret.
+
+        The one thing still not carried across is the User-Agent: ``fetch``
+        takes ``user_agent`` and ``download_file`` does not, so a script request
+        goes out with the session's default headers while the page went out as
+        the agent ``check_robots`` was asked about. Fixing that needs a
+        signature change in :mod:`protor.fetcher`.
+        """
+        if self._rate_limiter is not None:
+            with contextlib.suppress(Exception):
+                await self._rate_limiter.wait(urlparse(jurl).netloc or jurl)
+        if self._allow_internal_redirects:
+            return await download_file(session, jurl, dest, allow_internal_redirects=True)
+        # The default path, spelled out rather than folded into the branch above:
+        # `download_file` already defaults to refusing internal redirects, so
+        # passing False says nothing. Naming it only when it is True keeps the
+        # common case a plain three-argument call, which is what any
+        # monkeypatched stand-in in the tests is written against.
+        return await download_file(session, jurl, dest)
+
     @staticmethod
     def _js_filename(index: int, jurl: str, taken: set[str] | None = None) -> str:
         """
@@ -760,6 +820,48 @@ class CrawlEngine:
         by_url[url] = name
         return name
 
+    def _js_reservation_limit(self) -> int:
+        """
+        How many script URLs one site's ``js/`` directory will remember.
+
+        The table buys two things — one file per distinct script, and no clobber
+        between scripts sharing a basename — and both are still delivered past
+        this point, because a name derived from the URL alone is deterministic
+        and specific. What is given up is the *deduplication* of a script first
+        seen after the limit: nothing is stored, so a later page naming it again
+        takes a second download of the same bytes under the same name. On a crawl
+        that is a handful of wasted requests; the alternative was permanent
+        bookkeeping for the life of the engine, and 40,000 pages x 15 scripts is
+        600,000 entries of two strings apiece that only the newest few pages'
+        worth of state is ever read for.
+
+        Set well above the number of distinct scripts a real site ships — at
+        ``MAX_JS_FILES`` per page, this is more than a hundred pages' worth — so
+        the fallback only engages on a run that is already pathological.
+        Per *site*, not per run: two domains have two ``js/`` directories and a
+        busy one must not push a quiet one onto hashed names.
+        """
+        return _MAX_JS_RESERVATIONS_PER_SITE
+
+    @staticmethod
+    def _disambiguated_js_name(jurl: str, candidate: str, taken: set[str] | None = None) -> str:
+        """
+        A name for *jurl* that cannot collide with one already in use.
+
+        A truncated SHA-256 prefix is 32 bits, which over tens of thousands of
+        names is unlikely rather than impossible — and a clash here loses a file
+        silently, which is the exact failure this machinery exists to prevent. So
+        the digest is widened when the short one is spoken for.
+        """
+        stem, _, suffix = candidate.rpartition(".")
+        stem = stem or candidate
+        digest = hashlib.sha256(jurl.encode("utf-8")).hexdigest()
+        for width in (8, 16, 32, 64):
+            name = f"{stem}.{digest[:width]}.{suffix}"
+            if taken is None or name not in taken:
+                return name
+        return f"{stem}.{digest}.{suffix}"
+
     def _reserve_js_filename(
         self, site_key: str, index: int, jurl: str, taken: set[str] | None = None
     ) -> str:
@@ -782,6 +884,12 @@ class CrawlEngine:
         fetched concurrently cannot be handed the same name. Nothing awaits
         between the lookup and the store, which is what makes that safe without a
         lock.
+
+        "What this directory already holds" is asked of a set of names, not of
+        ``by_url.values()``. That answer used to be a linear scan run once per
+        newly-seen script — with ``MAX_JS_FILES = 15`` and *N* pages on one
+        domain, ~112·N² value comparisons, so ~2.8e9 on a 5,000-page crawl, spent
+        deciding whether a hash was needed.
         """
         by_url = self._js_names.setdefault(site_key, {})
         existing = by_url.get(jurl)
@@ -791,23 +899,43 @@ class CrawlEngine:
             return existing
 
         candidate = self._js_filename(index, jurl, taken)
-        if candidate in by_url.values():
-            digest = hashlib.sha256(jurl.encode("utf-8")).hexdigest()[:8]
-            stem, _, suffix = candidate.rpartition(".")
-            candidate = f"{stem or candidate}.{digest}.{suffix}"
+        # The same names, keyed the other way round, so "is this basename taken
+        # here?" is a lookup rather than a scan. One entry per stored URL, so it
+        # is bounded by the same limit.
+        by_name = self._js_taken_names.setdefault(site_key, set())
+
+        if len(by_url) >= self._js_reservation_limit():
+            # Full: this URL cannot be remembered, so it cannot be remembered as
+            # colliding either. Always take the disambiguated name rather than
+            # gambling on a basename the table can no longer check — two URLs
+            # sharing a basename past the limit would otherwise be handed the
+            # same file, which is the failure the whole mechanism is here to stop.
+            # See _js_reservation_limit for what giving up the lookup costs.
+            candidate = self._disambiguated_js_name(jurl, candidate, by_name)
+            if taken is not None:
+                taken.add(candidate)
+            return candidate
+
+        if candidate in by_name:
+            candidate = self._disambiguated_js_name(jurl, candidate, by_name)
             if taken is not None:
                 taken.add(candidate)
         by_url[jurl] = candidate
+        by_name.add(candidate)
         return candidate
 
     def _skip(
         self, stats: CrawlStats, row: dict[str, Any], url: str, note: str, status: str = "skipped"
     ) -> None:
         """
-        Record a page the engine chose not to fetch.
+        Record a page the engine chose not to keep.
 
-        Not counted as an error: the URL was never requested, so it must not
-        consume the request budget beyond the dispatch accounting above.
+        Not counted as an error, and not counted as a page: a PDF fetched to two
+        thousand characters of ``%PDF-1.4`` is not a scraped page, and reporting
+        it as one is the failure this call exists to prevent. It *is* counted as
+        a dispatch — the request went out — which is what ``max_targets`` bounds
+        and why it cannot go on forever regardless of how many of these a site
+        produces.
 
         Recorded as *not attempted* rather than failed, so a later resume does
         not put the whole filtered set back at the front of the queue, where it
