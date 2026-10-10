@@ -302,7 +302,15 @@ def _render_inline(node: Tag, base_url: str) -> str:
     return _render_inline_children(node.children, base_url)
 
 
-def _process_element(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: int = 0) -> None:
+def _process_element(
+    tag: Tag,
+    base_url: str,
+    lines: _Lines,
+    depth: int,
+    _rd: int = 0,
+    *,
+    strip_guessed_noise: bool = True,
+) -> None:
     """
     Recursively process a BeautifulSoup element into Markdown lines.
 
@@ -318,7 +326,7 @@ def _process_element(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: in
         # before paying for the walk instead of after producing it.
         return
 
-    if _is_noise(tag):
+    if _is_noise(tag, strip_guessed_noise=strip_guessed_noise):
         return
 
     if _rd >= MAX_RENDER_DEPTH:
@@ -405,7 +413,7 @@ def _process_element(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: in
 
     # Lists
     if name in ("ul", "ol"):
-        _process_list(tag, base_url, lines, depth)
+        _process_list(tag, base_url, lines, depth, strip_guessed_noise=strip_guessed_noise)
         return
 
     # Horizontal rules
@@ -416,10 +424,18 @@ def _process_element(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: in
         return
 
     # Paragraphs, sections, definition lists, and generic block containers.
-    _emit_block(tag, base_url, lines, depth, _rd + 1)
+    _emit_block(tag, base_url, lines, depth, _rd + 1, strip_guessed_noise=strip_guessed_noise)
 
 
-def _emit_block(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: int = 0) -> None:
+def _emit_block(
+    tag: Tag,
+    base_url: str,
+    lines: _Lines,
+    depth: int,
+    _rd: int = 0,
+    *,
+    strip_guessed_noise: bool = True,
+) -> None:
     """
     Render a block container's children in document order.
 
@@ -444,13 +460,15 @@ def _emit_block(tag: Tag, base_url: str, lines: _Lines, depth: int, _rd: int = 0
             return
         if isinstance(child, Tag) and (child.name in _BLOCK_TAGS or _wraps_blocks(child)):
             flush()
-            _process_element(child, base_url, lines, depth, _rd + 1)
+            _process_element(
+                child, base_url, lines, depth, _rd + 1, strip_guessed_noise=strip_guessed_noise
+            )
         else:
             buffer.append(child)
     flush()
 
 
-def _render_li_body(item: Tag, base_url: str) -> list[str]:
+def _render_li_body(item: Tag, base_url: str, *, strip_guessed_noise: bool = True) -> list[str]:
     """
     Render one ``<li>``'s own content, excluding any nested list.
 
@@ -489,7 +507,9 @@ def _render_li_body(item: Tag, base_url: str) -> list[str]:
         ):
             flush()
             if child.name not in ("ul", "ol"):
-                _process_element(child, base_url, scratch, 0)
+                _process_element(
+                    child, base_url, scratch, 0, strip_guessed_noise=strip_guessed_noise
+                )
         else:
             buffer.append(child)
     flush()
@@ -497,7 +517,13 @@ def _render_li_body(item: Tag, base_url: str) -> list[str]:
 
 
 def _process_list(
-    tag: Tag, base_url: str, lines: _Lines, depth: int, nested: Sequence[Tag] | None = None
+    tag: Tag,
+    base_url: str,
+    lines: _Lines,
+    depth: int,
+    nested: Sequence[Tag] | None = None,
+    *,
+    strip_guessed_noise: bool = True,
 ) -> None:
     """
     Process ul/ol elements into Markdown lists.
@@ -535,7 +561,7 @@ def _process_list(
 
         # The first line carries the marker; any further lines from block
         # content inside the item are indented under it as continuations.
-        body = _render_li_body(item, base_url)
+        body = _render_li_body(item, base_url, strip_guessed_noise=strip_guessed_noise)
         if body:
             lines.append(f"{indent}{prefix} {body[0]}")
             # Charged through `append` for the same reason as the code-block
@@ -548,7 +574,14 @@ def _process_list(
                     return
 
         if nested:
-            _process_list(nested[0], base_url, lines, depth + 1, nested)
+            _process_list(
+                nested[0],
+                base_url,
+                lines,
+                depth + 1,
+                nested,
+                strip_guessed_noise=strip_guessed_noise,
+            )
     lines.append("")
 
 
@@ -801,7 +834,13 @@ def clean_soup(soup: BeautifulSoup, *, strip_guessed_noise: bool = True) -> None
                 pending.append(child)
 
 
-def soup_to_markdown(soup: BeautifulSoup, base_url: str = "", max_chars: int = 0) -> str:
+def soup_to_markdown(
+    soup: BeautifulSoup,
+    base_url: str = "",
+    max_chars: int = 0,
+    *,
+    strip_guessed_noise: bool = True,
+) -> str:
     """
     Convert an already-parsed BeautifulSoup tree to Markdown.
 
@@ -818,7 +857,7 @@ def soup_to_markdown(soup: BeautifulSoup, base_url: str = "", max_chars: int = 0
     """
     body = soup.find("body") or soup
     lines = _Lines(max_chars + _BUDGET_SLACK if max_chars > 0 else 0)
-    _process_element(body, base_url, lines, 0)
+    _process_element(body, base_url, lines, 0, strip_guessed_noise=strip_guessed_noise)
     text = _clean_markdown("\n".join(lines))
     return _truncate(text, max_chars) if lines.capped else text
 

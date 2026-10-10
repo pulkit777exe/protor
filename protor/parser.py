@@ -155,11 +155,28 @@ def parse_soup(
     # The one canonical filtering pass. Everything below reads this filtered
     # tree, so text and Markdown stay consistent and the walk happens once.
     clean_soup(soup, strip_guessed_noise=strip_guessed_noise)
+    # …and the renderer is told the same answer, because it re-asks the question
+    # per subtree. Both were asked independently and used to disagree, which is
+    # the whole of the bug; see the note at the soup_to_markdown call below.
 
     return ParsedPage(
         metadata=harvested.metadata,
         text_content=_extract_text(soup, max_chars),
-        markdown_content=soup_to_markdown(soup, base_url, max_chars=max_markdown_chars),
+        markdown_content=soup_to_markdown(
+            soup,
+            base_url,
+            max_chars=max_markdown_chars,
+            # The renderer re-asks _is_noise for every subtree it walks, because
+            # clean_soup has already removed the noise and a Tag can also arrive
+            # from html_to_markdown's caller with no filtering pass behind it.
+            # That second question was asked with the default, so a `--schema`
+            # run — the one case where the guesses must be KEPT — got a tree
+            # filter that honoured the flag and a renderer that did not. Its
+            # markdown_content came back empty while text_content was correct,
+            # because on such a page every block sits under the very class the
+            # filter would have guessed at.
+            strip_guessed_noise=strip_guessed_noise,
+        ),
         links=harvested.links,
         js_links=harvested.js_links,
     )
@@ -241,7 +258,20 @@ class _Harvest:
         if href is None:
             return
         full = resolve_url(self._base_url, str(href)).split("#")[0]
-        p = urlparse(full)
+        # urlparse raises on a netloc with an unbalanced bracket, and this is the
+        # one place in the parse path where untrusted bytes reach it with no
+        # guard. `http://exa[mple.com/` — a single stray bracket in a hostname,
+        # not a crafted payload — raised `ValueError: Invalid IPv6 URL` out of
+        # `parse_html`, and the engine's catch-all turned the whole page into a
+        # recorded scrape error: no title, no text, no Markdown, no links, no
+        # manifest. The HTML was already on disk with nothing pointing at it.
+        #
+        # A link that cannot be parsed is not a link. Skipping it keeps the other
+        # 999 on the page, which is the entire point of parsing links.
+        try:
+            p = urlparse(full)
+        except ValueError:
+            return
         if (
             p.netloc == self._base_domain
             and p.scheme in ("http", "https")

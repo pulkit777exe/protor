@@ -1035,7 +1035,21 @@ class CrawlEngine:
         Table: a box drawn 3,000 times in a log file is noise, and a table's width
         is meaningless when nothing wraps it.
         """
-        domain = str(row.get("domain") or url)
+        # Both fields are escaped, and both had to be: `domain` is the host the
+        # page was fetched from and `note` carries a server's own Content-Type
+        # back to the user, so either can be chosen by whoever is being scraped.
+        #
+        # This line was the last place in the package that decided otherwise.
+        # `content()`'s docstring records the exact defect — rich read `[slug]`
+        # in a URL as a style tag and dropped it, so the crawl view reported
+        # `https://ex.com/docs/` for a page at `https://ex.com/docs/[slug]`.
+        # Here it was worse than a wrong line: an unbalanced `[/]` raised
+        # `MarkupError` out of `console.print`, and `MarkupError` is neither a
+        # `ProtorError` nor a `ValueError`, so `cli.cli()` did not catch it. One
+        # `<a href>` on one page killed the whole command with a rich traceback,
+        # after the fetch and before the summary. `scraper.py` and `crawler.py`
+        # both escaped their `domain`; this was the site that did not.
+        domain = content(str(row.get("domain") or url))
         nbytes = human_bytes(row.get("bytes") or 0)
         parts = [
             f"  {_STATUS_GLYPHS.get(status, '-')} {_STATUS_WORDS.get(status, status)}".rstrip()
@@ -1048,7 +1062,7 @@ class CrawlEngine:
         if row.get("js"):
             parts.append(f"{row['js']} js")
         if status != "done" and row.get("note"):
-            parts.append(f"- {str(row['note'])[:80]}")
+            parts.append(f"- {content(str(row['note']))[:80]}")
         return "  ".join(parts)
 
     def _safe_hook(self, hook: Callable[..., Any], url: str, ctx: dict[str, Any]) -> None:
